@@ -1,0 +1,10 @@
+{
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/index" },
+    { "source": "/auth/:path*", "destination": "/api/index" },
+    {
+      "source": "/((?!api|auth|_vercel|assets).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

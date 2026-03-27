@@ -1,0 +1,129 @@
+# Living Resume System for work-log
+# Generated from ouroboros interview session
+# Date: 2026-03-26
+
+goal: >
+  work-log 프로젝트에 Living Resume 시스템을 구축한다.
+  PDF 업로드로 초기 이력서를 bootstrap하고, 일일 업무 로그에서 자동으로
+  이력서 갱신 후보를 생성하며, 사용자가 승인/편집 후 반영하는 /resume 페이지를 만든다.
+  백엔드를 Hono로, 프론트엔드를 Preact+Vite로 마이그레이션하고,
+  Vercel Blob 저장소 + Vercel 배포로 전환한다.
+
+constraints:
+  - "Hono 백엔드 (raw http에서 마이그레이션)"
+  - "Preact + Vite 프론트엔드 (기존 vanilla HTML 전체 마이그레이션)"
+  - "Vercel Blob 단독 저장소 (파일 기반 → Blob 1:1 매핑)"
+  - "Vercel 배포"
+  - "외부 라이브러리 최소화: pdf-parse, busboy만 허용 (보안/유지보수/transitive dep 엄격 검증)"
+  - "이력서 내부 저장은 고정 최소 섹션 스키마 JSON (Day 1 커스텀 섹션 없음)"
+  - "HTML/Markdown은 JSON에서 생성되는 렌더링 뷰일 뿐"
+  - "사용자 수정이 항상 시스템 merge보다 우선"
+  - "/resume 경로 및 관련 API에만 환경변수 고정 토큰 인증"
+  - "이력서 생성 언어는 원본 PDF 언어를 따라감"
+  - "LinkedIn은 온보딩 시 1회만 사용 (이후 참조 안 함)"
+  - "PDF 출력은 window.print() + print CSS (서버 사이드 PDF 생성 없음)"
+  - "Day 1은 source 메타데이터만, 수정 이력 추적 없음"
+
+acceptance_criteria:
+  # 온보딩
+  - "/resume 첫 접근 시 PDF 업로드 온보딩 화면 표시"
+  - "PDF 업로드 → pdf-parse로 텍스트 추출 → LLM으로 구조화 JSON + 초기 강점 키워드 + 초기 표시 축 동시 생성"
+  - "LinkedIn URL fetch 시도, 실패/빈약 시 붙여넣기 fallback 입력창 표시"
+  - "LinkedIn 데이터는 PDF 기반 이력서의 누락 항목 보충/검증 용도"
+  # 이력서 뷰
+  - "이력서 생성 후 /resume 기본 화면은 본문 뷰 + 제안 패널(B형)"
+  - "제안 패널에서 각 후보를 승인/제외/인라인 편집 가능"
+  - "제안 단위: 추가는 bullet/프로젝트 블록, 삭제/교체는 문장 단위"
+  - "본문 직접 편집: 구조화된 폼 방식 (편집/삭제/추가 버튼)"
+  - "각 항목에 source 메타데이터 (user | system)"
+  # Merge 트리거
+  - "batch 파이프라인 끝에서 profile delta 3% 이상 변화 시 자동 merge 후보 생성"
+  - "PR/branch 기반 프로젝트 신호가 보조 트리거로 작동"
+  - "변경 후보 생성: LLM 전체 재생성 → 이전 JSON과 규칙 기반 diff"
+  - "pending 후보 존재 시 최신 기준으로 대체 (이전 pending 폐기)"
+  - "daily resume bullet을 중간 캐시로 활용, 필요 시 원본에서 전체 재구성 허용"
+  # 축/프로필
+  - "강점 키워드를 비정형 목록으로 축적"
+  - "키워드 클러스터링으로 5~6개 표시 축 생성"
+  - "한번 생성된 축은 유지, 미분류 키워드 임계값 초과 시 재클러스터링"
+  - "사용자 수동 축 재편 옵션 제공"
+  # 인프라
+  - "토큰 입력 폼 → 쿠키 발급 → 이후 쿠키 인증, API는 헤더 인증"
+  - "승인 시점마다 JSON snapshot 저장, 이전 상태로 rollback 가능"
+  - "새 변경 후보 생성 시 이력서 탭에 배지 알림"
+  - "window.print() + print CSS로 PDF 저장 (디자인 유지, 밀도 조정, 페이지 수 자유)"
+
+ontology_schema:
+  name: LivingResume
+  description: "이력서 자동 갱신 시스템의 도메인 모델"
+  fields:
+    - name: resume
+      type: object
+      description: "구조화된 이력서 JSON (고정 섹션 스키마: summary, skills, experiences 등)"
+    - name: resumeSections
+      type: array
+      description: "고정 섹션 목록 (각 섹션 내 bullet 배열)"
+    - name: resumeItem
+      type: object
+      description: "개별 이력서 항목 (text, source: user|system, sectionId)"
+    - name: strengthKeywords
+      type: array
+      description: "비정형 강점 키워드 목록 (원본 데이터)"
+    - name: displayAxes
+      type: array
+      description: "키워드 클러스터링 결과인 5~6개 표시 축"
+    - name: profileDelta
+      type: object
+      description: "이전/현재 프로필 비교 데이터 (축별 비중 변화율)"
+    - name: mergeCandidates
+      type: array
+      description: "제안된 변경 후보 목록 (type: add|delete|replace, unit: bullet|block|sentence)"
+    - name: snapshot
+      type: object
+      description: "승인 시점 JSON 스냅샷 (rollback용, timestamp 포함)"
+    - name: dailyBullets
+      type: array
+      description: "batch에서 생성된 일일 이력서 bullet 캐시"
+    - name: onboardingState
+      type: object
+      description: "PDF 업로드 및 LinkedIn 입력 상태"
+
+evaluation_principles:
+  - name: data_integrity
+    description: "사용자 수정이 시스템 merge보다 항상 우선하고, rollback이 정상 작동하는가"
+    weight: 0.25
+  - name: merge_accuracy
+    description: "LLM 재생성 + 규칙 기반 diff가 의미 있는 제안을 생성하는가"
+    weight: 0.25
+  - name: minimal_dependencies
+    description: "외부 라이브러리가 검증 기준(보안, 유지보수, transitive dep)을 충족하는가"
+    weight: 0.15
+  - name: ux_clarity
+    description: "온보딩→본문+패널 전환, 폼 편집, 제안 승인 흐름이 직관적인가"
+    weight: 0.20
+  - name: migration_completeness
+    description: "Hono/Preact/Vite/Vercel Blob 마이그레이션이 기존 기능을 깨뜨리지 않는가"
+    weight: 0.15
+
+exit_conditions:
+  - name: onboarding_works
+    description: "PDF 업로드 → 구조화 JSON + 키워드 + 축 bootstrap 완료"
+    criteria: "/resume 첫 접근 시 PDF 업로드 후 이력서 본문이 정상 렌더링"
+  - name: merge_pipeline_works
+    description: "batch 실행 후 delta 3% 초과 시 merge 후보가 자동 생성"
+    criteria: "제안 패널에 후보가 표시되고 승인/제외/편집 후 반영됨"
+  - name: auth_works
+    description: "토큰 인증이 /resume 경로에만 적용"
+    criteria: "토큰 없이 /resume 접근 시 입력 폼, 토큰 입력 후 쿠키로 인증 유지"
+  - name: deployment_works
+    description: "Vercel 배포 후 전체 기능 정상 작동"
+    criteria: "Vercel Blob 기반 데이터 읽기/쓰기, /resume 페이지 정상 동작"
+  - name: rollback_works
+    description: "스냅샷 기반 rollback 정상 작동"
+    criteria: "이전 승인 시점으로 복원 시 이력서 상태가 정확히 되돌아감"
+
+metadata:
+  version: "1.0.0"
+  created: "2026-03-26"
+  source: "ouroboros interview (conversation-based)"
+  ambiguity_score: 0.12

@@ -1,0 +1,580 @@
+/* ===== PdfUploadOnboarding ===== */
+
+/* ─── 페이지 레이아웃 ─────────────────────────────────────────────────────────── */
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+}
+
+/* ─── 카드 ─────────────────────────────────────────────────────────────────────── */
+
+.card {
+  width: 100%;
+  max-width: 520px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+  padding: 40px 36px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* ─── 헤더 ─────────────────────────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: center;
+  position: relative;
+}
+
+/* ─── 뒤로 가기 버튼 (이전 단계로) ──────────────────────────────────────────── */
+
+.backBtn {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: none;
+  border: none;
+  padding: 4px 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s;
+  white-space: nowrap;
+}
+
+.backBtn:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.backBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.logo {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  background: var(--ink);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-1);
+}
+
+.title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.6;
+  max-width: 380px;
+}
+
+/* ─── LinkedIn 연결 확인 배지 (이전 온보딩 단계에서 프로필 prop로 전달된 경우) ──── */
+
+.linkedinConnectedBadge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(22, 163, 74, 0.06);
+  border: 1px solid rgba(22, 163, 74, 0.2);
+  border-radius: var(--radius-md);
+}
+
+.linkedinConnectedIcon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #16a34a;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.linkedinConnectedText {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #15803d;
+  line-height: 1.4;
+}
+
+/* ─── 드롭존 ─────────────────────────────────────────────────────────────────── */
+
+.dropzone {
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-7) var(--space-5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s,
+    box-shadow 0.15s;
+  position: relative;
+  outline: none;
+}
+
+.dropzone:focus-visible {
+  box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.12);
+  border-color: var(--ink);
+}
+
+.dropzone:hover:not(.dropzoneDisabled):not(.dropzoneSuccess) {
+  border-color: var(--ink);
+  background: rgba(17, 24, 39, 0.015);
+}
+
+/* 드래그 오버 */
+.dropzoneActive {
+  border-color: var(--ink);
+  background: rgba(17, 24, 39, 0.04);
+  box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.08);
+}
+
+/* 파일 선택 완료 */
+.dropzoneSelected {
+  border-style: solid;
+  border-color: var(--ink);
+  background: rgba(17, 24, 39, 0.02);
+  padding: var(--space-5);
+}
+
+/* 성공 */
+.dropzoneSuccess {
+  border-style: solid;
+  border-color: #16a34a;
+  background: rgba(22, 163, 74, 0.04);
+  cursor: default;
+}
+
+/* 에러 */
+.dropzoneError {
+  border-color: #e53e3e;
+  background: rgba(229, 62, 62, 0.03);
+}
+
+/* 업로드/처리 중 */
+.dropzoneDisabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* 숨겨진 파일 input */
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ─── 드롭존 내부 컨텐츠 ─────────────────────────────────────────────────────── */
+
+.dropzoneContent {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.pdfIcon {
+  color: var(--muted);
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.dropzone:hover .pdfIcon,
+.dropzoneActive .pdfIcon {
+  opacity: 1;
+  color: var(--ink);
+}
+
+.dropzoneMain {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.dropzoneSub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* 성공 아이콘 */
+.successIcon {
+  color: #16a34a;
+}
+
+/* ─── 파일 정보 ─────────────────────────────────────────────────────────────── */
+
+.fileInfo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.fileIconWrapper {
+  color: var(--ink);
+  flex-shrink: 0;
+}
+
+.fileMeta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fileName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileSize {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.removeBtn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.removeBtn:hover {
+  background: rgba(17, 24, 39, 0.08);
+  color: var(--ink);
+}
+
+/* ─── 에러 메시지 ─────────────────────────────────────────────────────────────── */
+
+.errorMsg {
+  margin: 0;
+  font-size: 13px;
+  color: #e53e3e;
+  line-height: 1.5;
+  padding: var(--space-3) var(--space-4);
+  background: rgba(229, 62, 62, 0.06);
+  border: 1px solid rgba(229, 62, 62, 0.15);
+  border-radius: var(--radius-sm);
+}
+
+/* ─── 진행률 ─────────────────────────────────────────────────────────────────── */
+
+.progressWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.progressHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.progressLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.cancelBtn {
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.cancelBtn:hover {
+  background: rgba(17, 24, 39, 0.06);
+  color: var(--ink);
+}
+
+.progressTrack {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(17, 24, 39, 0.08);
+  overflow: hidden;
+}
+
+.progressBar {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--ink);
+  transition: width 0.2s ease;
+  will-change: width;
+}
+
+/* 무한 진행 (처리 중) */
+.progressBarIndeterminate {
+  width: 40% !important;
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(150%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+.processingNote {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* ─── LinkedIn 섹션 ──────────────────────────────────────────────────────────── */
+
+.linkedinSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-1);
+}
+
+/* 완료 배지 (LinkedInInput 완료 후 요약 표시) */
+.linkedinDoneBadge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(17, 24, 39, 0.03);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.linkedinDoneText {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.linkedinChangeBtn {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.linkedinChangeBtn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.linkedinChangeBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.linkedinLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+
+.optionalTag {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  background: rgba(17, 24, 39, 0.06);
+  padding: 1px 7px;
+  border-radius: 10px;
+  letter-spacing: 0.01em;
+}
+
+.linkedinInput {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 14px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: #fff;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.linkedinInput:focus {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.08);
+}
+
+.linkedinInput::placeholder {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.linkedinHint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+/* ─── 액션 버튼 영역 ─────────────────────────────────────────────────────────── */
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  padding-top: var(--space-1);
+}
+
+.btnPrimary {
+  flex: 1;
+  padding: 11px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--ink);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  transition: opacity 0.15s, transform 0.1s;
+  letter-spacing: -0.01em;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.btnPrimary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btnPrimary:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.btnSecondary {
+  padding: 11px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--ink);
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.btnSecondary:hover {
+  background: rgba(17, 24, 39, 0.04);
+  border-color: var(--ink);
+}
+
+/* 인라인 스피너 (버튼 내부) */
+.spinnerInline {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.65s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ─── 반응형 ─────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 560px) {
+  .card {
+    padding: 32px 20px 24px;
+    border-radius: var(--radius-lg);
+  }
+
+  .dropzone {
+    padding: var(--space-6) var(--space-4);
+  }
+
+  .dropzoneSelected {
+    padding: var(--space-4);
+  }
+}

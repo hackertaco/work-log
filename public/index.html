@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Work Log</title>
+    <link rel="stylesheet" href="/styles.css?v=3">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">EDITORIAL DESK</p>
+          <h1>Work Log</h1>
+          <p class="lede">
+            하루 동안 남긴 커밋과 판단을 한 장의 편집면처럼 읽는 개인 업무 저널.
+          </p>
+          <div class="hero-notes">
+            <span class="note-pill">commit-first</span>
+            <span class="note-pill">company / open source split</span>
+            <span class="note-pill">resume-ready</span>
+          </div>
+        </div>
+        <div class="actions">
+          <label class="field-label" for="date-input">기준 날짜</label>
+          <input id="date-input" type="date">
+          <button id="run-batch">오늘 기록하기</button>
+        </div>
+      </section>
+
+      <nav class="tabs">
+        <button class="tab is-active" data-tab="worklog">업무로그</button>
+        <button class="tab" data-tab="resume">이력서 탭</button>
+      </nav>
+
+      <section class="layout">
+        <section class="panel">
+          <div class="panel-topbar">
+            <div id="status" class="status">KST 기준 대기 중</div>
+            <div class="archive-strip">
+              <div class="archive-control">
+                <p class="archive-label">Archive</p>
+                <div class="archive-picker">
+                  <button id="archive-trigger" class="archive-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                    <span id="archive-current">날짜 선택</span>
+                  </button>
+                  <div id="archive-menu" class="archive-menu is-hidden" role="listbox" aria-label="Archive dates"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="worklog-view" class="view"></div>
+          <div id="resume-view" class="view is-hidden"></div>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js?v=3"></script>
+  </body>
+</html>

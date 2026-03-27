@@ -1,0 +1,9 @@
+.env.local
+.env
+node_modules/
+dist/
+data/
+vault/
+.omx/
+.vercel/
+.DS_Store

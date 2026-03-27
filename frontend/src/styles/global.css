@@ -1,0 +1,100 @@
+:root {
+  --bg: #f5f7fb;
+  --surface: #f9fafb;
+  --panel: rgba(255, 255, 255, 0.94);
+  --panel-2: rgba(248, 250, 253, 0.88);
+  --ink: #111827;
+  --muted: #667085;
+  --line: rgba(17, 24, 39, 0.08);
+  --line-strong: rgba(17, 24, 39, 0.16);
+  --accent: #111827;
+  --shadow: 0 16px 36px rgba(15, 23, 42, 0.08);
+  --shadow-sm: 0 4px 12px rgba(15, 23, 42, 0.06);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 28px;
+  --space-7: 40px;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: "Pretendard", "SUIT Variable", "Noto Sans KR", -apple-system,
+    BlinkMacSystemFont, sans-serif;
+  background:
+    linear-gradient(rgba(17, 24, 39, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17, 24, 39, 0.03) 1px, transparent 1px),
+    linear-gradient(180deg, #f8fafc 0%, #eef2f8 100%);
+  background-size: 24px 24px, 24px 24px, auto;
+  min-height: 100vh;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+input {
+  font-family: inherit;
+}
+
+/* ─── A4 print layout ─── */
+/*
+ * @page specifies the physical page box.
+ * 20mm top/bottom, 18mm left/right is a standard A4 resume margin that leaves
+ * a usable content width of 210mm − 36mm = 174mm at A4 (210mm × 297mm).
+ */
+@page {
+  size: A4;
+  margin: 20mm 18mm;
+}
+
+@media print {
+  /*
+   * Base body reset for print.
+   *
+   * font-size: 11pt — standard resume body size for A4 print.
+   *   11pt × 1.333 ≈ 14.7px at 96 dpi (screen), but print uses physical pt.
+   * line-height: 1.45 — dense but readable for A4 one-page resume.
+   *   Slightly tighter than on-screen 1.6–1.75 to maximise vertical space.
+   * color: #000 — pure black for laser/inkjet fidelity.
+   */
+  body {
+    background: #fff;
+    min-height: auto;
+    font-size: 11pt;
+    line-height: 1.45;
+    color: #000;
+    /* Ensure colours render faithfully when user chooses "Background graphics" */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /*
+   * Suppress all animations / transitions in print to avoid rendering artefacts.
+   */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    transition-duration: 0s !important;
+  }
+}
