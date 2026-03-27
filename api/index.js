@@ -15,7 +15,7 @@ import { handle } from "hono/vercel";
 import { createApp } from "../src/server.mjs";
 
 export const config = {
-  runtime: "nodejs20.x"
+  runtime: "nodejs"
 };
 
 const app = createApp();
