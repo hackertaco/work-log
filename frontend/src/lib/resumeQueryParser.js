@@ -128,11 +128,13 @@ function detectIntent(text) {
   if (APPLY_SECTION_PATTERNS.some((p) => p.test(text))) {
     return 'apply_section';
   }
-  if (REFINE_SECTION_PATTERNS.some((p) => p.test(text))) {
-    return 'refine_section';
-  }
+  // search_evidence 를 refine_section 보다 먼저 검사:
+  // "찾아줘"가 있으면 검색 의도가 우선 ("안정성 개선 어필 포인트를 찾아줘"에서 "개선"이 refine에 매칭되는 문제 방지)
   if (SEARCH_EVIDENCE_PATTERNS.some((p) => p.test(text))) {
     return 'search_evidence';
+  }
+  if (REFINE_SECTION_PATTERNS.some((p) => p.test(text))) {
+    return 'refine_section';
   }
   if (QUESTION_PATTERNS.some((p) => p.test(text))) {
     return 'question';
