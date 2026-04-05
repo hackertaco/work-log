@@ -37,7 +37,7 @@ import { list, put } from "@vercel/blob";
 // ─── Bullet cache (batch summarization results) ───────────────────────────────
 
 const CACHE_PREFIX = "cache/bullets/";
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
 
 // ─── Extract cache (WorkLogExtract results for generate-candidates) ───────────
 

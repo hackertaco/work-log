@@ -12,6 +12,7 @@
  *   POST  /api/resume/upload                        — store raw PDF binary in Vercel Blob (storage-only; no LLM)
  *   POST  /api/resume/bootstrap                     — upload PDF → LLM parse → save to Blob → return
  *   POST /api/resume/gap-analysis                  — compare LinkedIn data against stored resume, return gaps
+ *   GET  /api/resume/coverage-analysis             — analyze data source coverage per resume item, detect insufficient items (Sub-AC 9-1)
  *   POST /api/resume/generate-candidates           — work log → LLM extract → merge → diff → save suggestions
  *   GET    /api/resume/axes                          — list all display axes (id/label/keywords)
  *   POST   /api/resume/axes                          — (re)generate display axes via LLM clustering; returns cached axes when force=false
@@ -42,6 +43,8 @@
  *   POST   /api/resume/daily-bullets/:date/promote/:bulletId — promote a bullet to a suggestion
  *   POST   /api/resume/daily-bullets/:date/dismiss/:bulletId — dismiss a bullet
  *   POST   /api/resume/section-bullet                        — directly append a bullet to an experience or project item (user edit)
+ *   PATCH  /api/resume/section                               — apply chat diff approval to a resume section (Sub-AC 6-2)
+ *   PATCH  /api/resume/json-diff-apply                      — apply full resume JSON diff (all sections) approved in chat (Sub-AC 5-3)
  *   PATCH  /api/resume/items                                — unified bullet add/update/delete (op field); source=user, bypasses mergeCandidates
  *   PATCH  /api/resume/sections/:section/:itemIndex/bullets/:bulletIndex — edit a single bullet text (marks _source:'user')
  *   DELETE /api/resume/sections/:section/:itemIndex/bullets/:bulletIndex — delete a single bullet (marks _source:'user')
@@ -49,6 +52,13 @@
  *   POST   /api/resume/rollback                              — restore resume to a prior snapshot identified by snapshotKey
  *   POST   /api/resume/reconstruct                           — bypass extract cache; re-derive all bullets from raw work-log records and re-hydrate extract cache
  *   POST   /api/resume/profile-delta-trigger               — check profileDelta vs last approved snapshot; trigger candidate generation when delta ≥ 3% (indirect causality)
+ *   GET    /api/resume/quality-report                      — aggregate bullet quality tracking report (similarity scores, usability rate)
+ *   GET    /api/resume/quality-tracking                    — raw quality tracking history (individual records, paginated)
+ *   POST   /api/resume/quality-tracking/rescore            — batch retroactive scoring of approved suggestions for quality bootstrapping
+ *   GET    /api/resume/identified-strengths                — list identified behavioral strengths (cross-repo, evidence-backed)
+ *   GET    /api/resume/narrative-axes                      — list narrative axes (career themes)
+ *   GET    /api/resume/narrative-threading                 — bullet-level threading annotations (strengths↔axes↔episodes)
+ *   POST   /api/resume/narrative-threading/run             — run full narrative threading pipeline (episodes→strengths→axes→threading)
  *
  * Bootstrap pipeline:
  *   1. Validate & buffer the PDF upload                       (this file)
@@ -78,6 +88,7 @@ import {
   checkResumeExists,
   saveResumeData,
   readResumeData,
+  readPdfText,
   readSuggestionsData,
   saveSuggestionsData,
   saveDailyBullets,
@@ -97,7 +108,19 @@ import {
   readSnapshotByKey,
   readStrengthKeywords,
   saveStrengthKeywords,
-  clearReconstructionMarker
+  clearReconstructionMarker,
+  saveIdentifiedStrengths,
+  readIdentifiedStrengths,
+  saveNarrativeAxes,
+  readNarrativeAxes,
+  saveNarrativeThreading,
+  readNarrativeThreading,
+  saveSectionBridges,
+  readSectionBridges,
+  saveChatDraft,
+  readChatDraft,
+  saveChatDraftContext,
+  readChatDraftContext
 } from "../lib/blob.mjs";
 import {
   mergeKeywords,
@@ -107,11 +130,19 @@ import {
   initStrengthKeywordsFromBootstrap
 } from "../lib/resumeStrengthKeywords.mjs";
 import { loadConfig } from "../lib/config.mjs";
-import { extractPdfText } from "../lib/resumeLlm.mjs";
+import { searchAllSources, searchWithAnalyzedQuery } from "../lib/resumeEvidenceSearch.mjs";
+// AC 3 Sub-AC 2: 쿼리 분석 기반 멀티소스 탐색 (priority·sourceMeta·followUpQuestion 지원)
+import { exploreWithQueryAnalysis, exploreWithKeywords } from "../lib/resumeChatExplore.mjs";
+import { extractTextFromBuffer } from "../lib/pdfExtract.mjs";
 import { generateResumeFromText } from "../lib/resumeBootstrap.mjs";
 import {
   gatherWorkLogBullets,
-  fullReconstructExtractCache
+  fullReconstructExtractCache,
+  reconstructResumeFromSources,
+  mergeWithUserEdits,
+  runNarrativeThreadingPipeline,
+  generateSectionBridges,
+  validateResumeCoherence,
 } from "../lib/resumeReconstruction.mjs";
 import { analyzeGaps } from "../lib/resumeGapAnalysis.mjs";
 import { gapItemsToSuggestions } from "../lib/resumeSuggestions.mjs";
@@ -126,6 +157,7 @@ import { extractResumeUpdatesFromWorkLog } from "../lib/resumeWorkLogExtract.mjs
 import { mergeWorkLogIntoResume } from "../lib/resumeWorkLogMerge.mjs";
 import { diffResume } from "../lib/resumeDiff.mjs";
 import { diffToSuggestions } from "../lib/resumeDiffToSuggestions.mjs";
+import { compressWorkLogSuggestions } from "../lib/resumeSuggestionCompression.mjs";
 import {
   computeDeltaRatio,
   exceedsDeltaThreshold,
@@ -159,11 +191,81 @@ import {
   collectResumeKeywords,
   collectWorkLogKeywords
 } from "../lib/resumeKeywordClustering.mjs";
+import { getUnclassifiedKeywords } from "../lib/resumeKeywordCoverage.mjs";
 import {
   applyBulletProposal,
   isBulletProposal
 } from "../lib/resumeBulletProposal.mjs";
 import { deltaFromLastApproved } from "../lib/resumeSnapshotDelta.mjs";
+import {
+  trackBulletEdit,
+  trackBulletEditBatch,
+  classifyEditDistance,
+  computeBulletSimilarity,
+  loadQualityHistory,
+  computeQualityReportFromHistory,
+  scoreGeneratedVsFinalBatch,
+  persistTrackingRecords,
+  createTrackingRecordOffline,
+} from "../lib/resumeBulletSimilarity.mjs";
+import { generateResumeDraft, loadWorkLogs } from "../lib/resumeDraftGeneration.mjs";
+import {
+  getDraftGenerationState,
+  markDraftGenerationPending,
+  markDraftGenerationCompleted,
+  markDraftGenerationFailed,
+  updateDraftGenerationProgress,
+  isDraftGenerationInProgress,
+  resetDraftGenerationState,
+} from "../lib/draftGenerationState.mjs";
+import {
+  buildChatDraftContext,
+  refineSectionWithChat,
+  searchEvidenceByKeywords,
+  extractDraftContentForSection,
+} from "../lib/resumeChatDraftService.mjs";
+import {
+  mergeAndRankEvidence,
+  buildEvidenceContext,
+  generateAppealPoints,
+} from "../lib/resumeAppealPoints.mjs";
+import { parseApplyIntent } from "../lib/resumeChatApplyIntent.mjs";
+// Sub-AC 3-3: 클러스터 기반 어필 포인트 제안 생성
+import { generateSuggestions, formatSuggestionMessage } from "../lib/resumeChatSuggest.mjs";
+import { applyChatChangesToResume } from "../lib/resumeChatApplySections.mjs";
+// AC 5 Sub-AC 2: 대화 컨텍스트 기반 이력서 섹션 수정 JSON 생성
+import { generateModifiedResume } from "../lib/resumeChatSectionModifier.mjs";
+// Sub-AC 4-2: 채팅 응답에 출처 정보(citations) 첨부
+import {
+  buildChatCitations,
+  buildCitationFromEvidence,
+  buildCitationsFromEvidenceResult,
+  buildSourceSummary,
+} from "../lib/resumeChatCitations.mjs";
+// Sub-AC 8-1: 자기소개·강점 섹션 전용 채팅 diff 생성
+import { generateSummaryChatDiff } from "../lib/resumeSummarySectionChat.mjs";
+import { generateStrengthsChatDiff, formatStrengthsAsText } from "../lib/resumeStrengthsSectionChat.mjs";
+// Sub-AC 9-1: 데이터 소스 커버리지 분석
+import {
+  buildSignalCorpus,
+  analyzeDataSourceCoverage,
+} from "../lib/resumeDataSourceCoverage.mjs";
+// Sub-AC 9-2: 부족한 항목 보충 질문 생성
+import {
+  generateFollowUpQuestions,
+  buildCoverageNoticeMessage,
+} from "../lib/resumeInsufficientItemQuestions.mjs";
+// AC 3 Sub-AC 1: 서버 사이드 쿼리 분석 (의도·키워드·기술스택·소스별 파라미터)
+import {
+  analyzeQuery,
+  analyzeQueryWithLLM,
+  toSearchQuery,
+} from "../lib/resumeQueryAnalyzer.mjs";
+// AC 3 Sub-AC 3: 통합 추천 엔진 (탐색 결과 → 어필 포인트 제안)
+import {
+  generateRecommendations,
+  formatRecommendations,
+} from "../lib/resumeChatRecommendEngine.mjs";
 
 export const resumeRouter = new Hono();
 
@@ -234,6 +336,34 @@ resumeRouter.get("/status", async (c) => {
     );
   }
 });
+
+function describePdfExtractionFailure(err) {
+  const detail = err?.message ?? String(err);
+  const normalized = String(detail).toLowerCase();
+
+  if (normalized.includes("pdf magic bytes")) {
+    return {
+      error: "유효한 PDF 파일이 아닙니다.",
+      detail
+    };
+  }
+
+  if (
+    normalized.includes("password") ||
+    normalized.includes("encrypted") ||
+    normalized.includes("encryption")
+  ) {
+    return {
+      error: "비밀번호가 걸렸거나 보호된 PDF는 처리할 수 없습니다.",
+      detail
+    };
+  }
+
+  return {
+    error: "PDF 텍스트를 추출하지 못했습니다. PDF 생성 방식이나 파일 구조 때문에 파싱에 실패했을 수 있습니다.",
+    detail
+  };
+}
 
 // ─── POST /api/resume/upload ──────────────────────────────────────────────────
 
@@ -455,15 +585,12 @@ resumeRouter.post("/bootstrap", async (c) => {
   // ── 4. Extract plain text from PDF ────────────────────────────────────────
   let pdfText;
   try {
-    pdfText = await extractPdfText(pdfBuffer);
+    pdfText = await extractTextFromBuffer(pdfBuffer);
   } catch (err) {
     console.error("[resume/bootstrap] PDF text extraction failed:", err);
+    const { error, detail } = describePdfExtractionFailure(err);
     return c.json(
-      {
-        error:
-          "PDF 텍스트를 추출할 수 없습니다. 암호화되지 않은 PDF를 업로드해 주세요.",
-        detail: err.message ?? String(err)
-      },
+      { error, detail },
       422
     );
   }
@@ -723,6 +850,139 @@ resumeRouter.post("/gap-analysis", async (c) => {
   return c.json({ ok: true, gaps, summary });
 });
 
+// ─── GET /api/resume/coverage-analysis ───────────────────────────────────────
+
+/**
+ * 데이터 소스(커밋/슬랙/세션) 기반 이력서 항목 정보 충족도 분석 (Sub-AC 9-1).
+ *
+ * 로직:
+ *   1. Vercel Blob에서 현재 이력서 로드
+ *   2. data/daily/*.json 업무 로그 로드 (날짜 범위 파라미터 지원)
+ *   3. 커밋/세션/슬랙 신호를 합산한 신호 코퍼스 구축
+ *   4. 이력서 항목별 키워드 매칭으로 충족도 점수 산출
+ *   5. 부족 항목(score < 0.2) 감지 및 반환
+ *
+ * 쿼리 파라미터 (모두 선택):
+ *   from_date  — 업무 로그 시작 날짜 (YYYY-MM-DD); 기본: 90일 전
+ *   to_date    — 업무 로그 종료 날짜 (YYYY-MM-DD); 기본: 오늘
+ *
+ * 응답 (200):
+ *   {
+ *     ok: true,
+ *     experience:             ExperienceCoverageItem[],
+ *     skills:                 { technical, languages, tools }[],
+ *     summary:                { score, level, isInsufficient },
+ *     insufficientItems:      InsufficientItem[],
+ *     coverageSummary:        CoverageSummary,
+ *     followUpQuestions:      FollowUpQuestion[],     — (Sub-AC 9-2) 부족 항목 보충 질문 목록
+ *     coverageNoticeMessage:  string|null,            — (Sub-AC 9-2) 채팅에 표시할 안내 메시지
+ *     meta: {
+ *       workLogCount:         number,    — 분석에 사용된 업무 로그 날짜 수
+ *       fromDate:             string,    — 실제 분석 시작 날짜
+ *       toDate:               string,    — 실제 분석 종료 날짜
+ *       corpusLength:         number     — 신호 코퍼스 문자 수
+ *     }
+ *   }
+ *
+ * 오류 응답:
+ *   HTTP 404  { "ok": false, "error": "이력서가 없습니다" }
+ *   HTTP 400  { "ok": false, "error": "잘못된 날짜 형식" }
+ *   HTTP 502  { "ok": false, "error": "...", "detail": "..." }
+ */
+resumeRouter.get("/coverage-analysis", async (c) => {
+  // ── 1. 날짜 파라미터 파싱 및 검증 ──────────────────────────────────────────
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  const rawFrom = c.req.query("from_date");
+  const rawTo   = c.req.query("to_date");
+
+  if (rawFrom && !dateRe.test(rawFrom)) {
+    return c.json({ ok: false, error: "잘못된 from_date 형식 — YYYY-MM-DD 형식이어야 합니다" }, 400);
+  }
+  if (rawTo && !dateRe.test(rawTo)) {
+    return c.json({ ok: false, error: "잘못된 to_date 형식 — YYYY-MM-DD 형식이어야 합니다" }, 400);
+  }
+
+  const today  = new Date().toISOString().slice(0, 10);
+  const toDate = rawTo ?? today;
+
+  // 기본 90일 분석 범위
+  const defaultFrom = new Date(new Date(toDate).getTime() - 90 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  const fromDate = rawFrom ?? defaultFrom;
+
+  // ── 2. 이력서 로드 ─────────────────────────────────────────────────────────
+  let resumeDoc;
+  try {
+    resumeDoc = await readResumeData();
+  } catch (err) {
+    console.error("[resume/coverage-analysis] Failed to read resume:", err);
+    return c.json(
+      { ok: false, error: "이력서를 불러오지 못했습니다.", detail: err.message ?? String(err) },
+      502
+    );
+  }
+
+  if (!resumeDoc) {
+    return c.json({ ok: false, error: "이력서가 없습니다. 먼저 이력서를 등록해 주세요." }, 404);
+  }
+
+  // ── 3. 업무 로그 로드 ──────────────────────────────────────────────────────
+  let workLogs;
+  try {
+    workLogs = await loadWorkLogs({ fromDate, toDate });
+  } catch (err) {
+    console.error("[resume/coverage-analysis] Failed to load work logs:", err);
+    workLogs = [];
+  }
+
+  // ── 4. 신호 코퍼스 구축 ────────────────────────────────────────────────────
+  const corpus = buildSignalCorpus(workLogs);
+
+  // ── 5. 충족도 분석 ─────────────────────────────────────────────────────────
+  const {
+    experience,
+    skills,
+    summary,
+    insufficientItems,
+    coverageSummary,
+  } = analyzeDataSourceCoverage(resumeDoc, corpus);
+
+  // ── 6. 부족 항목 보충 질문 생성 (Sub-AC 9-2) ─────────────────────────────────
+  const followUpQuestions = generateFollowUpQuestions(insufficientItems);
+  const coverageNoticeMessage = buildCoverageNoticeMessage(followUpQuestions, {
+    coverageRatio: coverageSummary.coverageRatio,
+    insufficientCount: coverageSummary.insufficientCount,
+  });
+
+  console.info(
+    `[resume/coverage-analysis]` +
+      ` workLogs=${workLogs.length}` +
+      ` totalItems=${coverageSummary.totalItems}` +
+      ` insufficientCount=${coverageSummary.insufficientCount}` +
+      ` coverageRatio=${(coverageSummary.coverageRatio * 100).toFixed(1)}%` +
+      ` avgScore=${(coverageSummary.avgScore * 100).toFixed(1)}%` +
+      ` followUpQuestions=${followUpQuestions.length}`
+  );
+
+  return c.json({
+    ok: true,
+    experience,
+    skills,
+    summary,
+    insufficientItems,
+    coverageSummary,
+    followUpQuestions,
+    coverageNoticeMessage,
+    meta: {
+      workLogCount: workLogs.length,
+      fromDate,
+      toDate,
+      corpusLength: corpus.length,
+    },
+  });
+});
+
 // ─── POST /api/resume/generate-candidates ────────────────────────────────────────────
 
 /**
@@ -911,8 +1171,9 @@ resumeRouter.post("/generate-candidates", async (c) => {
 
   // ── 6. Convert diff to pending SuggestionItems ───────────────────────────────────────────
   const rawSuggestions = diffToSuggestions(diff, date);
+  const compressedSuggestions = compressWorkLogSuggestions(rawSuggestions);
 
-  if (rawSuggestions.length === 0) {
+  if (compressedSuggestions.length === 0) {
     return c.json({
       ok: true,
       generated: 0,
@@ -969,7 +1230,7 @@ resumeRouter.post("/generate-candidates", async (c) => {
   const updatedDoc = {
     schemaVersion: 1,
     updatedAt: new Date().toISOString(),
-    suggestions: [...supersededSuggestions, ...rawSuggestions]
+    suggestions: [...supersededSuggestions, ...compressedSuggestions]
   };
 
   try {
@@ -990,7 +1251,8 @@ resumeRouter.post("/generate-candidates", async (c) => {
   }
 
   console.info(
-    `[resume/generate-candidates] Generated ${rawSuggestions.length} new candidate(s) for date="${date}"` +
+    `[resume/generate-candidates] Generated ${compressedSuggestions.length} new candidate(s) for date="${date}"` +
+      ` (raw=${rawSuggestions.length})` +
       (pendingToDiscard.length > 0
         ? ` (${pendingToDiscard.length} previous pending superseded)`
         : "")
@@ -998,12 +1260,12 @@ resumeRouter.post("/generate-candidates", async (c) => {
 
   return c.json({
     ok: true,
-    generated: rawSuggestions.length,
+    generated: compressedSuggestions.length,
     superseded: pendingToDiscard.length,
     deltaRatio: deltaMetrics.ratio,
     deltaChangedCount: deltaMetrics.changedCount,
     deltaTotalCount: deltaMetrics.totalCount,
-    suggestions: rawSuggestions
+    suggestions: compressedSuggestions
   });
 });
 
@@ -1297,6 +1559,13 @@ resumeRouter.post("/suggestions/:id/approve", async (c) => {
 
   console.info(`[resume/suggestions/approve] approved id="${suggestionId}" action="${suggestion.action}" section="${suggestion.section}"`);
 
+  // ── Quality tracking (fire-and-forget) ────────────────────────────────────
+  // Track bullet quality for suggestions that contain bullet text.
+  // Non-blocking: errors are logged but never fail the approval response.
+  _trackSuggestionQuality(suggestion, "approved").catch((err) =>
+    console.warn("[resume/suggestions/approve] quality tracking failed (non-fatal):", err)
+  );
+
   return c.json({ ok: true, resume: updatedResume });
 });
 
@@ -1343,6 +1612,11 @@ resumeRouter.post("/suggestions/:id/reject", async (c) => {
   }
 
   console.info(`[resume/suggestions/reject] rejected id="${suggestionId}" action="${suggestion.action}" section="${suggestion.section}"`);
+
+  // ── Quality tracking (fire-and-forget) ────────────────────────────────────
+  _trackSuggestionQuality(suggestion, "discarded").catch((err) =>
+    console.warn("[resume/suggestions/reject] quality tracking failed (non-fatal):", err)
+  );
 
   return c.json({ ok: true });
 });
@@ -1436,6 +1710,21 @@ resumeRouter.patch("/suggestions/:id", async (c) => {
   // have no text, but we accept the update anyway and let the client guard it.
   if (payload !== undefined && typeof payload === "object" && payload !== null) {
     updated.payload = { ...(updated.payload ?? {}), ...payload };
+    // Preserve the user-edited text for downstream quality tracking.
+    // When this suggestion is later approved, _trackSuggestionQuality will use
+    // _editedText as the "final" version (vs the original generated text).
+    if (typeof payload.text === "string" && payload.text.trim()) {
+      updated._editedText = payload.text.trim();
+    }
+  }
+
+  // Legacy SuggestionItem: capture edited bullet text for quality tracking.
+  if (patch !== undefined && typeof patch === "object" && patch !== null) {
+    if (typeof patch.bullet === "string" && patch.bullet.trim()) {
+      updated._editedText = patch.bullet.trim();
+    } else if (typeof patch.text === "string" && patch.text.trim()) {
+      updated._editedText = patch.text.trim();
+    }
   }
 
   if (typeof description === "string" && description.trim()) {
@@ -1705,6 +1994,11 @@ resumeRouter.patch("/candidates/:id", async (c) => {
       `[resume/candidates/patch] approved id="${candidateId}" action="${candidate.action}" section="${candidate.section}"`
     );
 
+    // ── Quality tracking (fire-and-forget) ──────────────────────────────────
+    _trackSuggestionQuality(candidate, "approved").catch((err) =>
+      console.warn("[resume/candidates/patch] quality tracking failed (non-fatal):", err)
+    );
+
     return c.json({ ok: true, status: "approved", resume: updatedResume });
   }
 
@@ -1722,6 +2016,11 @@ resumeRouter.patch("/candidates/:id", async (c) => {
       502
     );
   }
+
+  // ── Quality tracking for discarded bullets (fire-and-forget) ──────────────
+  _trackSuggestionQuality(candidate, "discarded").catch((err) =>
+    console.warn("[resume/candidates/patch] quality tracking (discard) failed (non-fatal):", err)
+  );
 
   console.info(
     `[resume/candidates/patch] discarded id="${candidateId}" action="${candidate.action}" section="${candidate.section}"`
@@ -2574,6 +2873,25 @@ resumeRouter.patch("/daily-bullets/:date/:bulletId", async (c) => {
 
   const updatedBullet = updatedDoc.bullets.find((b) => b.id === bulletId);
   console.info(`[resume/daily-bullets/${date}/${bulletId}] text edited`);
+
+  // ── Quality tracking (fire-and-forget) ────────────────────────────────────
+  // Track the similarity between the original daily bullet and the user-edited
+  // version.  Daily bullets are system-generated, so any text change is a
+  // meaningful quality signal.
+  const originalBullet = bulletDoc.bullets.find((b) => b.id === bulletId);
+  if (originalBullet && originalBullet.text && originalBullet.text !== newText) {
+    trackBulletEdit({
+      generatedText: originalBullet.text,
+      finalText: newText,
+      action: "edited",
+      section: originalBullet.suggestedSection ?? "experience",
+      logDate: date,
+      useEmbeddings: false, // offline scoring in hot path
+    }).catch((err) =>
+      console.warn(`[resume/daily-bullets/${date}/${bulletId}] quality tracking failed (non-fatal):`, err)
+    );
+  }
+
   return c.json({ ok: true, bullet: updatedBullet });
 });
 
@@ -2718,6 +3036,86 @@ resumeRouter.post("/axes", async (c) => {
   return c.json({ ok: true, axes: newAxes, regenerated: true, generatedAt });
 });
 
+// ─── POST /api/resume/axes/manual ────────────────────────────────────────────
+
+resumeRouter.post("/axes/manual", async (c) => {
+  let body;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "Request body must be valid JSON" }, 400);
+  }
+
+  const label = typeof body?.label === "string" ? body.label.trim() : "";
+  const keywords = Array.isArray(body?.keywords) ? body.keywords : [];
+
+  if (!label) {
+    return c.json({ ok: false, error: "label 필드가 필요합니다." }, 400);
+  }
+
+  let resume;
+  try {
+    resume = await readResumeData();
+  } catch (err) {
+    console.error("[resume/axes/manual] Failed to read resume:", err);
+    return c.json(
+      { ok: false, error: "이력서를 불러오지 못했습니다.", detail: err.message ?? String(err) },
+      502
+    );
+  }
+
+  if (!resume) {
+    return c.json(
+      { ok: false, error: "이력서가 없습니다. 먼저 이력서를 생성해 주세요." },
+      404
+    );
+  }
+
+  let axis;
+  try {
+    axis = createAxis(label, keywords, "user");
+  } catch (err) {
+    return c.json({ ok: false, error: err.message ?? String(err) }, 400);
+  }
+
+  const existingAxes = migrateAxes(resume.display_axes);
+  const updatedAxes = [...existingAxes, axis];
+  const generatedAt = new Date().toISOString();
+
+  try {
+    await saveDisplayAxes({
+      schemaVersion: 1,
+      generatedAt,
+      axes: updatedAxes
+    });
+  } catch (err) {
+    console.error("[resume/axes/manual] Failed to save display axes:", err);
+    return c.json(
+      { ok: false, error: "축 저장에 실패했습니다.", detail: err.message ?? String(err) },
+      502
+    );
+  }
+
+  try {
+    await saveResumeData({
+      ...resume,
+      display_axes: updatedAxes,
+      _sources: {
+        ...(resume._sources ?? {}),
+        display_axes: "user"
+      }
+    });
+  } catch (err) {
+    console.error("[resume/axes/manual] Failed to save updated resume:", err);
+    return c.json(
+      { ok: false, error: "이력서 저장에 실패했습니다.", detail: err.message ?? String(err) },
+      502
+    );
+  }
+
+  return c.json({ ok: true, axis, axes: updatedAxes }, 201);
+});
+
 // ─── GET /api/resume/axes/staleness ───────────────────────────────────────────
 
 /**
@@ -2737,6 +3135,7 @@ resumeRouter.post("/axes", async (c) => {
  *     "ratio": number,             // unclassified fraction in [0, 1]
  *     "totalKeywords": number,
  *     "unclassifiedCount": number,
+ *     "unclassifiedKeywords": string[],
  *     "threshold": number,         // current trigger threshold (default 0.3)
  *     "shouldRecluster": boolean   // true when ratio > threshold
  *   }
@@ -2801,6 +3200,7 @@ resumeRouter.get("/axes/staleness", async (c) => {
   const threshold = DEFAULT_RECLUSTER_THRESHOLD;
   const totalKeywords = allKeywordsCased.length;
   const unclassifiedCount = Math.round(ratio * totalKeywords);
+  const unclassifiedKeywords = getUnclassifiedKeywords(allKeywordsCased, existingAxes);
 
   console.info(
     `[resume/axes/staleness] ratio=${ratio.toFixed(3)} total=${totalKeywords}` +
@@ -2811,6 +3211,7 @@ resumeRouter.get("/axes/staleness", async (c) => {
     ratio,
     totalKeywords,
     unclassifiedCount,
+    unclassifiedKeywords,
     threshold,
     shouldRecluster: ratio > threshold
   });
@@ -4628,6 +5029,8 @@ resumeRouter.patch("/items", async (c) => {
   const bullets    = Array.isArray(targetItem.bullets) ? [...targetItem.bullets] : [];
 
   // ── 9. Apply operation ───────────────────────────────────────────────────────
+  // Capture the original bullet text before mutation for quality tracking.
+  let originalBulletText = null;
   if (op === "add") {
     bullets.push(trimmedText);
   } else if (op === "update") {
@@ -4637,6 +5040,7 @@ resumeRouter.patch("/items", async (c) => {
         404
       );
     }
+    originalBulletText = bullets[bulletIndex];
     bullets[bulletIndex] = trimmedText;
   } else {
     // delete
@@ -4646,6 +5050,7 @@ resumeRouter.patch("/items", async (c) => {
         404
       );
     }
+    originalBulletText = bullets[bulletIndex];
     bullets.splice(bulletIndex, 1);
   }
 
@@ -4670,7 +5075,41 @@ resumeRouter.patch("/items", async (c) => {
     (trimmedText ? ` → "${trimmedText.slice(0, 60)}"` : "")
   );
 
-  return c.json({ ok: true, resume: updatedResume });
+  // ── 12. Quality tracking (with inline similarity score) ─────────────────
+  // Track similarity between original and edited/deleted bullet text.
+  // Compute offline similarity synchronously for immediate response feedback.
+  let similarityScore = null;
+  if (originalBulletText) {
+    const trackAction = op === "delete" ? "discarded" : "edited";
+    const trackFinal = op === "delete" ? originalBulletText : trimmedText;
+    if (originalBulletText !== trackFinal || trackAction === "discarded") {
+      // Compute inline similarity for response
+      if (op !== "delete") {
+        const scoreResult = computeBulletSimilarity(originalBulletText, trackFinal);
+        similarityScore = {
+          similarity: scoreResult.similarity,
+          modificationDistance: scoreResult.modificationDistance,
+          isUsable: scoreResult.isUsable,
+          bucket: classifyEditDistance(scoreResult.similarity),
+          metrics: scoreResult.metrics,
+        };
+      }
+
+      // Persist tracking record asynchronously (non-blocking)
+      trackBulletEdit({
+        generatedText: originalBulletText,
+        finalText: trackFinal,
+        action: trackAction,
+        section,
+        logDate: null,
+        useEmbeddings: false, // offline scoring in hot path
+      }).catch((err) =>
+        console.warn("[resume/items PATCH] quality tracking failed (non-fatal):", err)
+      );
+    }
+  }
+
+  return c.json({ ok: true, resume: updatedResume, similarityScore });
 });
 
 // ─── PATCH /api/resume ────────────────────────────────────────────────────────
@@ -4820,6 +5259,15 @@ resumeRouter.patch("/", async (c) => {
   }
 
   console.info("[resume PATCH] User edited resume document.");
+
+  // ── 5. Per-bullet quality tracking (fire-and-forget) ────────────────────
+  // When a user edits the full resume, compare old vs new bullets for each
+  // experience and project item.  This tracks per-bullet similarity so the
+  // quality metric captures edits made through the full-document editor.
+  _trackFullResumeEditBullets(stored, updated).catch((err) =>
+    console.warn("[resume PATCH] bullet quality tracking failed (non-fatal):", err)
+  );
+
   return c.json({ ok: true, resume: updated });
 });
 
@@ -4899,7 +5347,9 @@ resumeRouter.patch(
       );
     }
 
-    bullets[bulletIndex] = body.text.trim();
+    const originalText = bullets[bulletIndex];
+    const editedText = body.text.trim();
+    bullets[bulletIndex] = editedText;
 
     const updatedItems  = items.map((it, i) =>
       i === itemIndex ? { ...it, bullets, _source: "user" } : it
@@ -4916,7 +5366,36 @@ resumeRouter.patch(
     console.info(
       `[resume/sections PATCH] ${section}[${itemIndex}].bullets[${bulletIndex}] 수정 완료`
     );
-    return c.json({ ok: true, resume: updatedResume });
+
+    // ── Quality tracking (fire-and-forget with inline score) ─────────────────
+    // Track the similarity between old bullet and user-edited version.
+    // Compute inline similarity score synchronously (offline — no API call) so
+    // it can be included in the response for immediate frontend feedback.
+    let similarityScore = null;
+    if (originalText && originalText !== editedText) {
+      const scoreResult = computeBulletSimilarity(originalText, editedText);
+      similarityScore = {
+        similarity: scoreResult.similarity,
+        modificationDistance: scoreResult.modificationDistance,
+        isUsable: scoreResult.isUsable,
+        bucket: classifyEditDistance(scoreResult.similarity),
+        metrics: scoreResult.metrics,
+      };
+
+      // Persist tracking record asynchronously (non-blocking)
+      trackBulletEdit({
+        generatedText: originalText,
+        finalText: editedText,
+        action: "edited",
+        section,
+        logDate: null,
+        useEmbeddings: false, // offline scoring in hot path
+      }).catch((err) =>
+        console.warn("[resume/sections PATCH] quality tracking failed (non-fatal):", err)
+      );
+    }
+
+    return c.json({ ok: true, resume: updatedResume, similarityScore });
   }
 );
 
@@ -4997,6 +5476,25 @@ resumeRouter.delete(
     console.info(
       `[resume/sections DELETE] ${section}[${itemIndex}].bullets[${bulletIndex}] 삭제 완료`
     );
+
+    // ── Quality tracking for deleted bullets (fire-and-forget) ──────────────
+    // Track that the user removed a bullet — the original text is compared
+    // against itself (similarity = 1.0) with action "discarded" so we can
+    // measure which system-generated bullets users choose to delete.
+    const deletedBulletText = item.bullets[bulletIndex];
+    if (deletedBulletText && typeof deletedBulletText === "string") {
+      trackBulletEdit({
+        generatedText: deletedBulletText,
+        finalText: deletedBulletText,
+        action: "discarded",
+        section,
+        logDate: null,
+        useEmbeddings: false,
+      }).catch((err) =>
+        console.warn("[resume/sections DELETE] quality tracking failed (non-fatal):", err)
+      );
+    }
+
     return c.json({ ok: true, resume: updatedResume });
   }
 );
@@ -5761,8 +6259,9 @@ resumeRouter.patch("/keywords/:id/move", async (c) => {
  *   4. For EACH work-log entry, bypass readExtractCache and call
  *      extractResumeUpdatesFromWorkLog directly → WorkLogExtract
  *   5. Write each WorkLogExtract to writeExtractCache (re-hydration)
- *   6. Clear the reconstruction marker (if set)
- *   7. Return stats: { ok, total, processed, failed, skipped, dates }
+ *   6. If original PDF text exists, reconstruct the live resume document too
+ *   7. Clear the reconstruction marker (if set)
+ *   8. Return stats: { ok, total, processed, failed, skipped, dates, rebuiltResume }
  *
  * Short-circuits when:
  *   - No data directory is configured (404)
@@ -5848,7 +6347,28 @@ resumeRouter.post("/reconstruct", async (c) => {
     currentResume
   });
 
-  // ── 6. Clear the reconstruction marker ─────────────────────────────────────
+  // ── 6. Rebuild the live resume document when PDF text is available ─────────
+  let rebuiltResume = false;
+  try {
+    const pdfText = await readPdfText();
+    if (pdfText && pdfText.trim()) {
+      const reconstruction = await reconstructResumeFromSources({
+        pdfText,
+        workLogEntries,
+        currentResume
+      });
+      const mergedResume = mergeWithUserEdits(currentResume, reconstruction);
+      await saveResumeData(mergedResume);
+      rebuiltResume = true;
+    }
+  } catch (err) {
+    console.warn(
+      "[resume/reconstruct] Resume document rebuild failed (non-fatal):",
+      err.message ?? String(err)
+    );
+  }
+
+  // ── 7. Clear the reconstruction marker ─────────────────────────────────────
   clearReconstructionMarker().catch((err) => {
     console.warn("[resume/reconstruct] clearReconstructionMarker failed (non-fatal):", err.message ?? String(err));
   });
@@ -5858,8 +6378,8 @@ resumeRouter.post("/reconstruct", async (c) => {
     ` failed=${stats.failed} skipped=${stats.skipped}`
   );
 
-  // ── 7. Return stats ─────────────────────────────────────────────────────────
-  return c.json({ ok: true, ...stats });
+  // ── 8. Return stats ─────────────────────────────────────────────────────────
+  return c.json({ ok: true, rebuiltResume, ...stats });
 });
 
 // ─── GET /api/resume/snapshots ────────────────────────────────────────────────
@@ -6400,5 +6920,2827 @@ resumeRouter.post("/profile-delta-trigger", async (c) => {
     generated: rawSuggestions.length,
     superseded: pendingToDiscard.length,
     suggestions: rawSuggestions
+  });
+});
+
+// ─── GET /api/resume/quality-report ─────────────────────────────────────────
+
+/**
+ * Return the bullet quality tracking report.
+ *
+ * Aggregates historical bullet edit quality data (similarity scores between
+ * system-generated bullets and user-final versions).  Supports optional
+ * query filters:
+ *   - ?days=30        — restrict to the last 30 days
+ *   - ?section=experience — filter by resume section
+ *   - ?action=approved   — filter by action (approved/edited/discarded)
+ *
+ * Response:
+ *   HTTP 200  { qualityReport: { ... } }
+ */
+resumeRouter.get("/quality-report", async (c) => {
+  const daysBack = c.req.query("days") ? parseInt(c.req.query("days"), 10) : undefined;
+  const section = c.req.query("section") || undefined;
+  const action = c.req.query("action") || undefined;
+
+  try {
+    const history = await loadQualityHistory();
+    const report = computeQualityReportFromHistory(history.records, { daysBack, section, action });
+    return c.json({ ok: true, qualityReport: report });
+  } catch (err) {
+    console.error("[resume/quality-report] failed:", err);
+    return c.json({ error: "품질 보고서를 생성하지 못했습니다.", detail: err.message ?? String(err) }, 502);
+  }
+});
+
+// ─── GET /api/resume/quality-tracking ───────────────────────────────────────
+
+/**
+ * Return the raw quality tracking history (individual records).
+ *
+ * Useful for debugging, dashboarding, and frontend charts that need per-record
+ * detail beyond the aggregate quality-report.
+ *
+ * Query parameters:
+ *   - ?limit=50        — max records to return (default: 50, max: 200)
+ *   - ?offset=0        — pagination offset (default: 0)
+ *   - ?section=experience — filter by section
+ *   - ?action=edited      — filter by action
+ *
+ * Response:
+ *   HTTP 200  { ok: true, records: [...], total: number }
+ */
+resumeRouter.get("/quality-tracking", async (c) => {
+  const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
+  const offset = parseInt(c.req.query("offset") || "0", 10);
+  const sectionFilter = c.req.query("section") || undefined;
+  const actionFilter = c.req.query("action") || undefined;
+
+  try {
+    const history = await loadQualityHistory();
+    let records = history.records || [];
+
+    if (sectionFilter) {
+      records = records.filter((r) => r.section === sectionFilter);
+    }
+    if (actionFilter) {
+      records = records.filter((r) => r.action === actionFilter);
+    }
+
+    const total = records.length;
+    // Return most recent first
+    const page = records.slice(Math.max(0, total - offset - limit), total - offset).reverse();
+
+    return c.json({ ok: true, records: page, total, limit, offset });
+  } catch (err) {
+    console.error("[resume/quality-tracking] failed:", err);
+    return c.json({ error: "품질 추적 이력을 불러오지 못했습니다.", detail: err.message ?? String(err) }, 502);
+  }
+});
+
+// ─── POST /api/resume/quality-tracking/rescore ──────────────────────────────
+
+/**
+ * Batch retroactive scoring: scan the current resume for bullet pairs where
+ * the system-generated original is still available (via suggestion history)
+ * and compute similarity scores for any that haven't been tracked yet.
+ *
+ * This is useful for bootstrapping quality data after the tracking system was
+ * added, or re-scoring with updated metrics.
+ *
+ * Response:
+ *   HTTP 200  { ok: true, scored: number, skipped: number, report: {...} }
+ */
+resumeRouter.post("/quality-tracking/rescore", async (c) => {
+  try {
+    // Load suggestions to find original generated texts
+    const suggestionsDoc = await readSuggestionsData();
+    const history = await loadQualityHistory();
+    const existingIds = new Set((history.records || []).map((r) => r.id));
+
+    // Find approved suggestions that have both generated and final text
+    const approvedWithBullets = suggestionsDoc.suggestions.filter((s) => {
+      if (s.status !== "approved") return false;
+      // Extract generated text
+      let generated = null;
+      if (s.kind === "bullet" && s.payload?.text) {
+        generated = s.payload.text;
+      } else if (s.action === "append_bullet" && s.patch?.bullet) {
+        generated = s.patch.bullet;
+      }
+      return generated && typeof generated === "string";
+    });
+
+    const newRecords = [];
+    let skipped = 0;
+
+    for (const s of approvedWithBullets) {
+      // Extract generated text
+      let generatedText = null;
+      if (s.kind === "bullet" && s.payload?.text) {
+        generatedText = s.payload.text;
+      } else if (s.action === "append_bullet" && s.patch?.bullet) {
+        generatedText = s.patch.bullet;
+      }
+
+      const finalText = s._editedText ?? generatedText;
+      const section = s.section ?? "experience";
+
+      // Create offline tracking record
+      const record = createTrackingRecordOffline({
+        generatedText,
+        finalText,
+        action: s._editedText ? "edited" : "approved",
+        section,
+        logDate: s.logDate ?? s.context?.logDate ?? null,
+      });
+
+      // Skip if we already have a record with the same generated+final text pair
+      const isDuplicate = (history.records || []).some(
+        (r) => r.generatedText === generatedText && r.finalText === finalText
+      );
+      if (isDuplicate) {
+        skipped++;
+        continue;
+      }
+
+      newRecords.push(record);
+    }
+
+    // Persist new records
+    if (newRecords.length > 0) {
+      await persistTrackingRecords(newRecords);
+    }
+
+    // Compute updated report
+    const updatedHistory = await loadQualityHistory();
+    const report = computeQualityReportFromHistory(updatedHistory.records);
+
+    return c.json({
+      ok: true,
+      scored: newRecords.length,
+      skipped,
+      totalCandidatesScanned: approvedWithBullets.length,
+      report,
+    });
+  } catch (err) {
+    console.error("[resume/quality-tracking/rescore] failed:", err);
+    return c.json({ error: "일괄 재채점에 실패했습니다.", detail: err.message ?? String(err) }, 502);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Narrative Threading Pipeline Routes
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /api/resume/identified-strengths ───────────────────────────────────
+
+/**
+ * Return the stored identified strengths document.
+ *
+ * Identified strengths are behavioral patterns backed by evidence episodes,
+ * unified cross-repo (not per-repo).  Target: 3-5 strengths.
+ *
+ * Response:
+ *   HTTP 200  { ok: true, strengths: IdentifiedStrength[], totalEpisodes, totalProjects }
+ *   HTTP 404  { ok: false, error: "..." }  — no strengths identified yet
+ */
+resumeRouter.get("/identified-strengths", async (c) => {
+  try {
+    const doc = await readIdentifiedStrengths();
+    if (!doc) {
+      return c.json({
+        ok: true,
+        strengths: [],
+        totalEpisodes: 0,
+        totalProjects: 0,
+        message: "아직 식별된 강점이 없습니다."
+      });
+    }
+    return c.json({
+      ok: true,
+      strengths: doc.strengths || [],
+      totalEpisodes: doc.totalEpisodes || 0,
+      totalProjects: doc.totalProjects || 0,
+      updatedAt: doc.updatedAt || null
+    });
+  } catch (err) {
+    console.error("[resume/identified-strengths] failed:", err);
+    return c.json(
+      { ok: false, error: "강점 데이터를 불러오지 못했습니다.", detail: err.message },
+      502
+    );
+  }
+});
+
+// ─── GET /api/resume/narrative-axes ─────────────────────────────────────────
+
+/**
+ * Return the stored narrative axes (career themes).
+ *
+ * Narrative axes are higher-level career trajectories synthesized from
+ * cross-repo projects and identified strengths.  Target: 2-3 axes.
+ *
+ * Response:
+ *   HTTP 200  { ok: true, axes: NarrativeAxis[], coverage, complementarity }
+ */
+resumeRouter.get("/narrative-axes", async (c) => {
+  try {
+    const doc = await readNarrativeAxes();
+    if (!doc) {
+      return c.json({
+        ok: true,
+        axes: [],
+        coverage: { projectCoverage: 0, strengthCoverage: 0, overallCoverage: 0 },
+        message: "아직 서사 축이 생성되지 않았습니다."
+      });
+    }
+    return c.json({
+      ok: true,
+      axes: doc.axes || [],
+      coverage: doc.coverage || {},
+      complementarity: doc.complementarity || {},
+      generatedAt: doc.generatedAt || null
+    });
+  } catch (err) {
+    console.error("[resume/narrative-axes] failed:", err);
+    return c.json(
+      { ok: false, error: "서사 축 데이터를 불러오지 못했습니다.", detail: err.message },
+      502
+    );
+  }
+});
+
+// ─── GET /api/resume/narrative-threading ────────────────────────────────────
+
+/**
+ * Return the stored narrative threading result — bullet-level annotations
+ * linking resume content to strengths, axes, and evidence episodes.
+ *
+ * Threading is the connective tissue that makes narrative coherence visible:
+ * each bullet is annotated with which strengths it demonstrates and which
+ * axes it contributes to.
+ *
+ * Response:
+ *   HTTP 200  {
+ *     ok: true,
+ *     bulletAnnotations: BulletThreadAnnotation[],
+ *     sectionSummaries: SectionThreadSummary[],
+ *     strengthCoverage: {...},
+ *     axisCoverage: {...},
+ *     groundedRatio: number (0-1),
+ *     groundingReport: {...}
+ *   }
+ */
+resumeRouter.get("/narrative-threading", async (c) => {
+  try {
+    const doc = await readNarrativeThreading();
+    if (!doc) {
+      return c.json({
+        ok: true,
+        bulletAnnotations: [],
+        sectionSummaries: [],
+        strengthCoverage: {},
+        axisCoverage: {},
+        groundedRatio: 0,
+        message: "아직 서사 스레딩이 실행되지 않았습니다."
+      });
+    }
+    return c.json({ ok: true, ...doc });
+  } catch (err) {
+    console.error("[resume/narrative-threading] failed:", err);
+    return c.json(
+      { ok: false, error: "스레딩 데이터를 불러오지 못했습니다.", detail: err.message },
+      502
+    );
+  }
+});
+
+// ─── POST /api/resume/narrative-threading/run ───────────────────────────────
+
+/**
+ * Run the full narrative threading pipeline:
+ *   episodes → strengths → axes → threading → grounding
+ *
+ * This orchestrates the entire pipeline and persists results to Blob storage.
+ * It's the single entry point for regenerating all narrative threading data.
+ *
+ * Request body (JSON, optional):
+ *   { "force": boolean }  — force regeneration even if results exist
+ *
+ * Response:
+ *   HTTP 200  {
+ *     ok: true,
+ *     strengthCount: number,
+ *     axisCount: number,
+ *     threadedBulletCount: number,
+ *     groundedRatio: number,
+ *     groundingReport: {...}
+ *   }
+ */
+resumeRouter.post("/narrative-threading/run", async (c) => {
+  let force = false;
+  try {
+    const text = await c.req.text();
+    if (text.trim()) {
+      const body = JSON.parse(text);
+      if (body && typeof body.force === "boolean") {
+        force = body.force;
+      }
+    }
+  } catch {
+    return c.json({ ok: false, error: "잘못된 요청 형식입니다." }, 400);
+  }
+
+  // Load resume
+  let resume;
+  try {
+    resume = await readResumeData();
+  } catch (err) {
+    console.error("[narrative-threading/run] Failed to read resume:", err);
+    return c.json(
+      { ok: false, error: "이력서를 불러오지 못했습니다.", detail: err.message },
+      502
+    );
+  }
+
+  if (!resume) {
+    return c.json(
+      { ok: false, error: "이력서가 없습니다. 먼저 PDF를 업로드해 주세요." },
+      404
+    );
+  }
+
+  // Check if results already exist and force=false
+  if (!force) {
+    try {
+      const existing = await readNarrativeThreading();
+      if (existing && existing.totalAnnotations > 0) {
+        return c.json({
+          ok: true,
+          cached: true,
+          strengthCount: (await readIdentifiedStrengths())?.strengths?.length || 0,
+          axisCount: (await readNarrativeAxes())?.axes?.length || 0,
+          threadedBulletCount: existing.totalAnnotations,
+          groundedRatio: existing.groundedRatio
+        });
+      }
+    } catch {
+      // Continue with regeneration
+    }
+  }
+
+  // Gather work-log entries
+  let workLogEntries;
+  try {
+    const config = await loadConfig();
+    workLogEntries = await gatherWorkLogBullets(config.dataDir);
+  } catch (err) {
+    console.error("[narrative-threading/run] Failed to gather work logs:", err);
+    return c.json(
+      { ok: false, error: "작업 로그를 불러오지 못했습니다.", detail: err.message },
+      502
+    );
+  }
+
+  if (workLogEntries.length === 0) {
+    return c.json({
+      ok: false,
+      error: "작업 로그가 없습니다. 먼저 작업 로그를 기록해 주세요."
+    }, 400);
+  }
+
+  // Load existing strengths and axes for merge
+  let existingStrengths = [];
+  let existingAxes = [];
+  let existingBridges = [];
+  try {
+    const strengthsDoc = await readIdentifiedStrengths();
+    if (strengthsDoc?.strengths) existingStrengths = strengthsDoc.strengths;
+    const axesDoc = await readNarrativeAxes();
+    if (axesDoc?.axes) existingAxes = axesDoc.axes;
+    const bridgesDoc = await readSectionBridges();
+    if (bridgesDoc?.bridges) existingBridges = bridgesDoc.bridges;
+  } catch {
+    // Continue without existing data
+  }
+
+  // Run the pipeline
+  try {
+    const result = await runNarrativeThreadingPipeline(
+      {
+        resume,
+        workLogEntries,
+        existingStrengths,
+        existingAxes
+      },
+      { existingBridges }
+    );
+
+    // Persist results to Blob storage (parallel writes)
+    const savePromises = [];
+
+    // Save identified strengths
+    savePromises.push(
+      saveIdentifiedStrengths({
+        schemaVersion: 1,
+        updatedAt: new Date().toISOString(),
+        source: "system",
+        strengths: result.strengths,
+        totalEpisodes: result.extractionResults.reduce(
+          (sum, r) => sum + (r.episodeCount || 0), 0
+        ),
+        totalProjects: result.extractionResults.reduce(
+          (sum, r) => sum + (r.projects?.length || 0), 0
+        )
+      })
+    );
+
+    // Save narrative axes
+    savePromises.push(
+      saveNarrativeAxes({
+        axes: result.axes,
+        totalProjects: result.extractionResults.reduce(
+          (sum, r) => sum + (r.projects?.length || 0), 0
+        ),
+        totalStrengths: result.strengths.length,
+        coverage: result.threading.strengthCoverage
+          ? { overallCoverage: result.threading.groundedRatio }
+          : {},
+        generatedAt: new Date().toISOString()
+      })
+    );
+
+    // Save threading result
+    savePromises.push(
+      saveNarrativeThreading({
+        ...result.threading,
+        groundingReport: result.groundingReport
+      })
+    );
+
+    // Save section bridges (if generated)
+    if (Array.isArray(result.sectionBridges) && result.sectionBridges.length > 0) {
+      savePromises.push(
+        saveSectionBridges({
+          schemaVersion: 1,
+          updatedAt: new Date().toISOString(),
+          bridges: result.sectionBridges
+        })
+      );
+    }
+
+    await Promise.all(savePromises);
+
+    console.info(
+      `[narrative-threading/run] Pipeline complete: ` +
+      `${result.strengths.length} strengths, ` +
+      `${result.axes.length} axes, ` +
+      `${result.threading.totalAnnotations} threaded bullets, ` +
+      `grounded ratio: ${result.threading.groundedRatio}`
+    );
+
+    return c.json({
+      ok: true,
+      cached: false,
+      strengthCount: result.strengths.length,
+      axisCount: result.axes.length,
+      threadedBulletCount: result.threading.totalAnnotations,
+      groundedRatio: result.threading.groundedRatio,
+      groundingReport: result.groundingReport,
+      bridgeCount: Array.isArray(result.sectionBridges) ? result.sectionBridges.length : 0,
+      coherenceReport: result.coherenceReport ?? null
+    });
+  } catch (err) {
+    console.error("[narrative-threading/run] Pipeline failed:", err);
+    return c.json(
+      {
+        ok: false,
+        error: "서사 스레딩 파이프라인 실행에 실패했습니다.",
+        detail: err.message ?? String(err)
+      },
+      502
+    );
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Coherence Validation (standalone endpoint)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/resume/coherence-validation
+ *
+ * Run the coherence validation pass on the current resume without triggering
+ * a full narrative-threading pipeline.  Returns structural flow, redundancy,
+ * and tonal consistency scores with per-issue details and auto-fixes.
+ *
+ * The auto-fixed version of the resume is returned in `normalized` but is NOT
+ * persisted — the caller can inspect the fixes and decide whether to apply.
+ *
+ * Response:
+ *   HTTP 200  { ok, overallScore, grade, structuralFlow, redundancy,
+ *               tonalConsistency, issues, autoFixes, normalized }
+ *   HTTP 404  { ok: false, error: "..." }  — resume not found
+ */
+resumeRouter.post("/coherence-validation", async (c) => {
+  try {
+    const resume = await readResumeData();
+    if (!resume) {
+      return c.json(
+        { ok: false, error: "이력서가 아직 생성되지 않았습니다." },
+        404
+      );
+    }
+
+    // Optionally load context for richer validation
+    let strengths = [];
+    let axes = [];
+    let sectionBridges = [];
+    try {
+      const strengthsDoc = await readIdentifiedStrengths();
+      if (strengthsDoc?.strengths) strengths = strengthsDoc.strengths;
+      const axesDoc = await readNarrativeAxes();
+      if (axesDoc?.axes) axes = axesDoc.axes;
+      const bridgesDoc = await readSectionBridges();
+      if (bridgesDoc?.bridges) sectionBridges = bridgesDoc.bridges;
+    } catch {
+      // Continue without context data
+    }
+
+    const result = validateResumeCoherence(resume, {
+      strengths,
+      axes,
+      sectionBridges,
+    });
+
+    return c.json({
+      ok: true,
+      overallScore: result.overallScore,
+      grade: result.grade,
+      structuralFlow: result.structuralFlow,
+      redundancy: result.redundancy,
+      tonalConsistency: result.tonalConsistency,
+      issueCount: result.issues.length,
+      issues: result.issues,
+      autoFixCount: result.autoFixes.length,
+      autoFixes: result.autoFixes,
+      normalized: result.normalized,
+      validatedAt: result.validatedAt,
+    });
+  } catch (err) {
+    console.error("[coherence-validation] Failed:", err);
+    return c.json(
+      {
+        ok: false,
+        error: "일관성 검증에 실패했습니다.",
+        detail: err.message ?? String(err),
+      },
+      500
+    );
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section Bridges (transition text between resume sections)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/resume/section-bridges
+ *
+ * Returns the stored section bridge text (transition sentences between sections).
+ *
+ * Response:
+ *   HTTP 200  { ok: true, bridges: SectionBridge[] }
+ *   or        { ok: true, bridges: [], message: "..." } if not yet generated
+ */
+resumeRouter.get("/section-bridges", async (c) => {
+  try {
+    const doc = await readSectionBridges();
+    if (!doc) {
+      return c.json({
+        ok: true,
+        bridges: [],
+        message: "아직 섹션 간 연결 문구가 생성되지 않았습니다."
+      });
+    }
+    return c.json({ ok: true, bridges: doc.bridges || [] });
+  } catch (err) {
+    console.error("[resume/section-bridges] failed:", err);
+    return c.json(
+      { ok: false, error: "연결 문구 데이터를 불러오지 못했습니다.", detail: err.message },
+      502
+    );
+  }
+});
+
+/**
+ * POST /api/resume/section-bridges/generate
+ *
+ * Generate section bridge text independently (without full pipeline run).
+ * Uses current resume, strengths, axes, and threading data.
+ *
+ * Request body (JSON, optional):
+ *   { "force": boolean }  — force regeneration even if bridges exist
+ *
+ * Response:
+ *   HTTP 200  { ok: true, bridges: SectionBridge[], generatedCount: number }
+ */
+resumeRouter.post("/section-bridges/generate", async (c) => {
+  let force = false;
+  try {
+    const text = await c.req.text();
+    if (text.trim()) {
+      const body = JSON.parse(text);
+      if (body && typeof body.force === "boolean") {
+        force = body.force;
+      }
+    }
+  } catch {
+    return c.json({ ok: false, error: "잘못된 요청 형식입니다." }, 400);
+  }
+
+  // Check for existing bridges
+  if (!force) {
+    try {
+      const existing = await readSectionBridges();
+      if (existing?.bridges?.length > 0) {
+        return c.json({
+          ok: true,
+          cached: true,
+          bridges: existing.bridges
+        });
+      }
+    } catch {
+      // Continue with generation
+    }
+  }
+
+  // Load required data
+  let resume;
+  try {
+    resume = await readResumeData();
+  } catch (err) {
+    console.error("[section-bridges/generate] Failed to read resume:", err);
+    return c.json(
+      { ok: false, error: "이력서를 불러오지 못했습니다.", detail: err.message },
+      502
+    );
+  }
+
+  if (!resume) {
+    return c.json(
+      { ok: false, error: "이력서가 없습니다. 먼저 PDF를 업로드해 주세요." },
+      404
+    );
+  }
+
+  let strengths = [];
+  let axes = [];
+  let sectionSummaries = [];
+  let existingBridges = [];
+  let sessionSummaries = [];
+  try {
+    const strengthsDoc = await readIdentifiedStrengths();
+    if (strengthsDoc?.strengths) strengths = strengthsDoc.strengths;
+    const axesDoc = await readNarrativeAxes();
+    if (axesDoc?.axes) axes = axesDoc.axes;
+    const threadingDoc = await readNarrativeThreading();
+    if (threadingDoc?.sectionSummaries) sectionSummaries = threadingDoc.sectionSummaries;
+    const bridgesDoc = await readSectionBridges();
+    if (bridgesDoc?.bridges) existingBridges = bridgesDoc.bridges;
+  } catch {
+    // Continue with whatever data we have
+  }
+
+  // Gather session summaries for decision reasoning context in bridges
+  try {
+    const workLogEntries = await gatherWorkLogBullets();
+    const entries = Array.isArray(workLogEntries) ? workLogEntries : [];
+    for (const entry of entries) {
+      if (!entry?.aiSessions) continue;
+      const allSessions = [
+        ...(Array.isArray(entry.aiSessions.codex) ? entry.aiSessions.codex : []),
+        ...(Array.isArray(entry.aiSessions.claude) ? entry.aiSessions.claude : [])
+      ];
+      for (const session of allSessions) {
+        if (!session) continue;
+        const summary = session.summary || "";
+        const reasoning = session.reasoning || "";
+        const keyDecisions = Array.isArray(session.keyDecisions) ? session.keyDecisions : [];
+        if (summary || reasoning || keyDecisions.length > 0) {
+          sessionSummaries.push({
+            date: entry.date,
+            repo: session.cwd ? session.cwd.replace(/\/$/, "").split("/").pop() : null,
+            summary, reasoning, keyDecisions,
+            tradeoffs: session.tradeoffs || null
+          });
+        }
+      }
+    }
+    sessionSummaries = sessionSummaries.slice(0, 20); // Cap for token budget
+  } catch {
+    // Non-fatal — continue without session context
+  }
+
+  try {
+    const result = await generateSectionBridges({
+      resume,
+      strengths,
+      axes,
+      sectionSummaries,
+      existingBridges,
+      sessionSummaries
+    });
+
+    // Persist
+    if (result.bridges.length > 0) {
+      await saveSectionBridges({
+        schemaVersion: 1,
+        updatedAt: new Date().toISOString(),
+        bridges: result.bridges
+      });
+    }
+
+    return c.json({
+      ok: true,
+      cached: false,
+      bridges: result.bridges,
+      generatedCount: result.generatedCount,
+      pairCount: result.pairCount,
+      coherenceScore: result.coherenceScore ?? null
+    });
+  } catch (err) {
+    console.error("[section-bridges/generate] Pipeline failed:", err);
+    return c.json(
+      {
+        ok: false,
+        error: "연결 문구 생성에 실패했습니다.",
+        detail: err.message ?? String(err)
+      },
+      502
+    );
+  }
+});
+
+/**
+ * PATCH /api/resume/section-bridges/:from/:to
+ *
+ * Edit a single section bridge text. Marks the bridge as user-edited
+ * so it is never overwritten by subsequent regeneration.
+ *
+ * Request body (JSON):
+ *   { "text": string }
+ *
+ * Response:
+ *   HTTP 200  { ok: true, bridge: SectionBridge }
+ */
+resumeRouter.patch("/section-bridges/:from/:to", async (c) => {
+  const fromSection = c.req.param("from");
+  const toSection = c.req.param("to");
+
+  let text;
+  try {
+    const body = await c.req.json();
+    text = typeof body.text === "string" ? body.text.trim() : null;
+  } catch {
+    return c.json({ ok: false, error: "잘못된 요청 형식입니다." }, 400);
+  }
+
+  if (text === null) {
+    return c.json({ ok: false, error: "text 필드가 필요합니다." }, 400);
+  }
+
+  try {
+    const doc = await readSectionBridges();
+    const bridges = doc?.bridges || [];
+
+    // Find existing bridge for this pair
+    const idx = bridges.findIndex(
+      (b) => b.from === fromSection && b.to === toSection
+    );
+
+    const updatedBridge = {
+      from: fromSection,
+      to: toSection,
+      text,
+      _source: "user"
+    };
+
+    if (idx >= 0) {
+      bridges[idx] = updatedBridge;
+    } else {
+      bridges.push(updatedBridge);
+    }
+
+    await saveSectionBridges({
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      bridges
+    });
+
+    return c.json({ ok: true, bridge: updatedBridge });
+  } catch (err) {
+    console.error("[section-bridges/edit] failed:", err);
+    return c.json(
+      { ok: false, error: "연결 문구 수정에 실패했습니다.", detail: err.message },
+      502
+    );
+  }
+});
+
+/**
+ * DELETE /api/resume/section-bridges/:from/:to
+ *
+ * Remove a section bridge (user can dismiss a transition they don't want).
+ *
+ * Response:
+ *   HTTP 200  { ok: true }
+ */
+resumeRouter.delete("/section-bridges/:from/:to", async (c) => {
+  const fromSection = c.req.param("from");
+  const toSection = c.req.param("to");
+
+  try {
+    const doc = await readSectionBridges();
+    const bridges = (doc?.bridges || []).filter(
+      (b) => !(b.from === fromSection && b.to === toSection)
+    );
+
+    await saveSectionBridges({
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      bridges
+    });
+
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error("[section-bridges/delete] failed:", err);
+    return c.json(
+      { ok: false, error: "연결 문구 삭제에 실패했습니다.", detail: err.message },
+      502
+    );
+  }
+});
+
+// ─── Internal helpers ───────────────────────────────────────────────────────
+
+/**
+ * Extract bullet text from a suggestion and track the generated-vs-final
+ * similarity for quality monitoring.
+ *
+ * Non-fatal by design — this is a best-effort quality signal that should
+ * never block or fail the approval/discard flow.
+ *
+ * Handles both legacy suggestion format (action/patch) and BulletProposal
+ * format (op/target/payload).
+ *
+ * @param {object} suggestion — the suggestion or candidate object
+ * @param {string} action — "approved" | "edited" | "discarded"
+ * @returns {Promise<void>}
+ */
+async function _trackSuggestionQuality(suggestion, action) {
+  // Extract the generated bullet text depending on suggestion format
+  let generatedText = null;
+  let section = suggestion.section ?? "experience";
+
+  if (isBulletProposal(suggestion)) {
+    // BulletProposal format: payload.text is the generated bullet
+    generatedText = suggestion.payload?.text;
+  } else if (suggestion.action === "append_bullet" && suggestion.patch?.bullet) {
+    generatedText = suggestion.patch.bullet;
+    section = suggestion.patch?.section ?? "experience";
+  } else if (
+    (suggestion.action === "add_summary" || suggestion.action === "update_summary") &&
+    suggestion.patch?.text
+  ) {
+    generatedText = suggestion.patch.text;
+    section = "summary";
+  }
+
+  if (!generatedText || typeof generatedText !== "string") return;
+
+  // For "approved" without edit, generated = final (pristine acceptance).
+  // For "discarded", we still track to measure what users reject.
+  const finalText = suggestion._editedText ?? generatedText;
+
+  await trackBulletEdit({
+    generatedText,
+    finalText,
+    action,
+    section,
+    logDate: suggestion.logDate ?? suggestion.context?.logDate ?? null,
+    useEmbeddings: false, // offline scoring in hot path; batch embedding later
+  });
+}
+
+/**
+ * Compare old vs new bullets across experience and projects when a user
+ * edits the full resume via PATCH /api/resume.
+ *
+ * Pairs up bullets by index position within each item.  Changed bullets
+ * are tracked as "edited"; removed bullets are tracked as "discarded".
+ * New bullets (added by user) are not tracked (no system-generated original).
+ *
+ * Non-fatal by design — errors are logged but never surface to the user.
+ *
+ * @param {object} stored  — the resume before the edit
+ * @param {object} updated — the resume after the edit
+ * @returns {Promise<void>}
+ */
+async function _trackFullResumeEditBullets(stored, updated) {
+  const pairs = [];
+
+  for (const section of ["experience", "projects"]) {
+    const oldItems = Array.isArray(stored[section]) ? stored[section] : [];
+    const newItems = Array.isArray(updated[section]) ? updated[section] : [];
+
+    // Match items by index (same as how the PATCH merges them)
+    const minLen = Math.min(oldItems.length, newItems.length);
+    for (let i = 0; i < minLen; i++) {
+      const oldBullets = Array.isArray(oldItems[i].bullets) ? oldItems[i].bullets : [];
+      const newBullets = Array.isArray(newItems[i].bullets) ? newItems[i].bullets : [];
+
+      // Compare bullets by position
+      const maxBullets = Math.max(oldBullets.length, newBullets.length);
+      for (let j = 0; j < maxBullets; j++) {
+        const oldText = oldBullets[j];
+        const newText = newBullets[j];
+
+        if (typeof oldText === "string" && typeof newText === "string") {
+          // Both exist — track as edit only if different
+          if (oldText !== newText) {
+            pairs.push({
+              generatedText: oldText,
+              finalText: newText,
+              action: "edited",
+              section,
+              logDate: null,
+            });
+          }
+        } else if (typeof oldText === "string" && newText === undefined) {
+          // Bullet removed
+          pairs.push({
+            generatedText: oldText,
+            finalText: oldText,
+            action: "discarded",
+            section,
+            logDate: null,
+          });
+        }
+        // newText exists but oldText doesn't → user-created bullet, skip
+      }
+    }
+
+    // Items beyond newItems.length are entirely removed
+    for (let i = minLen; i < oldItems.length; i++) {
+      const oldBullets = Array.isArray(oldItems[i].bullets) ? oldItems[i].bullets : [];
+      for (const bullet of oldBullets) {
+        if (typeof bullet === "string") {
+          pairs.push({
+            generatedText: bullet,
+            finalText: bullet,
+            action: "discarded",
+            section,
+            logDate: null,
+          });
+        }
+      }
+    }
+  }
+
+  if (pairs.length > 0) {
+    await trackBulletEditBatch(pairs, { useEmbeddings: false });
+  }
+}
+
+// ─── POST /api/resume/chat/generate-draft ─────────────────────────────────────
+
+/**
+ * Generate a resume draft from aggregated work log data (commits / Slack / session memory).
+ *
+ * This is the bootstrap step for the chat-based resume refinement feature.
+ * It aggregates signals from available work log dates, calls the LLM once to
+ * identify strength candidates and experience summaries, and saves the result
+ * to Vercel Blob for use as chat context.
+ *
+ * Supports two modes:
+ *   - async=true (default): Returns immediately with taskId, runs generation in background.
+ *     Poll GET /api/resume/chat/generate-draft/status for progress.
+ *   - async=false: Synchronous mode — blocks until generation completes (legacy compat).
+ *
+ * Request body (all fields optional):
+ *   {
+ *     "from_date": "YYYY-MM-DD",   // Oldest date to include (default: 90 days ago)
+ *     "to_date":   "YYYY-MM-DD",   // Newest date to include (default: today)
+ *     "force":     true,           // Re-generate even if a recent draft exists (default: false)
+ *     "async":     true            // Background execution (default: true) — Sub-AC 2-3
+ *   }
+ *
+ * Responses (async=true):
+ *   202  { "taskId": string, "status": "pending" }   — generation started in background
+ *   200  { "draft": ResumeDraft, "cached": true }     — returned from cache (force=false)
+ *   409  { "error": "...", "taskId": string }          — generation already in progress
+ *   400  { "error": "..." }                            — validation error
+ *
+ * Responses (async=false — legacy):
+ *   201  { "draft": ResumeDraft, "cached": false }    — freshly generated (synchronous)
+ *   200  { "draft": ResumeDraft, "cached": true }     — returned from cache (force=false)
+ *   400  { "error": "..." }                            — validation error
+ *   500  { "error": "...", "detail": "..." }            — generation failure
+ *
+ * The generated draft includes:
+ *   - strengthCandidates  — behavioral patterns backed by work log evidence
+ *   - experienceSummaries — per-company highlights with resume-ready bullet candidates
+ *   - suggestedSummary    — proposed professional summary
+ *   - dataGaps            — areas where more information is needed from the user
+ *   - sources             — metadata about the work logs analyzed
+ */
+resumeRouter.post("/chat/generate-draft", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const fromDate = typeof body.from_date === "string" ? body.from_date.trim() : undefined;
+  const toDate = typeof body.to_date === "string" ? body.to_date.trim() : undefined;
+  const force = body.force === true;
+  const asyncMode = body.async !== false; // default true — Sub-AC 2-3
+
+  // Validate date format if provided
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (fromDate && !dateRe.test(fromDate)) {
+    return c.json({ error: "Invalid from_date format — expected YYYY-MM-DD" }, 400);
+  }
+  if (toDate && !dateRe.test(toDate)) {
+    return c.json({ error: "Invalid to_date format — expected YYYY-MM-DD" }, 400);
+  }
+  if (fromDate && toDate && fromDate > toDate) {
+    return c.json({ error: "from_date must not be after to_date" }, 400);
+  }
+
+  // Return cached draft if it exists and force=false
+  if (!force) {
+    try {
+      const cached = await readChatDraft();
+      if (cached) {
+        // Check if the cached draft covers the requested range
+        const cacheCoversRange =
+          (!fromDate || cached.dateRange?.from <= fromDate) &&
+          (!toDate || cached.dateRange?.to >= toDate);
+        if (cacheCoversRange) {
+          return c.json({ draft: cached, cached: true });
+        }
+      }
+    } catch {
+      // Cache read failure is non-fatal — proceed with fresh generation
+    }
+  }
+
+  // ── Async mode (Sub-AC 2-3): fire-and-forget background generation ──────
+  if (asyncMode) {
+    // Reject if a generation is already in progress
+    if (isDraftGenerationInProgress()) {
+      const currentState = getDraftGenerationState();
+      return c.json({
+        error: "Draft generation already in progress",
+        taskId: currentState.taskId,
+        status: currentState.status,
+        startedAt: currentState.startedAt,
+        progress: currentState.progress,
+      }, 409);
+    }
+
+    // Start background generation
+    const taskId = markDraftGenerationPending("api");
+    console.info(`[resume/chat/generate-draft] Background generation started: taskId=${taskId}`);
+
+    // Fire-and-forget: run generation in background, update state on completion/failure
+    _runDraftGenerationBackground(taskId, { fromDate, toDate, force }).catch((err) => {
+      console.error(`[resume/chat/generate-draft] Unhandled background error:`, err.message);
+    });
+
+    return c.json({ taskId, status: "pending" }, 202);
+  }
+
+  // ── Sync mode (legacy): block until generation completes ────────────────
+  // Load existing resume for context (optional — generation works without it)
+  let existingResume = null;
+  try {
+    existingResume = await readResumeData();
+  } catch {
+    // Non-fatal — draft generation works without an existing resume
+  }
+
+  // Use buildChatDraftContext for a richer pipeline that also collects
+  // evidence pool and source breakdown alongside the LLM draft.
+  let draftContext;
+  try {
+    draftContext = await buildChatDraftContext({ fromDate, toDate, existingResume });
+  } catch (err) {
+    console.error("[resume/chat/generate-draft] Generation failed:", err.message);
+    return c.json(
+      { error: "Draft generation failed", detail: err.message },
+      500
+    );
+  }
+
+  if (!draftContext.draft && draftContext.dataGaps.length > 0) {
+    return c.json(
+      { error: "No work log data found for the specified date range", dataGaps: draftContext.dataGaps },
+      400
+    );
+  }
+
+  // Persist draft + full context to Vercel Blob (best-effort — failure logged but not returned as error)
+  if (draftContext.draft) {
+    try {
+      await Promise.all([
+        saveChatDraft(draftContext.draft),
+        saveChatDraftContext({
+          schemaVersion: 1,
+          generatedAt: draftContext.draft.generatedAt || new Date().toISOString(),
+          draft: draftContext.draft,
+          evidencePool: draftContext.evidencePool || [],
+          sourceBreakdown: draftContext.sourceBreakdown || { commits: 0, slack: 0, sessions: 0, totalDates: 0 },
+          dataGaps: draftContext.dataGaps || [],
+        }),
+      ]);
+    } catch (err) {
+      console.warn("[resume/chat/generate-draft] Failed to save draft to Blob:", err.message);
+    }
+  }
+
+  return c.json({
+    draft: draftContext.draft,
+    evidencePool: draftContext.evidencePool,
+    sourceBreakdown: draftContext.sourceBreakdown,
+    dataGaps: draftContext.dataGaps,
+    cached: false,
+  }, 201);
+});
+
+// ─── GET /api/resume/chat/generate-draft/status ──────────────────────────────
+
+/**
+ * Poll the current draft generation background task status (Sub-AC 2-3).
+ *
+ * Returns the in-memory state of the most recent draft generation task.
+ * When status is "completed", the draft is available via GET /api/resume/chat/generate-draft.
+ *
+ * Responses:
+ *   200  {
+ *     "status":      "idle" | "pending" | "completed" | "failed",
+ *     "taskId":      string | null,
+ *     "startedAt":   string | null,
+ *     "completedAt": string | null,
+ *     "error":       string | null,
+ *     "progress":    { stage, datesLoaded, commitCount, ... } | null,
+ *     "triggeredBy": "api" | "batch" | "manual" | null
+ *   }
+ */
+resumeRouter.get("/chat/generate-draft/status", async (c) => {
+  // isDraftGenerationInProgress() also handles stale-task auto-fail
+  isDraftGenerationInProgress();
+  const state = getDraftGenerationState();
+  return c.json(state);
+});
+
+// ─── POST /api/resume/chat/generate-draft/reset ──────────────────────────────
+
+/**
+ * Reset the draft generation state to idle (Sub-AC 2-3).
+ *
+ * Called by the frontend after acknowledging a completed or failed state,
+ * so that subsequent requests can trigger a new generation.
+ *
+ * Responses:
+ *   200  { "status": "idle" }
+ */
+resumeRouter.post("/chat/generate-draft/reset", async (c) => {
+  resetDraftGenerationState();
+  return c.json({ status: "idle" });
+});
+
+/**
+ * Background draft generation runner (Sub-AC 2-3).
+ *
+ * Runs the full buildChatDraftContext pipeline asynchronously, updating the
+ * in-memory DraftGenerationState at each stage so the frontend can poll
+ * for progress via GET /api/resume/chat/generate-draft/status.
+ *
+ * This function NEVER throws — all errors are captured and reflected in the
+ * state manager. The caller should still wrap in .catch() for safety.
+ *
+ * @param {string} taskId          Task identifier from markDraftGenerationPending()
+ * @param {Object} opts
+ * @param {string} [opts.fromDate]
+ * @param {string} [opts.toDate]
+ * @param {boolean} [opts.force]
+ */
+async function _runDraftGenerationBackground(taskId, { fromDate, toDate } = {}) {
+  const tag = `[generate-draft-bg taskId=${taskId}]`;
+
+  try {
+    // Stage 1: Load existing resume for context
+    updateDraftGenerationProgress(taskId, { stage: "loading_resume" });
+    let existingResume = null;
+    try {
+      existingResume = await readResumeData();
+    } catch {
+      // Non-fatal — draft generation works without an existing resume
+    }
+
+    // Stage 2: Build draft context (loads work logs, aggregates, calls LLM)
+    updateDraftGenerationProgress(taskId, { stage: "building_context" });
+    const draftContext = await buildChatDraftContext({
+      fromDate,
+      toDate,
+      existingResume,
+      onProgress: (progress) => {
+        // Relay progress from the pipeline to the state manager
+        updateDraftGenerationProgress(taskId, progress);
+      },
+    });
+
+    if (!draftContext.draft) {
+      const reason = draftContext.dataGaps?.[0] ?? "No work log data available";
+      console.info(`${tag} Draft generation produced no draft — ${reason}`);
+      markDraftGenerationFailed(taskId, reason);
+      return;
+    }
+
+    // Stage 3: Save to Vercel Blob
+    updateDraftGenerationProgress(taskId, { stage: "saving" });
+    try {
+      await Promise.all([
+        saveChatDraft(draftContext.draft),
+        saveChatDraftContext({
+          schemaVersion: 1,
+          generatedAt: draftContext.draft.generatedAt || new Date().toISOString(),
+          draft: draftContext.draft,
+          evidencePool: draftContext.evidencePool || [],
+          sourceBreakdown: draftContext.sourceBreakdown || { commits: 0, slack: 0, sessions: 0, totalDates: 0 },
+          dataGaps: draftContext.dataGaps || [],
+        }),
+      ]);
+    } catch (err) {
+      console.warn(`${tag} Blob save failed (non-fatal):`, err.message);
+      // Still mark as completed — the draft was generated, just not persisted
+    }
+
+    // Update final progress with source stats
+    const sb = draftContext.sourceBreakdown || {};
+    updateDraftGenerationProgress(taskId, {
+      stage: "done",
+      datesLoaded: sb.totalDates ?? 0,
+      commitCount: sb.commits ?? 0,
+      slackCount: sb.slack ?? 0,
+      sessionCount: sb.sessions ?? 0,
+    });
+
+    markDraftGenerationCompleted(taskId);
+    console.info(
+      `${tag} Background draft generation completed` +
+      ` — commits=${sb.commits ?? 0} sessions=${sb.sessions ?? 0}` +
+      ` slack=${sb.slack ?? 0} dates=${sb.totalDates ?? 0}`
+    );
+  } catch (err) {
+    console.error(`${tag} Background draft generation failed:`, err.message);
+    markDraftGenerationFailed(taskId, err.message ?? String(err));
+  }
+}
+
+// ─── POST /api/resume/chat ────────────────────────────────────────────────────
+
+/**
+ * 채팅 기반 이력서 구체화 엔드포인트 (Sub-AC 3-3, Sub-AC 5-1).
+ *
+ * 사용자의 자유 텍스트 질의(query)와 파싱된 쿼리 구조(parsedQuery)를 받아
+ * 세 데이터 소스(커밋/슬랙/세션)에서 근거를 검색·병합·랭킹하고,
+ * LLM 을 통해 이력서 어필 포인트 목록을 생성하여 채팅 응답으로 출력한다.
+ *
+ * "반영해줘" 의도(apply_section)가 감지되면, parseApplyIntent 를 통해
+ * 대화 컨텍스트에서 수정할 섹션과 변경 내용을 파싱하고
+ * applyIntent 필드를 응답에 포함한다.
+ *
+ * Request body:
+ *   sessionId   — string  세션 식별자 (로깅용)
+ *   query       — string  원본 사용자 입력
+ *   parsedQuery — object  parseResumeQuery() 결과 (intent, keywords, section, dateRange)
+ *   history     — { role: string, content: string }[]  이전 대화 기록 (선택)
+ *   draftContext — object | null  채팅 초안 컨텍스트 (선택)
+ *
+ * Response (200):
+ *   {
+ *     reply:            string,
+ *     sessionId:        string,
+ *     parsedQuery:      object,
+ *     queryAnalysis:    object,                      — 서버 사이드 쿼리 분석 메타데이터
+ *     evidence:         ChatEvidenceResult | null,
+ *     rankedEvidence:   RankedEvidenceRecord[] | null,
+ *     citations:        ChatCitation[] | null,       — Sub-AC 4-2: 정규화된 출처 정보
+ *     citationSummary:  CitationSourceSummary | null, — Sub-AC 4-2: 소스별 건수 요약 (레거시 호환)
+ *     sourceSummary:    CitationSourceSummary | null, — Sub-AC 4-2: 소스별 건수 요약 (정규화된 필드명)
+ *     sourceMeta:       object | null,               — 소스별 탐색 메타데이터
+ *     appealPoints:     AppealPointsResult | null,
+ *     applyIntent:      ApplyIntentResult | null     — apply_section 의도일 때만 포함
+ *   }
+ *
+ * 오류:
+ *   400  { error: string }  — query 누락 또는 잘못된 요청
+ *   500  { error: string }  — 서버 오류
+ *
+ * 파이프라인:
+ *   0. apply_section 의도 감지 시 → parseApplyIntent → applyIntent 반환
+ *   1. keywords 있으면 세 소스 병렬 검색 (searchAllSources)
+ *   2. 결과 병합·랭킹 (mergeAndRankEvidence)
+ *   3. LLM 에 근거 주입 → 어필 포인트 생성 (generateAppealPoints)
+ *   4. 어필 포인트를 Markdown 채팅 텍스트로 변환하여 reply 반환
+ */
+resumeRouter.post("/chat", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.query !== "string" || !body.query.trim()) {
+    return c.json({ error: "query is required" }, 400);
+  }
+
+  const { query, parsedQuery: clientParsedQuery, sessionId, history = [] } = body;
+
+  // ── AC 3 Sub-AC 1: 서버 사이드 쿼리 분석을 primary로 사용 ─────────────────────
+  // 규칙 기반 analyzeQuery()로 의도·키워드·기술스택·소스별 파라미터를 즉시 생성.
+  // confidence < 0.7이면 analyzeQueryWithLLM()으로 LLM 보강을 시도하되, 실패 시 규칙 기반 결과를 사용.
+  let analyzed;
+  try {
+    analyzed = await analyzeQueryWithLLM(query);
+  } catch {
+    analyzed = analyzeQuery(query);
+  }
+  // 클라이언트 parsedQuery 호환을 위해 toSearchQuery로 변환
+  const parsedQuery = toSearchQuery(analyzed);
+
+  const intentLabel = {
+    apply_section:   "이력서 반영",
+    search_evidence: "증거/이력 검색",
+    refine_section:  "섹션 수정",
+    question:        "질문",
+    general:         "일반 질의",
+  }[parsedQuery?.intent] ?? "일반 질의";
+
+  // ── 0. "반영해줘" 의도 처리 (Sub-AC 5-1) ──────────────────────────────────────
+  const isApplyIntent =
+    parsedQuery?.intent === "apply_section" ||
+    (!parsedQuery?.intent && _detectApplyPatternFallback(query));
+
+  let applyIntentResult = null;
+  if (isApplyIntent) {
+    applyIntentResult = parseApplyIntent(query, parsedQuery ?? null, history);
+    console.log(
+      `[resume/chat] apply_section 의도 감지: section=${applyIntentResult.section}, changes=${applyIntentResult.changes.length}, confidence=${applyIntentResult.confidence.toFixed(2)}`
+    );
+
+    // 모호하지 않고 변경 내용이 있으면 apply_section 응답만 반환 (증거 검색 생략)
+    if (!applyIntentResult.ambiguous && applyIntentResult.changes.length > 0) {
+      const applyReply = _buildApplyIntentReply(applyIntentResult);
+
+      // ── diff 객체 생성 (Sub-AC 5-2): 현재 이력서에 변경 내용을 적용해 before/after diff 를 구성한다
+      let currentResume = null;
+      try {
+        currentResume = await readResumeData();
+      } catch {
+        // 이력서 없어도 비치명적 — diff 없이 applyIntent 만 반환
+      }
+      let diff = null;
+      if (currentResume) {
+        try {
+          const applyResult = applyChatChangesToResume(currentResume, applyIntentResult);
+          diff = applyResult.diff;
+          // skippedChanges 를 로그로 남겨 디버깅에 활용한다
+          if (applyResult.skippedChanges.length > 0) {
+            console.log(
+              `[resume/chat] Sub-AC 5-2 skippedChanges=${applyResult.skippedChanges.length}:`,
+              applyResult.skippedChanges.map((s) => `${s.content} (${s.reason})`).join(", ")
+            );
+          }
+        } catch (applyErr) {
+          // 비치명적 — diff 없이 applyIntent 만 반환
+          console.warn("[resume/chat] applyChatChangesToResume failed (non-fatal):", applyErr.message);
+          diff = _buildDiffFromApplyIntent(currentResume, applyIntentResult);
+        }
+      }
+
+      return c.json({
+        reply: applyReply,
+        sessionId,
+        parsedQuery,
+        evidence: null,
+        rankedEvidence: null,
+        citations: null,  // Sub-AC 4-2: apply_section 응답에는 증거 검색 없음
+        appealPoints: null,
+        applyIntent: applyIntentResult,
+        diff,  // ResumeDiffViewer 에서 사용; null 이면 diff ���어를 표���하지 않는다
+      });
+    }
+
+    // 모호한 경우: 보충 질문을 reply 로 반환하고 계속 진행하지 않는다
+    if (applyIntentResult.ambiguous && applyIntentResult.clarificationNeeded) {
+      return c.json({
+        reply: applyIntentResult.clarificationNeeded,
+        sessionId,
+        parsedQuery,
+        evidence: null,
+        rankedEvidence: null,
+        citations: null,  // Sub-AC 4-2: 모호한 apply 응답에는 증거 검색 없음
+        appealPoints: null,
+        applyIntent: applyIntentResult,
+      });
+    }
+  }
+
+  // ── 1. 데이터 소스별 키워드 병렬 검색 (Sub-AC 3-2) ─────────────────────────
+  //
+  // exploreWithQueryAnalysis()를 통해 세 소스를 통합 탐색한다:
+  //   - AnalyzedQuery / QueryAnalysisResult 두 형식 자동 감지
+  //   - sourceParams.{source}.enabled === false 인 소스는 API 호출 없이 건너뜀
+  //   - priority별 maxResults 차등 적용 (high 100%, medium 60%, low 30%)
+  //   - low priority + confidence < 0.3 이면 소스를 건너뜀
+  //   - techStack 키워드 보강으로 기술 이름 검색 정밀도 향상
+  //   - 소스별 독립 실패 처리 (한 소스 오류가 다른 소스에 영향 없음)
+  //   - 결과 없을 때 보충 질문(followUpQuestion) 자동 생성
+  //
+  // 폴백: analyzed가 없거나 sourceParams가 비어있으면 기존 searchAllSources 사용
+  const hasKeywords =
+    Array.isArray(parsedQuery?.keywords) && parsedQuery.keywords.length > 0;
+
+  // sourceParams에 검색 가능한 소스가 있는지 확인
+  const hasSourceParams = analyzed?.sourceParams && (
+    analyzed.sourceParams.commits?.enabled !== undefined ||
+    analyzed.sourceParams.slack?.enabled !== undefined ||
+    analyzed.sourceParams.sessions?.enabled !== undefined ||
+    analyzed.sourceParams.commits?.priority ||
+    analyzed.sourceParams.slack?.priority ||
+    analyzed.sourceParams.sessions?.priority
+  );
+
+  let evidence = null;
+  let sourceMeta = null;
+  let exploreFollowUp = null;
+  if (hasKeywords) {
+    try {
+      if (hasSourceParams) {
+        // Sub-AC 3-2: exploreWithQueryAnalysis 기반 멀티소스 탐색
+        // — priority·enabled 플래그에 따른 차등 검색
+        // — sourceMeta로 각 소스의 검색 여부·결과 수·키워드를 추적
+        const exploreResult = await exploreWithQueryAnalysis(analyzed);
+        evidence = {
+          commits: exploreResult.commits,
+          slack: exploreResult.slack,
+          sessions: exploreResult.sessions,
+          totalCount: exploreResult.totalCount,
+        };
+        sourceMeta = exploreResult.sourceMeta;
+        exploreFollowUp = exploreResult.followUpQuestion;
+      } else {
+        // 폴백: 기존 flat 키워드 검색
+        const config = await loadConfig();
+        evidence = await searchAllSources(parsedQuery, {
+          dataDir: config.dataDir,
+          maxResultsPerSource: 10,
+        });
+      }
+    } catch (err) {
+      console.warn("[resume/chat] Evidence search failed (non-fatal):", err.message);
+      evidence = { commits: [], slack: [], sessions: [], totalCount: 0 };
+    }
+  }
+
+  // ── 2. 검색 결과 병합·랭킹 (Sub-AC 3-3) ────────────────────────────────────
+  let rankedEvidence = null;
+  if (evidence) {
+    rankedEvidence = mergeAndRankEvidence(evidence, { topN: 15 });
+  }
+
+  // ── 3. 섹션별 특화 처리 (Sub-AC 8-1: 자기소개·강점) ─────────────────────────
+  //
+  // parsedQuery.section 이 'summary' 또는 'strengths' 이고
+  // apply_section 이 아닌 모든 의도(refine_section, search_evidence, question, general) 에서
+  // 섹션별 전용 diff 생성 모듈을 호출해 구조화된 제안을 반환한다.
+  //
+  // apply_section 의도는 이미 위에서 처리되므로 여기서는 apply 이외의 의도만 처리한다.
+  // "강점을 분석해줘" (general intent) 도 strengths diff 를 반환한다.
+  //
+  const targetSection = parsedQuery?.section;
+
+  // ── 3a. 자기소개(Summary) 섹션 특화 처리 ──────────────────────────────────────
+  // summary 섹션의 경우 refine_section 의도일 때만 diff 를 생성한다.
+  // question / general 은 기존 appeal points 파이프라인이 더 적절하다.
+  const isSummaryRefinement = parsedQuery?.intent === "refine_section" ||
+    (!parsedQuery?.intent && !isApplyIntent);
+
+  if (targetSection === "summary" && isSummaryRefinement && rankedEvidence !== null) {
+    let existingResume = null;
+    try { existingResume = await readResumeData(); } catch { /* non-fatal */ }
+
+    const lang = existingResume?.meta?.language ?? "ko";
+    let summaryResult = null;
+
+    try {
+      summaryResult = await generateSummaryChatDiff(query, rankedEvidence, existingResume, { lang });
+    } catch (err) {
+      console.warn("[resume/chat] Summary section diff generation failed (non-fatal):", err.message);
+    }
+
+    if (summaryResult) {
+      let replyText;
+      if (summaryResult.hasEnoughEvidence && summaryResult.after) {
+        replyText = "자기소개 섹션 개선안을 작성했습니다. 아래 변경 내용을 검토 후 승인해 주세요.";
+      } else {
+        replyText = [
+          "자기소개를 작성할 근거 데이터가 충분하지 않습니다.",
+          summaryResult.dataGaps.length > 0
+            ? "### 부족한 정보\n" + summaryResult.dataGaps.map((g) => `• ${g}`).join("\n")
+            : "",
+          summaryResult.followUpQuestions.length > 0
+            ? "### 보충 질문\n" + summaryResult.followUpQuestions.map((q) => `• ${q}`).join("\n")
+            : "",
+        ].filter(Boolean).join("\n\n");
+      }
+
+      // 근거가 충분하고 after 가 있을 때만 diff 를 포함한다
+      const diff = summaryResult.hasEnoughEvidence && summaryResult.after
+        ? {
+            section: "summary",
+            before: summaryResult.before,
+            after: summaryResult.after,
+            evidence: summaryResult.evidence,
+          }
+        : null;
+
+      // Sub-AC 4-2: 섹션 특화 응답에도 출처 정보 첨부
+      const summaryCitations = rankedEvidence
+        ? buildChatCitations(rankedEvidence)
+        : null;
+
+      return c.json({
+        reply: replyText,
+        sessionId,
+        parsedQuery,
+        evidence,
+        rankedEvidence,
+        citations: summaryCitations,
+        // Sub-AC 4-2: 소스별 건수 요약 (refine-section·search-evidence 와 일관성)
+        sourceSummary: summaryCitations ? buildSourceSummary(summaryCitations) : null,
+        appealPoints: null,
+        applyIntent: null,
+        diff,
+      });
+    }
+  }
+
+  // ── 3b. 강점(Strengths) 섹션 특화 처리 ───────────────────────────────────────
+  // 강점 섹션은 apply_section 이외의 모든 의도에서 diff 를 생성한다.
+  // "강점을 분석해줘" (general/question), "강점 개선해줘" (refine_section) 등 모두 포함.
+  if (targetSection === "strengths" && !isApplyIntent) {
+    let existingResume = null;
+    let existingStrengths = null;
+
+    try { existingResume = await readResumeData(); } catch { /* non-fatal */ }
+    try { existingStrengths = await readIdentifiedStrengths(); } catch { /* non-fatal */ }
+
+    const lang = existingResume?.meta?.language ?? "ko";
+    let strengthsResult = null;
+
+    try {
+      strengthsResult = await generateStrengthsChatDiff(
+        query,
+        rankedEvidence ?? [],
+        existingResume,
+        existingStrengths,
+        { lang }
+      );
+    } catch (err) {
+      console.warn("[resume/chat] Strengths section diff generation failed (non-fatal):", err.message);
+    }
+
+    if (strengthsResult) {
+      let replyText;
+      if (strengthsResult.hasEnoughEvidence && strengthsResult.strengthsData.length > 0) {
+        replyText = `업무 기록에서 ${strengthsResult.strengthsData.length}개의 행동 패턴 기반 강점을 도출했습니다. 아래 강점 목록을 검토 후 승인해 주세요.`;
+      } else {
+        replyText = [
+          "강점을 도출할 근거 데이터가 충분하지 않습니다.",
+          strengthsResult.dataGaps.length > 0
+            ? "### 부족한 정보\n" + strengthsResult.dataGaps.map((g) => `• ${g}`).join("\n")
+            : "",
+          strengthsResult.followUpQuestions.length > 0
+            ? "### 보충 질문\n" + strengthsResult.followUpQuestions.map((q) => `• ${q}`).join("\n")
+            : "",
+        ].filter(Boolean).join("\n\n");
+      }
+
+      // diff 객체: section='strengths', after=JSON.stringify(strengthsData) (PATCH 요청용)
+      // strengthsData 는 프론트엔드 StrengthsSectionViewer 렌더링에 사용된다
+      const diff = strengthsResult.hasEnoughEvidence && strengthsResult.strengthsData.length > 0
+        ? {
+            section: "strengths",
+            before: strengthsResult.before,
+            after: JSON.stringify(strengthsResult.strengthsData),
+            evidence: strengthsResult.evidence,
+            strengthsData: strengthsResult.strengthsData,  // 구조화된 UI 렌더링용
+          }
+        : null;
+
+      // Sub-AC 4-2: 강점 섹션 응답에도 출처 정보 첨부
+      const strengthsCitations = rankedEvidence
+        ? buildChatCitations(rankedEvidence)
+        : null;
+
+      return c.json({
+        reply: replyText,
+        sessionId,
+        parsedQuery,
+        evidence,
+        rankedEvidence,
+        citations: strengthsCitations,
+        // Sub-AC 4-2: 소스별 건수 요약 (refine-section·search-evidence 와 일관성)
+        sourceSummary: strengthsCitations ? buildSourceSummary(strengthsCitations) : null,
+        appealPoints: null,
+        applyIntent: null,
+        diff,
+      });
+    }
+  }
+
+  // ── 3c. 일반 어필 포인트 생성 (Sub-AC 3-3) ────────────────────────────────────
+  let appealPointsResult = null;
+  if (rankedEvidence !== null) {
+    try {
+      let existingResume = null;
+      try {
+        existingResume = await readResumeData();
+      } catch {
+        // 이력서가 없어도 어필 포인트 생성 가능
+      }
+
+      appealPointsResult = await generateAppealPoints(
+        query,
+        rankedEvidence,
+        { existingResume, lang: existingResume?.meta?.language ?? "ko" }
+      );
+    } catch (err) {
+      console.warn("[resume/chat] Appeal points generation failed (non-fatal):", err.message);
+      appealPointsResult = {
+        appealPoints: [],
+        dataGaps: [],
+        followUpQuestions: [],
+        evidenceUsed: rankedEvidence ?? [],
+      };
+    }
+  }
+
+  // ── 3d. 클러스터 기반 제안 생성 (Sub-AC 3-3: resumeChatSuggest) ──────────────
+  //
+  // 기존 flat 랭킹(mergeAndRankEvidence → generateAppealPoints) 외에
+  // 클러스터 기반(clusterEvidence → rankClusters → generateAppealPointsWithRules/LLM)
+  // 어필 포인트 제안 세트를 생성하여 응답에 첨부한다.
+  //
+  // suggestions 필드로 반환하여 프론트엔드에서 클러스터 요약, 제안 유형별
+  // 필터링, 보충 질문 등 풍부한 UI를 구성할 수 있다.
+  let suggestions = null;
+  if (evidence && evidence.totalCount > 0) {
+    try {
+      let existingResume = null;
+      try { existingResume = await readResumeData(); } catch { /* non-fatal */ }
+
+      suggestions = await generateSuggestions(evidence, {
+        existingResume,
+        skipLLM: process.env.WORK_LOG_DISABLE_OPENAI === "1",
+        userIntent: query,
+      });
+    } catch (err) {
+      console.warn("[resume/chat] Suggestion generation failed (non-fatal):", err.message);
+    }
+  }
+
+  // ── 4. 채팅 응답 텍스트 구성 ────────────────────────────────────────────────
+  const keywordSummary = hasKeywords
+    ? `키워드: ${parsedQuery.keywords.join(", ")}`
+    : "";
+  const sectionLabel = parsedQuery?.section
+    ? `대상 섹션: ${parsedQuery.section}`
+    : "";
+  const metaParts = [intentLabel, keywordSummary, sectionLabel].filter(Boolean);
+  const metaLine  = metaParts.length > 0 ? `[${metaParts.join(" · ")}]` : "";
+
+  let reply = "";
+
+  if (appealPointsResult && appealPointsResult.appealPoints.length > 0) {
+    const pointLines = appealPointsResult.appealPoints
+      .map((ap, i) => {
+        const conf = ap.confidence >= 0.8 ? "★★★" : ap.confidence >= 0.5 ? "★★" : "★";
+        return `${i + 1}. **${ap.title}** ${conf}\n   ${ap.description}`;
+      })
+      .join("\n\n");
+
+    const sourceSummary = _buildSourceSummary(evidence, sourceMeta);
+    reply = [metaLine, sourceSummary, "", "## 이력서 어필 포인트", pointLines]
+      .filter(Boolean)
+      .join("\n");
+
+    if (appealPointsResult.dataGaps.length > 0) {
+      reply += "\n\n### 보충이 필요한 부분\n" +
+        appealPointsResult.dataGaps.map((g) => `• ${g}`).join("\n");
+    }
+    if (appealPointsResult.followUpQuestions.length > 0) {
+      reply += "\n\n### 추가로 알려주시면 도움이 됩니다\n" +
+        appealPointsResult.followUpQuestions.map((q) => `• ${q}`).join("\n");
+    }
+  } else if (rankedEvidence !== null && rankedEvidence.length === 0) {
+    // Sub-AC 3-2: 결과 없을 때 exploreFollowUp (멀티소스 탐색의 보충 질문) 우선 표시
+    const noResultMsg = exploreFollowUp
+      ? exploreFollowUp
+      : "관련 기록을 찾지 못했습니다. 다른 키워드로 시도해보세요.";
+    reply = [metaLine, noResultMsg].filter(Boolean).join("\n\n");
+
+    if (appealPointsResult?.followUpQuestions?.length > 0) {
+      reply += "\n\n### 도움이 될 질문\n" +
+        appealPointsResult.followUpQuestions.map((q) => `• ${q}`).join("\n");
+    }
+  } else if (evidence === null) {
+    reply = [
+      metaLine,
+      `질의를 받았습니다: "${query}"`,
+      "키워드를 입력하시면 커밋/슬랙/세션 메모에서 관련 근거를 찾아 어필 포인트를 제안해드립니다.",
+    ].filter(Boolean).join("\n\n");
+  } else {
+    const sourceSummary = _buildSourceSummary(evidence, sourceMeta);
+    reply = [
+      metaLine,
+      sourceSummary,
+      "어필 포인트 생성 중 문제가 발생했습니다. 잠시 후 다시 시도해보세요.",
+    ].filter(Boolean).join("\n\n");
+  }
+
+  // Sub-AC 4-2: 출처 정보를 정규화하여 citations 필드로 응답에 첨부
+  const chatCitations = rankedEvidence
+    ? buildChatCitations(rankedEvidence, appealPointsResult)
+    : evidence
+      ? buildCitationsFromEvidenceResult(evidence)
+      : null;
+
+  return c.json({
+    reply,
+    sessionId,
+    parsedQuery,
+    // AC 3 Sub-AC 1: 서버 사이드 분석 메타데이터 (기술스택, 신뢰도, 보충 질문 필요 여부)
+    queryAnalysis: {
+      techStack: analyzed.techStack,
+      confidence: analyzed.confidence,
+      needsClarification: analyzed.needsClarification,
+      clarificationHint: analyzed.clarificationHint,
+      sourceParams: analyzed.sourceParams,
+    },
+    evidence,
+    rankedEvidence,
+    // Sub-AC 4-2: 정규화된 출처 정보 (ChatCitation[]) — 프론트엔드 렌더링 최적화
+    citations: chatCitations,
+    // Sub-AC 4-2: 소스별 건수 요약 (refine-section·search-evidence·recommend 와 일관성)
+    citationSummary: chatCitations ? buildSourceSummary(chatCitations) : null,
+    sourceSummary: chatCitations ? buildSourceSummary(chatCitations) : null,
+    // AC 3 Sub-AC 2: 소스별 탐색 메타데이터 (검색 여부, 결과 수, 사용 키워드, 건너뛰기 이유)
+    sourceMeta: sourceMeta ?? null,
+    appealPoints: appealPointsResult,
+    // Sub-AC 3-3: 클러스터 기반 어필 포인트 제안 세트
+    // (clusterSummary, followUpQuestions, totalEvidence 포함)
+    suggestions: suggestions ?? null,
+    applyIntent: applyIntentResult,
+  });
+});
+
+/**
+ * evidence 결과에서 소스별 건수 요약 문자열을 생성한다.
+ * sourceMeta가 있으면 건너뛰기 정보도 포함한다.
+ *
+ * @param {{ commits: any[], slack: any[], sessions: any[], totalCount: number }|null} evidence
+ * @param {{ commits?: import('../lib/resumeChatExplore.mjs').SourceMeta, slack?: import('../lib/resumeChatExplore.mjs').SourceMeta, sessions?: import('../lib/resumeChatExplore.mjs').SourceMeta }|null} [meta]
+ * @returns {string}
+ */
+function _buildSourceSummary(evidence, meta) {
+  if (!evidence || evidence.totalCount === 0) return "";
+  const parts = [];
+  if (evidence.commits.length > 0)  parts.push(`커밋 ${evidence.commits.length}건`);
+  if (evidence.slack.length > 0)    parts.push(`슬랙 ${evidence.slack.length}건`);
+  if (evidence.sessions.length > 0) parts.push(`세션 메모리 ${evidence.sessions.length}건`);
+
+  // sourceMeta에서 건너뛴 소스 정보 추가
+  if (meta) {
+    const skipped = [];
+    if (meta.commits && !meta.commits.searched && meta.commits.skipReason) skipped.push("커밋");
+    if (meta.slack && !meta.slack.searched && meta.slack.skipReason) skipped.push("슬랙");
+    if (meta.sessions && !meta.sessions.searched && meta.sessions.skipReason) skipped.push("세션");
+    if (skipped.length > 0) {
+      parts.push(`(${skipped.join("·")} 건너뜀)`);
+    }
+  }
+
+  return parts.length > 0
+    ? `데이터 소스에서 관련 기록을 찾았습니다: ${parts.join(", ")}`
+    : "";
+}
+
+/**
+ * parsedQuery 가 없거나 intent 가 누락된 경우를 위한 "반영해줘" 패턴 폴백 검사.
+ * resumeChatApplyIntent.mjs 의 detectApplyIntent 와 동일한 패턴을 사용한다.
+ *
+ * @param {string} query
+ * @returns {boolean}
+ */
+function _detectApplyPatternFallback(query) {
+  if (!query) return false;
+  return [
+    /반영해\s*줘/, /반영해\s*주세요/, /반영\s*해줘/,
+    /적용해\s*줘/, /적용해\s*주세요/, /이대로\s*반영/, /이대로\s*적용/,
+  ].some((p) => p.test(query));
+}
+
+/**
+ * ApplyIntentResult 를 사람이 읽을 수 있는 Markdown 채팅 응답으로 변환한다.
+ *
+ * 변경 내용이 있고 섹션이 확정된 경우에만 호출된다.
+ *
+ * @param {import('../lib/resumeChatApplyIntent.mjs').ApplyIntentResult} result
+ * @returns {string}
+ */
+function _buildApplyIntentReply(result) {
+  const SECTION_LABELS = {
+    experience: "경력/경험",
+    skills:     "기술",
+    summary:    "자기소개/요약",
+    education:  "학력",
+    projects:   "프로젝트",
+    strengths:  "강점",  // Sub-AC 8-1
+  };
+  const sectionLabel = result.section
+    ? SECTION_LABELS[result.section] ?? result.section
+    : "이력서";
+
+  const changeLines = result.changes
+    .slice(0, 10) // 최대 10개 표시
+    .map((ch, i) => {
+      const prefix = ch.type === "bullet" ? `- ` : ``;
+      const ctx = ch.context ? ` _(${ch.context})_` : "";
+      return `${prefix}${ch.content}${ctx}`;
+    })
+    .join("\n");
+
+  const confidenceNote =
+    result.confidence >= 0.8
+      ? ""
+      : `\n\n_(신뢰도 ${Math.round(result.confidence * 100)}% — 섹션이나 내용이 불명확하면 직접 지정해주세요)_`;
+
+  return [
+    `**[이력서 반영 준비]** 아래 내용을 **${sectionLabel}** 섹션에 반영할까요?`,
+    "",
+    changeLines,
+    "",
+    "반영하려면 **승인**, 취소하려면 **거절**을 눌러주세요.",
+    confidenceNote,
+  ]
+    .filter((l) => l !== undefined)
+    .join("\n");
+}
+
+// ─── PATCH /api/resume/section ───────────────────────────────────────────────
+
+/**
+ * 채팅 diff 승인 시 이력서 섹션을 업데이트한다 (Sub-AC 6-2).
+ *
+ * 사용자가 ResumeDiffViewer 에서 "승인" 버튼을 클릭하면 프론트엔드가 이 엔드포인트를 호출해
+ * diff 의 after 텍스트를 이력서에 반영한다.
+ *
+ * Request body (JSON):
+ *   section    — string   섹션 이름 ('summary' | 'experience' | 'skills' | 'projects' | 'education')
+ *   content    — string   diff after 텍스트 (적용할 내용)
+ *   messageId  — string   (optional) 채팅 메시지 ID (로깅용)
+ *   sessionId  — string   (optional) 채팅 세션 ID (로깅용)
+ *
+ * Response (200):
+ *   { ok: true, resume: ResumeDocument, section: string, appliedAt: string }
+ *
+ * 오류:
+ *   400  { error: string }  — 필수 필드 누락 또는 섹션 이름 오류
+ *   404  { error: string }  — 이력서 없음
+ *   502  { error: string }  — Blob 오류
+ *   500  { error: string }  — 서버 오류
+ */
+resumeRouter.patch("/section", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "JSON body required" }, 400);
+
+  const { section, content, messageId, sessionId } = body;
+
+  if (!section || typeof section !== "string") {
+    return c.json({ error: "section 필드가 필요합니다." }, 400);
+  }
+  if (content === undefined || content === null) {
+    return c.json({ error: "content 필드가 필요합니다." }, 400);
+  }
+
+  // Sub-AC 8-1: 강점(strengths) 섹션 추가
+  const VALID_SECTIONS = ["summary", "experience", "skills", "projects", "education", "certifications", "strengths"];
+  if (!VALID_SECTIONS.includes(section)) {
+    return c.json({ error: `지원하지 않는 섹션입니다: ${section}` }, 400);
+  }
+
+  // ── 강점 섹션 전용 처리 (Sub-AC 8-1) ──────────────────────────────────────────
+  // 강점 섹션은 두 가지 content 형태를 지원한다:
+  //   1. JSON.stringify(StrengthItem[])  — generateStrengthsChatDiff 결과 승인 시
+  //   2. "- keyword1\n- keyword2\n..."   — apply_section 흐름에서 keyword diff 승인 시
+  if (section === "strengths") {
+    const contentStr = typeof content === "string" ? content.trim() : "";
+    const looksLikeJson = contentStr.startsWith("[");
+
+    // ── 형태 2: 불릿 텍스트 (apply_section → strength_keywords 업데이트) ──────
+    if (!looksLikeJson) {
+      const keywords = contentStr
+        .split("\n")
+        .map((l) => l.replace(/^[-•*]\s*/, "").trim())
+        .filter(Boolean);
+
+      if (keywords.length === 0) {
+        return c.json({ error: "strengths content 가 비어 있습니다." }, 400);
+      }
+
+      // 스냅샷 (비치명적)
+      try {
+        const snap = await readResumeData();
+        if (snap) await saveSnapshot(snap, { label: "pre-chat-strengths-kw-approve", triggeredBy: "chat_approve_strengths" });
+      } catch (se) {
+        console.warn("[resume/section PATCH strengths-kw] snapshot failed:", se);
+      }
+
+      // 기존 키워드와 병합
+      const kwDoc = await (async () => { try { return await readStrengthKeywords(); } catch { return null; } })();
+      const existingKws = Array.isArray(kwDoc?.keywords) ? kwDoc.keywords : [];
+      const merged = [...new Set([...existingKws, ...keywords])].slice(0, 50);
+      const updatedKwDoc = { schemaVersion: 1, updatedAt: new Date().toISOString(), source: "user", keywords: merged };
+
+      try {
+        await saveStrengthKeywords(updatedKwDoc);
+      } catch (err) {
+        console.error("[resume/section PATCH strengths-kw] saveStrengthKeywords failed:", err);
+        return c.json({ error: "강점 키워드 저장 실패" }, 500);
+      }
+
+      // resume/data.json 에도 sync
+      try {
+        const resumeForSync = await readResumeData();
+        if (resumeForSync) {
+          await saveResumeData({
+            ...resumeForSync,
+            strength_keywords: merged,
+            _sources: { ...(resumeForSync._sources ?? {}), strength_keywords: "user_approved" },
+          });
+        }
+      } catch (syncErr) {
+        console.warn("[resume/section PATCH strengths-kw] resume sync failed (non-fatal):", syncErr.message);
+      }
+
+      console.info(`[resume/section PATCH strengths-kw] +${keywords.length} keywords (total=${merged.length}). messageId=${messageId ?? "?"}`);
+      return c.json({ ok: true, section, keywordsAdded: keywords.length, totalKeywords: merged.length, appliedAt: new Date().toISOString() });
+    }
+
+    // ── 형태 1: JSON 배열 (generateStrengthsChatDiff → identified-strengths.json) ──
+    let strengthsItems;
+    try {
+      strengthsItems = JSON.parse(contentStr);
+      if (!Array.isArray(strengthsItems)) throw new Error("Not an array");
+    } catch (parseErr) {
+      return c.json({ error: `strengths JSON content 파싱 실패: ${parseErr.message}` }, 400);
+    }
+
+    // 스냅샷 저장 (비치명적)
+    try {
+      const currentResume = await readResumeData();
+      if (currentResume) {
+        await saveSnapshot(currentResume, { label: "pre-chat-strengths-approve", triggeredBy: "chat_approve_strengths" });
+      }
+    } catch (snapshotErr) {
+      console.warn("[resume/section PATCH strengths] snapshot failed (non-fatal):", snapshotErr);
+    }
+
+    // StrengthItem[] → StrengthsDocument 형태로 저장
+    const strengthsDoc = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      source: "user_approved",
+      strengths: strengthsItems.map((s, i) => ({
+        id: s.id ?? `str-chat-${i + 1}`,
+        label: s.label ?? "",
+        description: s.description ?? "",
+        frequency: s.frequency ?? 1,
+        confidence: s.confidence ?? 0.7,
+        behaviorCluster: s.behaviorCluster ?? [],
+        evidenceExamples: s.evidenceTexts ?? [],
+        _source: "user_approved",
+      })),
+      totalEpisodes: strengthsItems.reduce((sum, s) => sum + (s.frequency ?? 1), 0),
+      totalProjects: 0,
+    };
+
+    try {
+      await saveIdentifiedStrengths(strengthsDoc);
+    } catch (err) {
+      console.error("[resume/section PATCH strengths] saveIdentifiedStrengths failed:", err);
+      return c.json({ error: "강점 저장 실패" }, 500);
+    }
+
+    console.info(
+      `[resume/section PATCH strengths] ${strengthsItems.length}개 강점 저장 완료. ` +
+      `messageId=${messageId ?? "?"}, sessionId=${sessionId ?? "?"}`
+    );
+
+    return c.json({
+      ok: true,
+      section,
+      strengthsCount: strengthsItems.length,
+      appliedAt: new Date().toISOString(),
+    });
+  }
+
+  // ── 1. 현재 이력서 로드 ──────────────────────────────────────────────────────
+  let resume;
+  try {
+    resume = await readResumeData();
+  } catch (err) {
+    console.error("[resume/section PATCH] readResumeData failed:", err);
+    return c.json({ error: "이력서를 불러오지 못했습니다.", detail: err.message }, 502);
+  }
+  if (!resume) {
+    return c.json({ error: "이력서가 없습니다. 먼저 이력서를 등록해주세요." }, 404);
+  }
+
+  // ── 2. 스냅샷 저장 (롤백 기준점, 비치명적) ──────────────────────────────────
+  try {
+    await saveSnapshot(resume, { label: "pre-chat-approve", triggeredBy: "chat_approve" });
+  } catch (snapshotErr) {
+    console.warn("[resume/section PATCH] snapshot failed (non-fatal):", snapshotErr);
+  }
+
+  // ── 3. content 파싱 및 섹션 적용 ────────────────────────────────────────────
+  let updatedResume;
+  try {
+    updatedResume = _applyDiffContentToSection(resume, section, content);
+  } catch (err) {
+    console.error("[resume/section PATCH] applyDiff failed:", err);
+    return c.json({ error: `섹션 업데이트 실패: ${err.message}` }, 400);
+  }
+
+  // ── 4. 저장 ──────────────────────────────────────────────────────────────────
+  try {
+    await saveResumeData(updatedResume);
+  } catch (err) {
+    console.error("[resume/section PATCH] saveResumeData failed:", err);
+    return c.json({ error: "이력서 저장 실패" }, 500);
+  }
+
+  console.info(
+    `[resume/section PATCH] section=${section} applied. messageId=${messageId ?? "?"}, sessionId=${sessionId ?? "?"}`
+  );
+
+  return c.json({
+    ok: true,
+    resume: updatedResume,
+    section,
+    appliedAt: new Date().toISOString(),
+  });
+});
+
+/**
+ * diff after 텍스트를 이력서 섹션에 적용한다 (Sub-AC 6-2).
+ *
+ * section 별 적용 규칙:
+ *   summary    — content 를 새 요약으로 설정 (전체 교체)
+ *   experience — 줄 단위 불릿을 파싱해 가장 최근 경력 항목의 불릿을 교체
+ *   projects   — 줄 단위 불릿을 파싱해 가장 최근 프로젝트의 불릿을 교체
+ *   skills     — 줄 단위 기술명을 파싱해 technical 목록에 병합 (중복 제거)
+ *   education  — 첫 번째 학력 항목의 _source 만 user_approved 로 업데이트
+ *
+ * @param {object} resume   현재 이력서 문서 (불변)
+ * @param {string} section  대상 섹션 이름
+ * @param {string} content  diff after 텍스트 (적용할 내용)
+ * @returns {object}        업데이트된 이력서 문서 (shallow clone)
+ * @throws {Error}          섹션 데이터가 없거나 형식이 잘못된 경우
+ */
+function _applyDiffContentToSection(resume, section, content) {
+  const updated = { ...resume };
+
+  switch (section) {
+    case "summary": {
+      // 전체 요약을 새 content 로 교체한다
+      updated.summary = typeof content === "string" ? content.trim() : String(content).trim();
+      if (updated._sources) {
+        updated._sources = { ...updated._sources, summary: "user_approved" };
+      }
+      break;
+    }
+
+    case "experience": {
+      if (!Array.isArray(resume.experience) || resume.experience.length === 0) {
+        throw new Error("이력서에 경력 항목이 없습니다.");
+      }
+      const bullets = _parseBulletLines(content);
+      const entries = resume.experience.map((e, i) => ({ ...e }));
+      // 가장 최근(index 0) 경력 항목의 불릿을 교체한다
+      entries[0] = { ...entries[0], bullets, _source: "user_approved" };
+      updated.experience = entries;
+      break;
+    }
+
+    case "projects": {
+      if (!Array.isArray(resume.projects) || resume.projects.length === 0) {
+        throw new Error("이력서에 프로젝트 항목이 없습니다.");
+      }
+      const bullets = _parseBulletLines(content);
+      const entries = resume.projects.map((e) => ({ ...e }));
+      // 가장 최근(index 0) 프로젝트의 불릿을 교체한다
+      entries[0] = { ...entries[0], bullets, _source: "user_approved" };
+      updated.projects = entries;
+      break;
+    }
+
+    case "skills": {
+      const parsedSkills = _parseSkillLines(content);
+      const existing = resume.skills ?? { technical: [], languages: [], tools: [] };
+      // 이미 다른 카테고리(languages, tools)에 존재하는 기술은 technical 에 중복 추가하지 않는다.
+      // content 는 diff.after (all existing + new) 로 전달되므로,
+      // 기존 어떤 카테고리에도 없는 순수 신규 기술만 technical 에 추가한다.
+      const allExistingSet = new Set([
+        ...((existing.technical) ?? []),
+        ...((existing.languages) ?? []),
+        ...((existing.tools) ?? []),
+      ]);
+      const brandNewSkills = parsedSkills.filter((s) => !allExistingSet.has(s));
+      const deduped = [...new Set([...((existing.technical) ?? []), ...brandNewSkills])];
+      updated.skills = { ...existing, technical: deduped };
+      if (updated._sources) {
+        updated._sources = { ...updated._sources, skills: "user_approved" };
+      }
+      break;
+    }
+
+    case "education": {
+      // education 은 채팅에서 직접 편집을 최소화한다
+      // _source 만 user_approved 로 업데이트한다
+      if (Array.isArray(resume.education) && resume.education.length > 0) {
+        const entries = resume.education.map((e) => ({ ...e }));
+        entries[0] = { ...entries[0], _source: "user_approved" };
+        updated.education = entries;
+      }
+      break;
+    }
+
+    case "certifications": {
+      // certifications 도 education 과 동일하게 처리
+      if (Array.isArray(resume.certifications) && resume.certifications.length > 0) {
+        const entries = resume.certifications.map((e) => ({ ...e }));
+        updated.certifications = entries;
+      }
+      break;
+    }
+
+    default:
+      throw new Error(`지원하지 않는 섹션: ${section}`);
+  }
+
+  return updated;
+}
+
+/**
+ * 텍스트에서 불릿 줄만 추출해 순수 텍스트 배열로 반환한다.
+ *
+ * 처리 형식:
+ *   "- 텍스트", "• 텍스트", "* 텍스트", "1. 텍스트", "1) 텍스트"
+ * 일치하지 않는 줄은 그대로 포함한다 (비어있지 않은 경우).
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+function _parseBulletLines(text) {
+  if (!text || typeof text !== "string") return [];
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    // 불릿 접두사 제거: "- ", "• ", "* ", "1. ", "1) " 등
+    .map((line) => line.replace(/^(?:[-•*]|\d+[.)]\s*)\s*/, "").trim())
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * 텍스트에서 기술 이름 목록을 추출한다.
+ * 불릿 줄을 파싱하고, 쉼표로 구분된 기술명도 지원한다.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+function _parseSkillLines(text) {
+  if (!text || typeof text !== "string") return [];
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => l.replace(/^(?:[-•*]|\d+[.)]\s*)\s*/, "").trim());
+
+  const skills = [];
+  for (const line of lines) {
+    if (line.includes(",")) {
+      skills.push(...line.split(",").map((s) => s.trim()).filter(Boolean));
+    } else {
+      skills.push(line);
+    }
+  }
+  return skills.filter((s) => s.length > 0);
+}
+
+/**
+ * applyIntent 결과와 현재 이력서에서 ResumeDiffViewer 용 diff 객체를 생성한다 (Sub-AC 6-2).
+ *
+ * section 별 before/after 포맷:
+ *   summary    — 단순 텍스트 (전체 요약)
+ *   experience — 가장 최근 경력 항목의 불릿 목록 ("- " 접두사)
+ *   projects   — 가장 최근 프로젝트의 불릿 목록 ("- " 접두사)
+ *   skills     — 기술 전체 목록 ("- " 접두사)
+ *
+ * @param {object|null} resume  현재 이력서 (null 이면 null 반환)
+ * @param {import('../lib/resumeChatApplyIntent.mjs').ApplyIntentResult} applyIntentResult
+ * @returns {{ section: string, before: string, after: string, evidence: string[] } | null}
+ */
+function _buildDiffFromApplyIntent(resume, applyIntentResult) {
+  if (
+    !applyIntentResult ||
+    !applyIntentResult.section ||
+    applyIntentResult.changes.length === 0
+  ) {
+    return null;
+  }
+
+  const { section, changes } = applyIntentResult;
+  let before = "";
+  let after = "";
+
+  if (section === "summary") {
+    before = (resume?.summary ?? "").trim();
+    const summaryChange = changes.find((c) => c.type === "summary" || c.type === "text");
+    if (summaryChange) {
+      after = summaryChange.content.trim();
+    } else {
+      const added = changes.map((c) => c.content).join("\n");
+      after = before ? `${before}\n${added}` : added;
+    }
+  } else if (section === "experience") {
+    const entry = Array.isArray(resume?.experience) ? resume.experience[0] : null;
+    const existingBullets = Array.isArray(entry?.bullets) ? entry.bullets : [];
+    before = existingBullets.map((b) => `- ${b}`).join("\n");
+    const newBullets = changes
+      .filter((c) => c.type === "bullet" || c.type === "text")
+      .map((c) => c.content);
+    after = [...existingBullets, ...newBullets].map((b) => `- ${b}`).join("\n");
+  } else if (section === "projects") {
+    const entry = Array.isArray(resume?.projects) ? resume.projects[0] : null;
+    const existingBullets = Array.isArray(entry?.bullets) ? entry.bullets : [];
+    before = existingBullets.map((b) => `- ${b}`).join("\n");
+    const newBullets = changes
+      .filter((c) => c.type === "bullet" || c.type === "text")
+      .map((c) => c.content);
+    after = [...existingBullets, ...newBullets].map((b) => `- ${b}`).join("\n");
+  } else if (section === "skills") {
+    const existing = resume?.skills ?? { technical: [], languages: [], tools: [] };
+    const allExisting = [
+      ...((existing.technical) ?? []),
+      ...((existing.languages) ?? []),
+      ...((existing.tools) ?? []),
+    ];
+    before = allExisting.map((s) => `- ${s}`).join("\n");
+    const newSkills = changes.map((c) => c.content);
+    const allSkills = [...new Set([...allExisting, ...newSkills])];
+    after = allSkills.map((s) => `- ${s}`).join("\n");
+  } else if (section === "strengths") {
+    // Sub-AC 8-1: 강점 섹션 — strength_keywords 불릿 형식으로 표시
+    const existingKw = Array.isArray(resume?.strength_keywords) ? resume.strength_keywords : [];
+    before = existingKw.map((k) => `- ${k}`).join("\n");
+    const newKws = changes.map((c) => c.content);
+    const allKws = [...new Set([...existingKw, ...newKws])];
+    after = allKws.map((k) => `- ${k}`).join("\n");
+  } else {
+    // 기타 섹션: 변경 내용만 after 로 표시
+    before = "";
+    after = changes
+      .map((c) => (c.type === "bullet" ? `- ${c.content}` : c.content))
+      .join("\n");
+  }
+
+  return { section, before, after, evidence: [] };
+}
+
+// ─── GET /api/resume/chat/generate-draft ─────────────────────────────────────
+
+/**
+ * Return the most recently generated resume draft without regenerating.
+ *
+ * Responses:
+ *   200  { "draft": ResumeDraft }  — draft exists
+ *   404  { "exists": false }       — no draft generated yet
+ */
+resumeRouter.get("/chat/generate-draft", async (c) => {
+  let draft;
+  let draftContext = null;
+  try {
+    // Read draft and full context in parallel for richer chat UI initialization
+    const [draftResult, contextResult] = await Promise.all([
+      readChatDraft(),
+      readChatDraftContext().catch(() => null),
+    ]);
+    draft = draftResult;
+    draftContext = contextResult;
+  } catch (err) {
+    return c.json({ error: "Failed to read draft", detail: err.message }, 500);
+  }
+
+  if (!draft) {
+    return c.json({ exists: false }, 404);
+  }
+
+  // Return draft with optional context (evidence pool + source breakdown)
+  const response = { draft };
+  if (draftContext) {
+    response.evidencePool = draftContext.evidencePool || [];
+    response.sourceBreakdown = draftContext.sourceBreakdown || null;
+    response.dataGaps = draftContext.dataGaps || [];
+  }
+
+  return c.json(response);
+});
+
+// ─── POST /api/resume/chat/refine-section ─────────────────────────────────────
+
+/**
+ * 채팅 맥락에서 특정 이력서 섹션의 개선 제안을 근거 기반으로 생성한다.
+ *
+ * 이 엔드포인트는 resumeChatDraftService.refineSectionWithChat() 를 호출하여
+ * 데이터 소스 근거에 기반한 불릿/요약/스킬 제안을 반환한다.
+ * 근거 없이 허구를 생성하지 않으며, 데이터 부족 시 보충 질문을 반환한다.
+ *
+ * Request body:
+ *   {
+ *     "section":       string,               // "experience"|"skills"|"summary"|"strengths"|"projects"
+ *     "user_message":  string,               // 사용자 요청
+ *     "draft":         ResumeDraft | null,    // 기존 초안 (선택)
+ *     "evidence_pool": EvidenceItem[] | null, // 근거 풀 (선택)
+ *     "history":       { role, content }[],   // 대화 히스토리 (선택)
+ *   }
+ *
+ * Response (200):
+ *   {
+ *     "section":        string,
+ *     "suggestions":    RefinedSuggestion[],
+ *     "evidenceCited":  EvidenceItem[],
+ *     "clarifications": string[],
+ *   }
+ */
+resumeRouter.post("/chat/refine-section", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.section !== "string" || !body.section.trim()) {
+    return c.json({ error: "section is required" }, 400);
+  }
+  if (typeof body.user_message !== "string" || !body.user_message.trim()) {
+    return c.json({ error: "user_message is required" }, 400);
+  }
+
+  const section = body.section.trim();
+  const userMessage = body.user_message.trim();
+  const draft = body.draft ?? null;
+  const evidencePool = Array.isArray(body.evidence_pool) ? body.evidence_pool : [];
+  const history = Array.isArray(body.history) ? body.history : [];
+
+  // Load existing resume for context
+  let existingResume = null;
+  try {
+    existingResume = await readResumeData();
+  } catch {
+    // Non-fatal — refinement works without existing resume
+  }
+
+  try {
+    const result = await refineSectionWithChat({
+      section,
+      userMessage,
+      draft,
+      evidencePool,
+      existingResume,
+      history,
+    });
+    // Sub-AC 4-2: evidenceCited 를 정규화된 citations 으로도 반환
+    const citations = Array.isArray(result.evidenceCited)
+      ? result.evidenceCited.map((r) => buildCitationFromEvidence(r)).filter(Boolean)
+      : [];
+    return c.json({
+      ...result,
+      citations,
+      sourceSummary: buildSourceSummary(citations),
+    });
+  } catch (err) {
+    console.error("[resume/chat/refine-section] Failed:", err.message);
+    return c.json({ error: "Section refinement failed", detail: err.message }, 500);
+  }
+});
+
+// ─── POST /api/resume/chat/modify-section ──────────────────────────────────────
+
+/**
+ * AC 5 Sub-AC 2: 대화 컨텍스트에서 구체화된 내용을 기반으로
+ * 이력서 JSON 의 해당 섹션을 수정한 새 JSON 을 생성한다.
+ *
+ * refine-section 에서 받은 RefinedSuggestion[] 또는 대화 히스토리를 입력으로 받아
+ * 현재 이력서에 변경을 적용한 결과와 diff 를 반환한다.
+ * 실제 저장은 하지 않으며, 프론트엔드에서 diff 확인 후 approve 시
+ * PATCH /api/resume/json-diff-apply 로 영속한다.
+ *
+ * Request body:
+ *   {
+ *     "section":        string,               // "experience"|"skills"|"summary"|"strengths"|"projects"|"education"
+ *     "suggestions":    RefinedSuggestion[],   // refineSectionWithChat 결과 (선택)
+ *     "history":        { role, content }[],   // 대화 히스토리 (선택 — suggestions 없을 때 사용)
+ *     "evidence_cited": string[],             // 인용 근거 (선택)
+ *     "user_message":   string,               // 사용자 요청 원문 (선택)
+ *   }
+ *
+ * Response (200):
+ *   {
+ *     "section":        string,
+ *     "updatedDoc":     object,          // 수정된 이력서 JSON 전체
+ *     "diff":           SectionDiff|null, // before/after 텍스트 diff
+ *     "appliedChanges": AppliedChange[], // 반영된 변경 목록
+ *     "skippedChanges": SkippedChange[], // 스킵된 변경 (사유 포함)
+ *     "evidence":       string[],        // 통합된 근거
+ *     "confidence":     number,          // 변경 신뢰도 (0.0–1.0)
+ *   }
+ */
+resumeRouter.post("/chat/modify-section", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.section !== "string" || !body.section.trim()) {
+    return c.json({ error: "section is required" }, 400);
+  }
+
+  const section = body.section.trim();
+  const suggestions = Array.isArray(body.suggestions) ? body.suggestions : undefined;
+  const history = Array.isArray(body.history) ? body.history : undefined;
+  const evidenceCited = Array.isArray(body.evidence_cited) ? body.evidence_cited : [];
+  const userMessage = typeof body.user_message === "string" ? body.user_message.trim() : undefined;
+
+  // suggestions 도 history 도 없으면 400
+  if ((!suggestions || suggestions.length === 0) && (!history || history.length === 0)) {
+    return c.json({ error: "suggestions 또는 history 중 하나는 필요합니다." }, 400);
+  }
+
+  // 현재 이력서 로드
+  let existingResume = null;
+  try {
+    existingResume = await readResumeData();
+  } catch (err) {
+    console.error("[resume/chat/modify-section] readResumeData failed:", err);
+    return c.json({ error: "이력서를 불러오지 못했습니다.", detail: err.message }, 502);
+  }
+  if (!existingResume) {
+    return c.json({ error: "저장된 이력서가 없습니다. 먼저 온보딩을 완료하세요." }, 404);
+  }
+
+  try {
+    const result = generateModifiedResume(existingResume, section, {
+      suggestions,
+      history,
+      evidenceCited,
+      userMessage,
+    });
+
+    return c.json({
+      section: result.section,
+      updatedDoc: result.updatedDoc,
+      diff: result.diff,
+      appliedChanges: result.appliedChanges,
+      skippedChanges: result.skippedChanges,
+      evidence: result.evidence,
+      confidence: result.confidence,
+    });
+  } catch (err) {
+    console.error("[resume/chat/modify-section] Failed:", err.message);
+    return c.json({ error: "Section modification failed", detail: err.message }, 500);
+  }
+});
+
+// ─── POST /api/resume/chat/search-evidence ─────────────────────────────────────
+
+/**
+ * 키워드 기반으로 모든 데이터 소스에서 이력서 근거를 검색한다.
+ *
+ * Request body:
+ *   {
+ *     "keywords":   string[],              // 검색 키워드
+ *     "from_date":  string | undefined,     // 시작일 (YYYY-MM-DD)
+ *     "to_date":    string | undefined,     // 종료일 (YYYY-MM-DD)
+ *     "max_results": number | undefined     // 소스당 최대 결과 수 (기본 15)
+ *   }
+ *
+ * Response (200):
+ *   {
+ *     "evidence":  EvidenceItem[],
+ *     "citations": ChatCitation[],          // Sub-AC 4-2: 정규화된 출처 정보
+ *     "sourceSummary": CitationSourceSummary // Sub-AC 4-2: 소스별 건수 요약
+ *   }
+ */
+resumeRouter.post("/chat/search-evidence", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || !Array.isArray(body.keywords) || body.keywords.length === 0) {
+    return c.json({ error: "keywords (non-empty array) is required" }, 400);
+  }
+
+  try {
+    const evidence = await searchEvidenceByKeywords(body.keywords, {
+      fromDate: body.from_date,
+      toDate: body.to_date,
+      maxResults: body.max_results,
+    });
+    // Sub-AC 4-2: 검색 결과에 정규화된 출처 메타데이터 첨부
+    const citations = Array.isArray(evidence)
+      ? evidence.map((r) => buildCitationFromEvidence(r)).filter(Boolean)
+      : [];
+    return c.json({
+      evidence,
+      citations,
+      sourceSummary: buildSourceSummary(citations),
+    });
+  } catch (err) {
+    console.error("[resume/chat/search-evidence] Failed:", err.message);
+    return c.json({ error: "Evidence search failed", detail: err.message }, 500);
+  }
+});
+
+// ─── POST /api/resume/chat/recommend ─────────────────────────────────────────
+
+/**
+ * 탐색된 데이터를 종합하여 이력서 어필 포인트(성과·기여·역량)를 추천한다.
+ * (AC 3 Sub-AC 3: 통합 추천 엔진)
+ *
+ * 두 가지 호출 방식을 지원한다:
+ *   1. query + keywords → 내부에서 탐색(explore) 후 추천 생성
+ *   2. query + exploreResult → 이미 탐색된 결과에서 추천 생성
+ *
+ * Request body:
+ *   {
+ *     "query":          string,                    // 사용자 질의 (필수)
+ *     "keywords":       string[] | undefined,      // 탐색 키워드 (방식 1)
+ *     "exploreResult":  ExploreResult | undefined,  // 이미 탐색된 결과 (방식 2)
+ *     "existingResume": object | undefined,        // 현재 이력서 (맥락용)
+ *     "lang":           "ko" | "en" | undefined,
+ *     "maxPoints":      number | undefined,        // 최대 추천 수 (기본 8)
+ *     "forceStrategy":  "flat" | "cluster" | undefined,
+ *   }
+ *
+ * Response (200):
+ *   {
+ *     "recommendations":   Recommendation[],
+ *     "citations":         ChatCitation[],
+ *     "sourceSummary":     CitationSourceSummary,
+ *     "dataGaps":          string[],
+ *     "followUpQuestions": string[],
+ *     "strategy":          "flat" | "cluster",
+ *     "totalEvidence":     number,
+ *     "formatted":         string                  // Markdown 포맷 메시지
+ *   }
+ */
+resumeRouter.post("/chat/recommend", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.query !== "string" || !body.query.trim()) {
+    return c.json({ error: "query is required" }, 400);
+  }
+
+  const {
+    query,
+    keywords,
+    exploreResult: clientExploreResult,
+    existingResume,
+    lang,
+    maxPoints,
+    forceStrategy,
+  } = body;
+
+  try {
+    // 탐색 결과 확보: 클라이언트에서 전달받았으면 그대로, 아니면 키워드로 탐색
+    let exploreResult = clientExploreResult;
+    if (!exploreResult) {
+      if (Array.isArray(keywords) && keywords.length > 0) {
+        exploreResult = await exploreWithKeywords({ keywords });
+      } else {
+        // 쿼리 분석 후 탐색
+        let analyzed;
+        try {
+          analyzed = await analyzeQueryWithLLM(query);
+        } catch {
+          analyzed = analyzeQuery(query);
+        }
+        exploreResult = await exploreWithQueryAnalysis(analyzed);
+      }
+    }
+
+    // 추천 생성
+    const result = await generateRecommendations(query, exploreResult, {
+      existingResume: existingResume ?? null,
+      lang: lang ?? "ko",
+      maxPoints: maxPoints ?? undefined,
+      forceStrategy: forceStrategy ?? undefined,
+    });
+
+    return c.json({
+      ...result,
+      formatted: formatRecommendations(result),
+    });
+  } catch (err) {
+    console.error("[resume/chat/recommend] Failed:", err.message);
+    return c.json({ error: "Recommendation failed", detail: err.message }, 500);
+  }
+});
+
+// ─── POST /api/resume/chat/draft-section ───────────────────────────────────────
+
+/**
+ * 초안에서 특정 섹션에 해당하는 콘텐츠를 추출한다.
+ *
+ * Request body:
+ *   {
+ *     "section": string,   // "experience"|"skills"|"summary"|"strengths"|"projects"
+ *     "draft":   ResumeDraft | null
+ *   }
+ *
+ * Response (200):
+ *   { "strengths": object[], "experiences": object[], "summary": string }
+ */
+resumeRouter.post("/chat/draft-section", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.section !== "string") {
+    return c.json({ error: "section is required" }, 400);
+  }
+
+  const result = extractDraftContentForSection(body.draft ?? null, body.section.trim());
+  return c.json(result);
+});
+
+// ─── PATCH /api/resume/json-diff-apply ────────────────────────────────────────
+/**
+ * 채팅 기반 이력서 JSON 전체 diff 승인 처리 (Sub-AC 5-3).
+ *
+ * ResumeJsonDiffViewer 에서 사용자가 "모두 승인"을 클릭하면 프론트엔드가
+ * 이 엔드포인트로 수정된 이력서 JSON 전체를 전송한다.
+ * 서버는 현재 이력서를 스냅샷으로 저장한 뒤, modified 의 각 섹션을
+ * 현재 이력서에 병합하여 저장한다.
+ *
+ * Body: { modified: object }  — 수정된 이력서 JSON 전체
+ *
+ * Success: HTTP 200  { ok: true, resume: {...}, appliedAt: string }
+ * Errors:  400 (body 없음 | modified 형식 오류) | 404 (저장된 이력서 없음) | 500
+ */
+resumeRouter.patch("/json-diff-apply", async (c) => {
+  // ── 1. Parse body ──────────────────────────────────────────────────────────
+  let body;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "요청 본문이 유효한 JSON이 아닙니다." }, 400);
+  }
+
+  const incoming = body?.modified;
+  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
+    return c.json({ ok: false, error: "modified 객체가 필요합니다." }, 400);
+  }
+
+  // ── 2. 현재 이력서 로드 ──────────────────────────────────────────────────────
+  let stored;
+  try {
+    stored = await readResumeData();
+  } catch (err) {
+    console.error("[resume/json-diff-apply] readResumeData failed:", err);
+    return c.json({ ok: false, error: "이력서를 불러오지 못했습니다.", detail: err.message }, 502);
+  }
+  if (!stored) {
+    return c.json({ ok: false, error: "저장된 이력서가 없습니다. 먼저 온보딩을 완료하세요." }, 404);
+  }
+
+  // ── 3. 스냅샷 저장 (롤백 기준점, 비치명적) ──────────────────────────────────
+  try {
+    await saveSnapshot(stored, { label: "pre-json-diff-apply", triggeredBy: "chat_json_diff_approve" });
+  } catch (snapshotErr) {
+    console.warn("[resume/json-diff-apply] snapshot failed (non-fatal):", snapshotErr);
+  }
+
+  // ── 4. 섹션별 병합 (변경된 섹션만 적용) ─────────────────────────────────────
+  // modified 에 포함된 섹션만 덮어쓴다.
+  // 메타데이터(_sources, _schema 등)는 현재 이력서 것을 유지하되, _sources는 갱신한다.
+  const updatedSources = { ...(stored._sources ?? {}) };
+  const updated = { ...stored };
+
+  // contact
+  if (incoming.contact !== undefined && typeof incoming.contact === "object") {
+    updated.contact = { ...(stored.contact ?? {}), ...incoming.contact };
+    updatedSources.contact = "chat_approved";
+  }
+
+  // summary
+  if (typeof incoming.summary === "string") {
+    updated.summary = incoming.summary.trim();
+    updatedSources.summary = "chat_approved";
+  }
+
+  // experience
+  if (Array.isArray(incoming.experience)) {
+    updated.experience = incoming.experience.map((exp) => ({
+      company:    exp.company    ?? "",
+      title:      exp.title      ?? "",
+      start_date: exp.start_date ?? null,
+      end_date:   exp.end_date   ?? null,
+      location:   exp.location   ?? null,
+      bullets:    Array.isArray(exp.bullets) ? exp.bullets.filter((b) => typeof b === "string") : [],
+      _source:    "chat_approved",
+    }));
+    updatedSources.experience = "chat_approved";
+  }
+
+  // education
+  if (Array.isArray(incoming.education)) {
+    updated.education = incoming.education.map((edu) => ({
+      institution: edu.institution ?? "",
+      degree:      edu.degree      ?? "",
+      field:       edu.field       ?? "",
+      start_date:  edu.start_date  ?? null,
+      end_date:    edu.end_date    ?? null,
+      gpa:         edu.gpa         ?? null,
+      _source:     "chat_approved",
+    }));
+    updatedSources.education = "chat_approved";
+  }
+
+  // skills
+  if (incoming.skills !== undefined && typeof incoming.skills === "object" && !Array.isArray(incoming.skills)) {
+    updated.skills = {
+      technical: Array.isArray(incoming.skills.technical) ? incoming.skills.technical.filter((s) => typeof s === "string") : (stored.skills?.technical ?? []),
+      languages: Array.isArray(incoming.skills.languages) ? incoming.skills.languages.filter((s) => typeof s === "string") : (stored.skills?.languages ?? []),
+      tools:     Array.isArray(incoming.skills.tools)     ? incoming.skills.tools.filter((s) => typeof s === "string")     : (stored.skills?.tools ?? []),
+    };
+    updatedSources.skills = "chat_approved";
+  }
+
+  // projects
+  if (Array.isArray(incoming.projects)) {
+    updated.projects = incoming.projects.map((proj) => ({
+      name:        proj.name        ?? proj.title ?? "",
+      title:       proj.title       ?? proj.name  ?? "",
+      description: proj.description ?? "",
+      url:         proj.url         ?? "",
+      tech_stack:  Array.isArray(proj.tech_stack) ? proj.tech_stack.filter((s) => typeof s === "string") : [],
+      bullets:     Array.isArray(proj.bullets)    ? proj.bullets.filter((b) => typeof b === "string")    : [],
+      _source:     "chat_approved",
+    }));
+    updatedSources.projects = "chat_approved";
+  }
+
+  // certifications
+  if (Array.isArray(incoming.certifications)) {
+    updated.certifications = incoming.certifications.map((cert) => ({
+      name:        cert.name        ?? "",
+      issuer:      cert.issuer      ?? "",
+      date:        cert.date        ?? null,
+      expiry_date: cert.expiry_date ?? null,
+      url:         cert.url         ?? null,
+      _source:     "chat_approved",
+    }));
+    updatedSources.certifications = "chat_approved";
+  }
+
+  // strength_keywords
+  if (Array.isArray(incoming.strength_keywords)) {
+    updated.strength_keywords = incoming.strength_keywords.filter((k) => typeof k === "string");
+    updatedSources.strength_keywords = "chat_approved";
+  }
+
+  updated._sources = updatedSources;
+  updated._updatedAt = new Date().toISOString();
+
+  // ── 5. 저장 ────────────────────────────────────────────────────────────────
+  try {
+    await saveResumeData(updated);
+  } catch (err) {
+    console.error("[resume/json-diff-apply] saveResumeData failed:", err);
+    return c.json({ ok: false, error: "이력서 저장 실패" }, 500);
+  }
+
+  console.info("[resume/json-diff-apply] Full JSON diff applied via chat approval.");
+
+  return c.json({
+    ok: true,
+    resume: updated,
+    appliedAt: new Date().toISOString(),
   });
 });

@@ -20,6 +20,8 @@ import { Hono } from "hono";
 // ─── Mutable stub state ───────────────────────────────────────────────────────
 
 let readResumeDataFn         = async () => null;
+let readPdfTextFn            = async () => null;
+let saveResumeDataFn         = async () => ({ url: "https://blob/resume/data.json" });
 let gatherWorkLogBulletsFn   = async () => [];
 let fullReconstructFn        = async () => ({ total: 0, processed: 0, failed: 0, skipped: 0, dates: [] });
 let clearReconstructionFn    = async () => {};
@@ -30,7 +32,7 @@ let loadConfigFn             = async () => ({ dataDir: "/tmp/work-log-test" });
 mock.module("../lib/blob.mjs", {
   namedExports: {
     checkResumeExists:            async () => ({ exists: false }),
-    saveResumeData:               async () => ({ url: "https://blob/resume/data.json" }),
+    saveResumeData:               (...args) => saveResumeDataFn(...args),
     readResumeData:               (...args) => readResumeDataFn(...args),
     readSuggestionsData:          async () => ({ schemaVersion: 1, updatedAt: new Date().toISOString(), suggestions: [] }),
     saveSuggestionsData:          async () => ({ url: "https://blob/resume/suggestions.json" }),
@@ -39,8 +41,9 @@ mock.module("../lib/blob.mjs", {
     listBulletDates:              async () => [],
     deleteDailyBullets:           async () => {},
     savePdfText:                  async () => ({ url: "https://blob/resume/pdf-text.txt" }),
-    readPdfText:                  async () => null,
+    readPdfText:                  (...args) => readPdfTextFn(...args),
     savePdfRaw:                   async () => ({ url: "https://blob/resume/resume.pdf" }),
+    checkPdfRawExists:            async () => ({ exists: true, url: "https://blob/resume/resume.pdf" }),
     PDF_RAW_PATHNAME:             "resume/resume.pdf",
     markResumeForReconstruction:  async () => {},
     clearReconstructionMarker:    (...args) => clearReconstructionFn(...args),
@@ -56,7 +59,21 @@ mock.module("../lib/blob.mjs", {
     STRENGTH_KEYWORDS_PATHNAME:   "resume/strength-keywords.json",
     saveDisplayAxes:              async () => ({ url: "https://blob/resume/display-axes.json" }),
     readDisplayAxes:              async () => null,
-    DISPLAY_AXES_PATHNAME:        "resume/display-axes.json"
+    DISPLAY_AXES_PATHNAME:        "resume/display-axes.json",
+    saveIdentifiedStrengths:      async () => ({ url: "https://blob/resume/identified-strengths.json" }),
+    readIdentifiedStrengths:      async () => null,
+    saveNarrativeAxes:            async () => ({ url: "https://blob/resume/narrative-axes.json" }),
+    readNarrativeAxes:            async () => null,
+    saveNarrativeThreading:       async () => ({ url: "https://blob/resume/narrative-threading.json" }),
+    readNarrativeThreading:       async () => null,
+    saveSectionBridges:           async () => ({ url: "https://blob/resume/section-bridges.json" }),
+    readSectionBridges:           async () => null,
+    readQualityTracking:          async () => ({ schemaVersion: 1, updatedAt: new Date().toISOString(), records: [] }),
+    saveQualityTracking:          async () => ({ url: "https://blob/resume/quality-tracking.json" }),
+    saveChatDraft:                 async () => ({ url: "https://blob/resume/chat-draft.json" }),
+    readChatDraft:                 async () => null,
+    saveChatDraftContext:          async () => ({ url: "https://blob/resume/chat-draft-context.json" }),
+    readChatDraftContext:          async () => null,
   }
 });
 
@@ -70,6 +87,16 @@ mock.module("../lib/resumeReconstruction.mjs", {
   namedExports: {
     gatherWorkLogBullets:         (...args) => gatherWorkLogBulletsFn(...args),
     fullReconstructExtractCache:  (...args) => fullReconstructFn(...args),
+    generateSectionBridges:       async () => [],
+    validateResumeCoherence:      async () => ({ overallScore: 1, grade: "A", structuralFlow: 1, redundancy: 1, tonalConsistency: 1, issues: [], autoFixes: [] }),
+    runNarrativeThreadingPipeline: async () => ({
+      strengths: [],
+      axes: [],
+      sectionBridges: [],
+      extractionResults: [],
+      threading: { totalAnnotations: 0, groundedRatio: 0, strengthCoverage: {}, axisCoverage: {} },
+      groundingReport: {}
+    }),
     reconstructResumeFromSources: async (opts) => ({
       ...(opts.currentResume ?? {}),
       meta: { language: "en", source: "pdf", generatedAt: new Date().toISOString(), schemaVersion: 1 }
@@ -328,11 +355,47 @@ test("POST /api/resume/reconstruct — 200 with stats from fullReconstructExtrac
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.ok, true);
+  assert.equal(body.rebuiltResume, false);
   assert.equal(body.total, 2);
   assert.equal(body.processed, 2);
   assert.equal(body.failed, 0);
   assert.equal(body.skipped, 0);
   assert.deepEqual(body.dates, ["2025-01-15", "2025-01-16"]);
+});
+
+test("POST /api/resume/reconstruct — rebuilds resume document when stored PDF text exists", async () => {
+  let savedDoc = null;
+
+  readResumeDataFn = async () => makeResume();
+  readPdfTextFn = async () => "Original PDF text";
+  saveResumeDataFn = async (doc) => {
+    savedDoc = doc;
+    return { url: "https://blob/resume/data.json" };
+  };
+  loadConfigFn = async () => ({ dataDir: "/tmp/work-log-test" });
+  gatherWorkLogBulletsFn = async () => [
+    { date: "2025-01-15", candidates: ["Shipped auth module"], companyCandidates: [], openSourceCandidates: [] }
+  ];
+  fullReconstructFn = async () => ({
+    total: 1,
+    processed: 1,
+    failed: 0,
+    skipped: 0,
+    dates: ["2025-01-15"]
+  });
+
+  const app = buildApp();
+  const res = await app.fetch(authedPost("http://localhost/api/resume/reconstruct"));
+
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.rebuiltResume, true);
+  assert.ok(savedDoc, "saveResumeData should be called with rebuilt resume");
+
+  // Reset mutable fns used only by this test
+  readPdfTextFn = async () => null;
+  saveResumeDataFn = async () => ({ url: "https://blob/resume/data.json" });
 });
 
 test("POST /api/resume/reconstruct — reports partial failure stats", async () => {

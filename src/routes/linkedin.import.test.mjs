@@ -69,6 +69,10 @@ mock.module("../lib/blob.mjs", {
     RECONSTRUCTION_MARKER_PATHNAME: "resume/needs-reconstruction.json",
     KEYWORD_CLUSTER_AXES_PATHNAME: "resume/keyword-cluster-axes.json",
     bulletsPathnameForDate: (date) => `resume/bullets/${date}.json`,
+    saveChatDraft: async () => ({ url: "https://blob/resume/chat-draft.json" }),
+    readChatDraft: async () => null,
+    saveChatDraftContext: async () => ({ url: "https://blob/resume/chat-draft-context.json" }),
+    readChatDraftContext: async () => null,
   },
 });
 

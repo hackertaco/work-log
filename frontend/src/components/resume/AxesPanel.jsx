@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { AxisSplitModal } from './AxisSplitModal.jsx';
-import { KeywordMovePanel } from './KeywordMovePanel.jsx';
 
 /**
  * AxesPanel — 표시 축 관리 패널
@@ -19,12 +18,17 @@ import { KeywordMovePanel } from './KeywordMovePanel.jsx';
  *   2. 모달에서 키워드 체크박스 선택 후 두 새 축 이름 입력
  *   3. POST /api/resume/axes/:id/split → 성공 시 목록 갱신
  *
+ * 현재는 키워드 이동보다 축 이름/추가/분리를 우선한다.
  * props: 없음 (독립 패널)
  */
 export function AxesPanel() {
   const [axes, setAxes] = useState(/** @type {Axis[]|null} */ (null));
   const [fetchError, setFetchError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [newLabel, setNewLabel] = useState('');
+  const [newKeywords, setNewKeywords] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
 
   // 현재 편집 중인 축 id
   const [editingId, setEditingId] = useState(/** @type {string|null} */ (null));
@@ -36,9 +40,6 @@ export function AxesPanel() {
   const [saveErrors, setSaveErrors] = useState(/** @type {Record<string,string>} */ ({}));
   // 분리 모달을 열 대상 축 id (null이면 모달 닫힘)
   const [splitTargetId, setSplitTargetId] = useState(/** @type {string|null} */ (null));
-  // 현재 탭: 'list' (축 목록/편집) | 'move' (키워드 이동)
-  const [activeTab, setActiveTab] = useState(/** @type {'list'|'move'} */ ('list'));
-
   const mountedRef = useRef(true);
   const inputRef = useRef(/** @type {HTMLInputElement|null} */ (null));
 
@@ -167,6 +168,47 @@ export function AxesPanel() {
     }
   }
 
+  async function createAxisManually() {
+    const label = newLabel.trim();
+    if (!label) {
+      setCreateError('축 이름을 입력해 주세요.');
+      return;
+    }
+
+    setCreating(true);
+    setCreateError('');
+    try {
+      const keywords = newKeywords
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      const res = await fetch('/api/resume/axes/manual', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, keywords }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      if (mountedRef.current) {
+        setAxes(data.axes ?? []);
+        setNewLabel('');
+        setNewKeywords('');
+      }
+    } catch (err) {
+      if (mountedRef.current) {
+        setCreateError(err.message);
+      }
+    } finally {
+      if (mountedRef.current) setCreating(false);
+    }
+  }
+
   // ── 분리 ─────────────────────────────────────────────────────────────────────
 
   /** 분리 모달 열기 */
@@ -195,7 +237,7 @@ export function AxesPanel() {
     <section class="axp-root" aria-label="표시 축 목록">
       <header class="axp-header">
         <h3 class="axp-title">표시 축</h3>
-        {!loading && !fetchError && activeTab === 'list' && (
+        {!loading && !fetchError && (
           <button
             class="axp-refresh-btn"
             type="button"
@@ -208,45 +250,43 @@ export function AxesPanel() {
         )}
       </header>
 
-      {/* 탭 전환 */}
-      <div class="axp-tabs" role="tablist" aria-label="축 관리 탭">
+      <div class="axp-create">
+        <div class="axp-create-fields">
+          <input
+            class="axp-create-input"
+            type="text"
+            placeholder="새 축 이름"
+            value={newLabel}
+            maxLength={100}
+            onInput={(e) => setNewLabel(e.target.value)}
+          />
+          <input
+            class="axp-create-input"
+            type="text"
+            placeholder="키워드 (쉼표로 구분, 선택)"
+            value={newKeywords}
+            onInput={(e) => setNewKeywords(e.target.value)}
+          />
+        </div>
         <button
-          class={`axp-tab${activeTab === 'list' ? ' axp-tab--active' : ''}`}
+          class="axp-create-btn"
           type="button"
-          role="tab"
-          aria-selected={activeTab === 'list'}
-          onClick={() => setActiveTab('list')}
+          onClick={createAxisManually}
+          disabled={creating}
         >
-          축 목록
+          {creating ? '추가 중…' : '새 축 추가'}
         </button>
-        <button
-          class={`axp-tab${activeTab === 'move' ? ' axp-tab--active' : ''}`}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'move'}
-          onClick={() => setActiveTab('move')}
-        >
-          키워드 이동
-        </button>
+        {createError && <p class="axp-create-error" role="alert">{createError}</p>}
       </div>
 
-      {/* ── 키워드 이동 탭 ─────────────────────────────────────────── */}
-      {activeTab === 'move' && (
-        <KeywordMovePanel
-          axisType="display"
-          onChanged={fetchAxes}
-        />
-      )}
-
-      {/* ── 축 목록 탭 ─────────────────────────────────────────────── */}
-      {activeTab === 'list' && loading && (
+      {loading && (
         <div class="axp-state">
           <span class="axp-spinner" aria-label="불러오는 중" />
           <span class="axp-state-msg">불러오는 중…</span>
         </div>
       )}
 
-      {activeTab === 'list' && !loading && fetchError && (
+      {!loading && fetchError && (
         <div class="axp-state axp-state--error">
           <p class="axp-error-msg">{fetchError}</p>
           <button class="axp-retry-btn" type="button" onClick={fetchAxes}>
@@ -255,13 +295,13 @@ export function AxesPanel() {
         </div>
       )}
 
-      {activeTab === 'list' && !loading && !fetchError && axes !== null && axes.length === 0 && (
+      {!loading && !fetchError && axes !== null && axes.length === 0 && (
         <p class="axp-empty">
           아직 표시 축이 없습니다.
         </p>
       )}
 
-      {activeTab === 'list' && !loading && !fetchError && axes !== null && axes.length > 0 && (
+      {!loading && !fetchError && axes !== null && axes.length > 0 && (
         <ul class="axp-list" role="list">
           {axes.map(axis => {
             const isEditing = editingId === axis.id;
@@ -331,15 +371,6 @@ export function AxesPanel() {
                   )}
                 </div>
 
-                {/* 키워드 태그 */}
-                {axis.keywords && axis.keywords.length > 0 && (
-                  <div class="axp-keywords" aria-label="관련 키워드">
-                    {axis.keywords.map((kw, ki) => (
-                      <span key={ki} class="axp-keyword-tag">{kw}</span>
-                    ))}
-                  </div>
-                )}
-
                 {/* 저장 오류 */}
                 {saveErr && (
                   <p class="axp-save-error" role="alert">{saveErr}</p>
@@ -358,8 +389,8 @@ export function AxesPanel() {
                       }
                       title={
                         (axis.keywords ?? []).length < 2
-                          ? '키워드가 2개 이상이어야 분리할 수 있습니다'
-                          : '키워드 기준으로 이 축을 두 개로 분리합니다'
+                          ? '축을 분리하려면 최소 2개 이상의 관련 키워드가 필요합니다'
+                          : '이 축을 두 개의 더 구체적인 축으로 분리합니다'
                       }
                       onClick={() => openSplitModal(axis.id)}
                     >
@@ -405,36 +436,58 @@ const AXP_CSS = `
     gap: var(--space-3);
   }
 
-  /* ─── Tabs ─── */
-  .axp-tabs {
+  .axp-create {
     display: flex;
-    gap: 2px;
-    border-bottom: 1px solid var(--line);
-    margin-bottom: var(--space-1, 4px);
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
   }
 
-  .axp-tab {
-    padding: 5px 12px;
+  .axp-create-fields {
+    display: grid;
+    gap: 8px;
+  }
+
+  .axp-create-input {
+    width: 100%;
+    padding: 8px 10px;
     font-size: 12px;
-    font-weight: 500;
-    color: var(--muted);
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    outline: none;
+  }
+
+  .axp-create-input:focus {
+    border-color: var(--ink);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 12%, transparent);
+  }
+
+  .axp-create-btn {
+    align-self: flex-start;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
-    margin-bottom: -1px;
-    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   }
 
-  .axp-tab:hover {
-    color: var(--ink);
+  .axp-create-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
-  .axp-tab--active {
-    color: var(--ink);
-    border-bottom-color: var(--ink);
-    font-weight: 700;
+  .axp-create-error {
+    margin: 0;
+    font-size: 12px;
+    color: #e53e3e;
   }
 
   /* ─── Header ─── */
@@ -679,25 +732,6 @@ const AXP_CSS = `
     color: #e53e3e;
     border-color: #fed7d7;
     background: #fff5f5;
-  }
-
-  /* ─── Keywords ─── */
-  .axp-keywords {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-
-  .axp-keyword-tag {
-    display: inline-block;
-    padding: 2px 7px;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--muted);
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    white-space: nowrap;
   }
 
   /* ─── Save error ─── */

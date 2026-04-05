@@ -19,6 +19,8 @@
  *   WORK_LOG_DISABLE_OPENAI  — set "1" to skip LLM call (throws instead)
  */
 
+import { buildVoiceDirective, buildLanguageDirective } from "./resumeVoice.mjs";
+
 const OPENAI_URL =
   process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
 const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
@@ -202,23 +204,22 @@ candidate's resume. These axes represent different angles through which the same
 can be positioned — e.g. one role that fits a "Full-Stack Engineer" frame may also be \
 compelling as a "Product-minded Engineer" or "Technical Lead" story.
 
-━━━ LANGUAGE RULE ━━━
-The resume language code is: ${language}.
-Write ALL generated text (taglines) in that SAME language. \
-Do not mix languages unless the source itself does.
-
 ━━━ DISPLAY AXES RULES ━━━
 • Generate exactly 2–4 distinct career narrative lenses.
 • Each axis must have:
     - label: Short title for the angle (e.g. "Full-Stack Engineer", \
-"Frontend Specialist", "Engineering Manager"). Under 40 characters.
-    - tagline: One sentence (max 120 characters) describing what makes this person \
+"Frontend Specialist", "Engineering Manager").
+    - tagline: One sentence describing what makes this person \
 compelling from this angle. Written in the same language as the resume (${language}).
     - highlight_skills: 3–6 skills from the resume that are most relevant to this axis. \
 Take skills only from the skills section or bullets already in the resume — do not invent skills.
 • Axes must be meaningfully different — not just synonym labels or minor variations.
 • Prioritise angles supported by direct evidence (job titles, bullets, skills listed). \
-Do not fabricate a leadership axis unless the resume clearly contains management evidence.`;
+Do not fabricate a leadership axis unless the resume clearly contains management evidence.
+
+${buildVoiceDirective(["displayAxisLabel", "displayAxisTagline"])}
+
+${buildLanguageDirective(language)}`;
 }
 
 /**

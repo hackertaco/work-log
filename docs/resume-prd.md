@@ -1,201 +1,239 @@
-# Resume Feature PRD Draft
+# Resume Feature PRD
 
 ## Goal
 
-`work-log` 안에 `living resume` 기능을 추가한다.
+`work-log` 안의 `Living Resume`를, 업무로그가 누적될수록 더 자연스럽게 자라나는 이력서 시스템으로 재정의한다.
 
-이 기능은 날짜별 업무로그와 별도로, 기존 이력서와 새로 쌓이는 작업 기록을 지속적으로 병합해 하나의 최신 이력서를 유지하는 것을 목표로 한다.
+이 기능의 핵심은 단순 문장 추출이 아니다.
 
-핵심은 다음 세 가지다.
+- 업무로그를 원본 증거로 삼는다.
+- 여러 날짜의 기록을 묶어 `핵심 프로젝트`, `반복 강점`, `상위 축`을 자동 도출한다.
+- 이 구조를 바탕으로 사용자가 큰 수정 없이 수용 가능한 이력서 제안을 만든다.
 
-- 기존 이력서를 읽어 현재 기준 문서로 삼는다.
-- 이후 커밋, 업무로그, AI 평가, 프로젝트 기록을 바탕으로 이력서 후보를 지속적으로 갱신한다.
-- 사용자는 HTML 화면에서 최신 이력서를 보고, PDF로 다운로드하고, 가능하면 Markdown으로도 내보낼 수 있다.
+## Problem Statement
 
-## Non-Goals
+현재 시스템은 업무로그에서 여러 신호를 모으고 있으나, 사용자가 체감하는 `업무로그 -> 이력서` 연결감은 약하다.
 
-- 날짜순 업무 일지 자체를 이력서 본문으로 직접 노출하지 않는다.
-- Slack/세션 로그를 이력서의 1차 근거로 사용하지 않는다.
-- 여러 버전의 이력서를 병렬 관리하는 복잡한 CMS를 만들지 않는다.
+주된 이유:
+
+- 키워드와 축은 보이지만, 그것이 대표 프로젝트와 서사로 충분히 승격되지 않는다.
+- 업무로그의 개별 기록이 이력서의 상위 개념으로 자연스럽게 합성되지 않는다.
+- 사용자는 같은 데이터를 보고 있다는 느낌보다, 별도의 화면 두 개를 보고 있다는 느낌을 받는다.
+
+## Product Thesis
+
+좋은 이력서는 최근 작업의 목록이 아니라, 반복적으로 증명된 가치의 압축본이다.
+
+따라서 `Living Resume`는 다음 구조를 가져야 한다.
+
+1. `업무로그`
+2. `증거 단위`
+3. `핵심 프로젝트`
+4. `반복 강점`
+5. `상위 축`
+6. `이력서 문장 및 섹션`
+
+즉, 시스템의 본질은 `추출`이 아니라 `승격과 구조화`다.
 
 ## Users
 
-- 1차 사용자: 개인 개발자 본인
+- 1차 사용자: 업무로그를 꾸준히 쓰는 개인 개발자 본인
 - 사용 맥락:
   - 기존 이력서 정리
   - 새 프로젝트/성과 반영
-  - 장기적으로 강점/기술 스택/프로젝트 arc 파악
+  - 장기적으로 어떤 프로젝트와 강점이 커지고 있는지 확인
+  - 자기소개 문장과 이력서 포지셔닝을 지속적으로 갱신
+
+## Success Criteria
+
+- 사용자가 업무로그를 일정량 쌓은 뒤 이력서를 열면 `핵심 프로젝트`, `강점`, `축`이 자동으로 채워져 있다.
+- 사용자는 자동 제안의 대부분을 큰 수정 없이 수용할 수 있다.
+- 핵심 프로젝트는 단일 날짜가 아니라 여러 로그의 흐름을 반영한다.
+- 강점은 키워드 묶음이 아니라 행동 패턴과 결과로 읽힌다.
+- 축은 태그 나열이 아니라 "어떤 문제를 푸는 사람인가"를 설명하는 서사로 읽힌다.
+- 각 제안은 어떤 업무로그에서 유래했는지 역추적할 수 있다.
+
+## Non-Goals
+
+- 날짜순 업무 일지를 이력서 본문으로 그대로 노출하지 않는다.
+- Slack/세션 로그를 이력서의 1차 근거로 직접 사용하지 않는다.
+- 키워드만 많이 보여주는 분석 대시보드를 목표로 하지 않는다.
+- 여러 버전의 이력서를 병렬 관리하는 복잡한 CMS를 Day 1 목표로 두지 않는다.
 
 ## Inputs
 
 ### Required
 
-- 기존 이력서 PDF 업로드
+- 기존 이력서 PDF
 
 ### Optional
 
 - LinkedIn URL
-  - URL을 넣으면 링크 내용을 분석해 기존 이력서 보강 입력으로 사용
+  - 온보딩 시 누락 항목 보충/검증용
 
 ### Ongoing Signals
 
-- Git commits
-  - 1차 근거
-- Daily work-log summaries
-  - 보조 근거
-- AI review
-  - 강점, 리스크, 작업 스타일 해석용
-- Long-term profile
-  - strengths, tech signals, project arcs
+- Daily work log summaries
+- Project groups and commit history
+- AI review / summary lines
+- Existing resume document
 
 ## Core Product Behavior
 
 ### 1. Base Resume Ingestion
 
 - 사용자는 기존 이력서 PDF를 업로드한다.
-- 시스템은 PDF에서 텍스트를 추출해 현재 이력서의 초안 상태를 만든다.
-- 필요 시 LinkedIn URL을 추가 입력으로 받아 보조 분석을 수행한다.
+- 시스템은 PDF에서 텍스트를 추출해 초기 이력서 구조를 만든다.
+- 필요 시 LinkedIn 데이터를 보조 입력으로 사용한다.
 
-### 2. Living Resume Merge
+### 2. Evidence Extraction
 
-- 이후 새 커밋/업무로그/프로젝트 기록이 쌓이면 시스템은 최신 이력서에 반영 가능한 후보를 생성한다.
-- 기본 원칙:
-  - commit-first
-  - 날짜별 로그는 직접 본문이 아니라 증거/보조 신호
-  - 세션/Slack은 “왜 이 일을 했는가”, “어떤 스타일인가” 해석용
+업무로그에서 먼저 아래 증거를 뽑는다.
 
-### 3. Review Step
+- 문제 맥락
+- 내가 한 행동
+- 결과 또는 영향
+- 사용 기술
+- 관련 프로젝트 후보
+- 근거가 된 날짜와 로그
 
-- 자동 분류를 기본으로 한다.
-- 하지만 최종 반영 전에는 사용자가 확인/편집할 수 있어야 한다.
-- 즉:
-  - 시스템이 먼저 카테고리와 문장 후보를 제안
-  - 사용자가 승인/수정
-  - 승인된 내용만 최신 이력서 문서에 merge
+핵심은 키워드보다 `문제-행동-결과` 구조다.
 
-## Resume Output
+### 3. Promotion Layer
+
+증거를 바로 이력서 문장으로 바꾸지 않고, 먼저 상위 개념으로 승격한다.
+
+- `핵심 프로젝트`
+  - 여러 로그에 걸쳐 반복 등장
+  - 목표/문제 맥락이 있다
+  - 결과 또는 사용자 가치가 있다
+- `반복 강점`
+  - 서로 다른 프로젝트나 로그에서 반복 검증된다
+  - 예: 운영 안정성, 제품 판단력, 도구화
+- `상위 축`
+  - 강점과 프로젝트를 묶는 상위 포지셔닝이다
+  - 예: 운영 복잡도를 제품 흐름으로 바꾸는 엔지니어
+
+### 4. Resume Generation
+
+이력서 화면은 아래 질문에 답해야 한다.
+
+- 지금 이 사람을 가장 잘 설명하는 프로젝트는 무엇인가
+- 어떤 강점이 반복적으로 증명되었는가
+- 그래서 어떤 역할에 적합한가
+
+이때 각 항목은 원본 업무로그 근거를 따라 내려갈 수 있어야 한다.
+
+### 5. Review Step
+
+- 시스템이 먼저 프로젝트, 강점, 축, 문장 후보를 제안한다.
+- 사용자는 `승인`, `수정`, `제외`, `대표 프로젝트로 고정` 정도의 최소 조작만 한다.
+- 사용자가 승인/수정한 내용은 자동 갱신보다 우선한다.
+
+## Output Structure
 
 ### Primary
 
-- HTML
-  - `work-log` 화면 안에서 바로 읽을 수 있어야 함
+- HTML resume view inside `work-log`
 
 ### Secondary
 
-- PDF 다운로드
+- PDF download
 
 ### Optional
 
 - Markdown export
 
-## Resume Structure
-
-날짜순 구조가 아니라 `역량 / 스킬 카테고리` 중심으로 간다.
+## Resume Information Architecture
 
 권장 구조:
 
-- Summary / Profile
-- Strengths
-- Core Skills / Tech Signals
-- Experience Themes
-- Project Evidence
-- Selected Impact
+- Summary / Positioning
+- Profile Axes
+- Repeated Strengths
+- Core Projects
+- Experience
+- Skills
+- Evidence-backed impact bullets
 
-각 카테고리 안에는 아래가 같이 들어갈 수 있다.
+핵심 관계:
 
-- 능력/강점 설명
-- 대표 프로젝트 사례
-- 실제 영향/성과
-- 기술 스택 근거
+- 축 아래에 강점이 있다.
+- 강점 아래에 대표 프로젝트가 있다.
+- 프로젝트에는 근거 업무로그가 연결된다.
 
-## Category Strategy
+## UX Direction
 
-초기 제안 카테고리:
+### Work Log side
 
-- Reliability / Stability
-- Product Judgment
-- Frontend Engineering
-- Systems / Architecture
-- AI Tooling / Agent Systems
-- Operations / Workflow Design
+- 오늘의 작업 요약
+- 누적되는 프로젝트 후보
+- 최근 강점 신호
+- "이 작업이 어떤 대표 프로젝트로 자라고 있는지"를 보여준다
 
-이 카테고리는 고정값이 아니라, 실제 데이터가 쌓이면 조정 가능해야 한다.
+### Resume side
 
-## AI Interpretation Layer
+- 대표 축 2~3개
+- 각 축 아래 반복 강점
+- 각 강점 아래 대표 프로젝트
+- 각 프로젝트에 연결된 근거 로그
 
-이력서 기능은 단순히 “무슨 기술을 썼는지”만 나열하지 않고, 아래를 같이 해석해야 한다.
-
-- 어떤 문제를 자주 해결하는 사람인지
-- 어떤 기술에 강점이 있는지
-- 어떤 방식으로 일하는지
-- 이력서에서 가장 강조해야 하는 축이 무엇인지
-
-이 해석은 `AI Review`와 `Long-term Profile`로 표현한다.
-
-## Long-Term Profile
-
-여러 날짜의 기록을 누적해서 아래를 생성한다.
-
-- Strength Signals
-- Tech Signals
-- Work Style
-- Project Arcs
-
-예:
-
-- 운영 안정화에 강함
-- React / Next.js, AI pipeline, Maps / Location에 강함
-- 예외 상황을 먼저 줄이는 스타일
-- 특정 프로젝트에서 장기적으로 어떤 흐름을 개선해 왔는지
+직접 키워드를 이리저리 옮기는 경험은 중심 UI가 아니다.
 
 ## Data Model Direction
 
-### Daily Layer
+### Evidence Layer
 
-- daily work log
-- project groups
-- AI review
+- work log entry
+- project group
+- extracted evidence items
+- source references
 
-### Living Resume Layer
+### Promotion Layer
+
+- core projects
+- strengths
+- axes
+- confidence / support counts
+
+### Resume Layer
 
 - current resume document
-- pending merge candidates
-- approved resume facts
-- category mapping
-- project evidence mapping
-- long-term profile summary
+- pending candidates
+- approved facts
+- rendered resume sections
 
 ## Merge Rules
 
-- 기존 이력서를 source of truth 초안으로 사용
-- 새 후보는 overwrite보다 merge 우선
-- 같은 의미의 문장은 중복 제거 필요
-- 더 강한 문장/더 최근 증거가 있으면 갱신 가능
-- 사용자가 승인하지 않은 항목은 draft 상태 유지
+- 기존 이력서를 초기 source of truth 초안으로 사용한다.
+- 새 제안은 overwrite보다 merge를 우선한다.
+- 같은 의미의 항목은 중복 제거한다.
+- 더 강한 근거와 더 최근 근거가 있으면 갱신한다.
+- 사용자가 수정한 항목은 시스템 갱신보다 항상 우선한다.
+- 축/강점/프로젝트 제안은 원본 근거를 잃지 않아야 한다.
 
 ## Risks
 
-- 기존 PDF 파싱 품질이 낮을 수 있음
-- LinkedIn URL 분석은 접근성/콘텐츠 구조에 영향 받을 수 있음
-- 자동 분류가 잘못되면 이력서 톤이 흐려질 수 있음
-- 날짜별 로그를 그대로 이력서화하면 산만해질 수 있음
+- PDF 파싱 품질이 낮으면 초기 구조가 흔들릴 수 있다.
+- 업무로그 품질 편차가 크면 자동 승격 결과가 불안정할 수 있다.
+- 키워드 중심 로직을 계속 중심에 두면 연결감 문제를 해소하지 못한다.
+- 상위 개념 합성이 과도하면 실제 근거보다 과장된 이력서가 될 수 있다.
 
 ## Open Questions
 
-- PDF 파싱 결과를 사용자가 직접 정정하는 화면이 필요한가?
-- LinkedIn은 요약 텍스트만 참고할지, 구조화 데이터까지 만들지?
-- 승인/편집 단계에서 문장 단위 diff UI가 필요한가?
-- 카테고리 체계를 사용자가 직접 편집할 수 있어야 하는가?
+- 핵심 프로젝트 승격 기준을 어떤 점수 모델로 둘 것인가
+- 자동 승격 시작 조건을 로그 개수 기준으로 둘지, 증거 품질 기준으로 둘지
+- 축을 완전 자동 생성할지, 사용자가 수정 가능한 추천 초안으로 둘지
+- 기존 `display_axes`와 새 `core projects / strengths / axes` 모델을 어떻게 점진 이전할지
 
-## Acceptance Criteria Draft
+## Acceptance Criteria
 
 - 사용자는 기존 이력서 PDF를 업로드할 수 있다.
 - 시스템은 HTML 기준의 최신 이력서 화면을 유지한다.
 - 사용자는 PDF로 다운로드할 수 있다.
-- 가능하면 Markdown으로도 export할 수 있다.
-- 시스템은 commit/work-log/profile을 바탕으로 새 이력서 후보를 생성한다.
-- 후보는 역량/스킬 카테고리에 자동 분류된다.
-- 사용자는 최종 merge 전에 확인/편집할 수 있다.
-- 최신 이력서는 날짜순이 아니라 카테고리 중심 구조를 따른다.
-- 프로젝트 사례와 영향이 카테고리 안에서 연결되어 보인다.
-- 장기적으로 strengths / tech signals / project arcs를 확인할 수 있다.
+- 시스템은 업무로그를 바탕으로 `핵심 프로젝트`, `강점`, `축` 후보를 자동 생성한다.
+- 후보는 원본 업무로그 근거와 연결되어 있다.
+- 사용자는 후보를 승인/수정/제외할 수 있다.
+- 사용자 수정 내용은 이후 자동 갱신보다 우선한다.
+- 이력서는 날짜순 나열이 아니라 `축 -> 강점 -> 프로젝트 -> 근거` 흐름으로 읽힌다.
+- 자동 제안은 사용자가 대부분 큰 수정 없이 수용 가능한 품질을 목표로 한다.

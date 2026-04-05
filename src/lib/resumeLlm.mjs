@@ -33,11 +33,29 @@ export const RESUME_SCHEMA_VERSION = "1";
  * @returns {Promise<string>}
  */
 export async function extractPdfText(buffer) {
-  // pdf-parse is a CommonJS module; createRequire ensures correct resolution
-  // from this ESM context.
-  const pdfParse = _require("pdf-parse");
-  const result = await pdfParse(buffer);
-  return (result.text ?? "").trim();
+  const pdfParseModule = _require("pdf-parse");
+
+  if (typeof pdfParseModule === "function") {
+    const result = await pdfParseModule(buffer);
+    return (result.text ?? "").trim();
+  }
+
+  if (typeof pdfParseModule?.default === "function") {
+    const result = await pdfParseModule.default(buffer);
+    return (result.text ?? "").trim();
+  }
+
+  if (typeof pdfParseModule?.PDFParse === "function") {
+    const parser = new pdfParseModule.PDFParse({ data: buffer });
+    try {
+      const result = await parser.getText();
+      return (result?.text ?? "").trim();
+    } finally {
+      await parser.destroy().catch(() => {});
+    }
+  }
+
+  throw new Error("Unsupported pdf-parse module shape");
 }
 
 // ─── Resume Generation ─────────────────────────────────────────────────────────

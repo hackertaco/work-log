@@ -472,7 +472,8 @@ describe("normalizeExperience", () => {
     const arr = [{ company: "Acme", title: "SWE", bullets }];
     const result = normalizeExperience(arr);
     assert.equal(result[0].bullets.length, 8);
-    assert.ok(result[0].bullets[0].startsWith("Bullet 0."));
+    // Voice normalization strips trailing periods (resume convention)
+    assert.ok(result[0].bullets[0].startsWith("Bullet 0"));
   });
 
   it("handles missing bullets (defaults to empty array)", () => {

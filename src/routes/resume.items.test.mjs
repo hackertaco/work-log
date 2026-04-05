@@ -78,7 +78,21 @@ mock.module("../lib/blob.mjs", {
     clearLinkedInImport:          async () => {},
     saveDisplayAxes:              async () => ({ url: "https://blob/resume/display-axes.json" }),
     readDisplayAxes:              async () => null,
-    DISPLAY_AXES_PATHNAME:        "resume/display-axes.json"
+    DISPLAY_AXES_PATHNAME:        "resume/display-axes.json",
+    saveIdentifiedStrengths:      async () => ({ url: "https://blob/resume/identified-strengths.json" }),
+    readIdentifiedStrengths:      async () => null,
+    saveNarrativeAxes:            async () => ({ url: "https://blob/resume/narrative-axes.json" }),
+    readNarrativeAxes:            async () => null,
+    saveNarrativeThreading:       async () => ({ url: "https://blob/resume/narrative-threading.json" }),
+    readNarrativeThreading:       async () => null,
+    saveSectionBridges:           async () => ({ url: "https://blob/resume/section-bridges.json" }),
+    readSectionBridges:           async () => null,
+    readQualityTracking:          async () => ({ schemaVersion: 1, updatedAt: new Date().toISOString(), records: [] }),
+    saveQualityTracking:          async () => ({ url: "https://blob/resume/quality-tracking.json" }),
+    saveChatDraft:                 async () => ({ url: "https://blob/resume/chat-draft.json" }),
+    readChatDraft:                 async () => null,
+    saveChatDraftContext:          async () => ({ url: "https://blob/resume/chat-draft-context.json" }),
+    readChatDraftContext:          async () => null,
   }
 });
 
@@ -110,6 +124,9 @@ mock.module("../lib/resumeReconstruction.mjs", {
   namedExports: {
     gatherWorkLogBullets:         async () => [],
     fullReconstructExtractCache:  async () => ({ contact: { name: "Test" } }),
+    generateSectionBridges:       async () => [],
+    validateResumeCoherence:      async () => ({ overallScore: 1, grade: "A", structuralFlow: 1, redundancy: 1, tonalConsistency: 1, issues: [], autoFixes: [] }),
+    runNarrativeThreadingPipeline: async () => ({ strengths: [], axes: [], sectionBridges: [], extractionResults: [], threading: { totalAnnotations: 0, groundedRatio: 0, strengthCoverage: {}, axisCoverage: {} }, groundingReport: {} }),
     reconstructResumeFromSources: async () => ({ contact: { name: "Test" } }),
     mergeWithUserEdits:           (r) => r,
     isResumeStale:                () => false

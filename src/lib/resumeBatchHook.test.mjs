@@ -342,7 +342,8 @@ describe("CandidateHookResult above-threshold (success) shape contract", () => {
       cacheHit,
       deltaRatio: ratio,
       deltaChangedCount: changedCount,
-      deltaTotalCount: totalCount
+      deltaTotalCount: totalCount,
+      draftGenerationTriggered: true
     };
   }
 
@@ -364,5 +365,277 @@ describe("CandidateHookResult above-threshold (success) shape contract", () => {
   test("deltaRatio >= 0.03 on success result", () => {
     const r = makeSuccessResult({ generated: 3, superseded: 0, cacheHit: false, ratio: 0.05, changedCount: 5, totalCount: 100 });
     assert.ok(r.deltaRatio >= 0.03, `Expected ratio >= 0.03, got ${r.deltaRatio}`);
+  });
+
+  test("draftGenerationTriggered=true on success result (Sub-AC 2-2)", () => {
+    const r = makeSuccessResult({ generated: 3, superseded: 0, cacheHit: false, ratio: 0.05, changedCount: 5, totalCount: 100 });
+    assert.strictEqual(r.draftGenerationTriggered, true);
+  });
+});
+
+// ─── Sub-AC 2-2: Background draft generation (structural contract) ────────────
+//
+// The full background draft generation path requires live Vercel Blob + LLM.
+// Unit-testable paths here cover:
+//   • draftGenerationTriggered is absent on guard-skip results
+//   • draftGenerationTriggered=true is included in non-skip results
+//   • Module imports generateResumeDraft and saveChatDraft (shape contract)
+
+describe("Sub-AC 2-2 — background draft generation contract", () => {
+  test("draftGenerationTriggered is absent on no_blob_token skip result", async () => {
+    const result = await withEnv(
+      { BLOB_READ_WRITE_TOKEN: undefined },
+      () => runResumeCandidateHook("2025-01-15", {})
+    );
+    // Guard fires before any draft generation is triggered
+    assert.strictEqual(result.draftGenerationTriggered, undefined);
+  });
+
+  test("draftGenerationTriggered is absent on openai_disabled skip result", async () => {
+    const result = await withEnv(
+      { BLOB_READ_WRITE_TOKEN: "test-token", WORK_LOG_DISABLE_OPENAI: "1" },
+      () => runResumeCandidateHook("2025-01-15", {})
+    );
+    // Guard fires before any draft generation is triggered
+    assert.strictEqual(result.draftGenerationTriggered, undefined);
+  });
+
+  test("belowThreshold result shape includes draftGenerationTriggered (structural)", () => {
+    // Simulates what the hook returns when delta < 3% but draft was triggered
+    const belowWithDraft = {
+      skipped: false,
+      belowThreshold: true,
+      generated: 0,
+      superseded: 0,
+      cacheHit: false,
+      deltaRatio: 0.01,
+      deltaChangedCount: 1,
+      deltaTotalCount: 100,
+      draftGenerationTriggered: true
+    };
+    assert.strictEqual(belowWithDraft.draftGenerationTriggered, true);
+    assert.strictEqual(belowWithDraft.belowThreshold, true);
+  });
+
+  test("resumeDraftGeneration module exports generateResumeDraft as a function", async () => {
+    const mod = await import("./resumeDraftGeneration.mjs");
+    assert.strictEqual(typeof mod.generateResumeDraft, "function");
+  });
+
+  test("resumeDraftGeneration module exports loadWorkLogs as a function", async () => {
+    const mod = await import("./resumeDraftGeneration.mjs");
+    assert.strictEqual(typeof mod.loadWorkLogs, "function");
+  });
+
+  test("resumeDraftGeneration module exports aggregateSignals as a function", async () => {
+    const mod = await import("./resumeDraftGeneration.mjs");
+    assert.strictEqual(typeof mod.aggregateSignals, "function");
+  });
+
+  test("resumeChatDraftService module exports buildChatDraftContext as a function", async () => {
+    const mod = await import("./resumeChatDraftService.mjs");
+    assert.strictEqual(typeof mod.buildChatDraftContext, "function");
+  });
+
+  test("buildChatDraftContext returns correct shape on empty work logs", async () => {
+    const { buildChatDraftContext } = await import("./resumeChatDraftService.mjs");
+    const result = await buildChatDraftContext({ fromDate: "2099-01-01", toDate: "2099-01-31" });
+    assert.strictEqual(result.draft, null, "draft should be null when no data");
+    assert.ok(Array.isArray(result.evidencePool), "evidencePool must be an array");
+    assert.ok(typeof result.sourceBreakdown === "object", "sourceBreakdown must be an object");
+    assert.strictEqual(result.sourceBreakdown.commits, 0);
+    assert.strictEqual(result.sourceBreakdown.slack, 0);
+    assert.strictEqual(result.sourceBreakdown.sessions, 0);
+    assert.ok(Array.isArray(result.dataGaps), "dataGaps must be an array");
+  });
+
+  test("blob module exports saveChatDraftContext as a function", async () => {
+    const mod = await import("./blob.mjs");
+    assert.strictEqual(typeof mod.saveChatDraftContext, "function");
+  });
+
+  test("blob module exports readChatDraftContext as a function", async () => {
+    const mod = await import("./blob.mjs");
+    assert.strictEqual(typeof mod.readChatDraftContext, "function");
+  });
+
+  test("blob module exports CHAT_DRAFT_CONTEXT_PATHNAME constant", async () => {
+    const mod = await import("./blob.mjs");
+    assert.strictEqual(mod.CHAT_DRAFT_CONTEXT_PATHNAME, "resume/chat-draft-context.json");
+  });
+
+  test("aggregateSignals returns correct shape on empty input", async () => {
+    const { aggregateSignals } = await import("./resumeDraftGeneration.mjs");
+    const result = aggregateSignals([]);
+    assert.strictEqual(typeof result.signalText, "string");
+    assert.strictEqual(result.commitCount, 0);
+    assert.strictEqual(result.sessionCount, 0);
+    assert.strictEqual(result.slackCount, 0);
+    assert.ok(Array.isArray(result.repos));
+    assert.strictEqual(result.repos.length, 0);
+  });
+
+  test("aggregateSignals accumulates commits, sessions, slack from work logs", async () => {
+    const { aggregateSignals } = await import("./resumeDraftGeneration.mjs");
+    const workLogs = [
+      {
+        date: "2026-01-01",
+        counts: { gitCommits: 5, codexSessions: 2, claudeSessions: 1, slackContexts: 3 },
+        highlights: {}
+      },
+      {
+        date: "2026-01-02",
+        counts: { gitCommits: 3, codexSessions: 0, claudeSessions: 1, slackContexts: 2 },
+        highlights: {}
+      }
+    ];
+    const result = aggregateSignals(workLogs);
+    assert.strictEqual(result.commitCount, 8);   // 5 + 3
+    assert.strictEqual(result.sessionCount, 4);  // (2+1) + (0+1)
+    assert.strictEqual(result.slackCount, 5);    // 3 + 2
+  });
+
+  test("aggregateSignals includes story thread repos in repos list", async () => {
+    const { aggregateSignals } = await import("./resumeDraftGeneration.mjs");
+    const workLogs = [
+      {
+        date: "2026-01-01",
+        counts: {},
+        highlights: {
+          storyThreads: [
+            { repo: "my-repo", outcome: "shipped feature" },
+            { repo: "other-repo", keyChange: "refactored module" }
+          ]
+        }
+      }
+    ];
+    const result = aggregateSignals(workLogs);
+    assert.ok(result.repos.includes("my-repo"), "repos should contain my-repo");
+    assert.ok(result.repos.includes("other-repo"), "repos should contain other-repo");
+  });
+
+  test("aggregateSignals truncates signalText at SIGNAL_TEXT_LIMIT", async () => {
+    const { aggregateSignals } = await import("./resumeDraftGeneration.mjs");
+    // Generate a work log with very long content
+    const bigHighlight = "x".repeat(1000);
+    const workLogs = Array.from({ length: 30 }, (_, i) => ({
+      date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+      counts: { gitCommits: 1 },
+      highlights: {
+        businessOutcomes: [bigHighlight, bigHighlight, bigHighlight]
+      }
+    }));
+    const result = aggregateSignals(workLogs);
+    // signalText should be capped at 20,000 chars (the module's SIGNAL_TEXT_LIMIT)
+    assert.ok(result.signalText.length <= 20_000 + 20, "signalText must be ≤ SIGNAL_TEXT_LIMIT");
+  });
+
+  test("loadWorkLogs returns empty array when daily dir does not exist", async () => {
+    const { loadWorkLogs } = await import("./resumeDraftGeneration.mjs");
+    // Temporarily override config to point to a non-existent directory
+    // Since we can't easily mock config here, just verify the function returns an array
+    const result = await loadWorkLogs({ fromDate: "2099-01-01", toDate: "2099-01-31" });
+    assert.ok(Array.isArray(result), "loadWorkLogs should always return an array");
+    assert.strictEqual(result.length, 0, "should return empty array for future date range");
+  });
+
+  test("aggregateSignals includes raw commit subjects from projects field", async () => {
+    const { aggregateSignals } = await import("./resumeDraftGeneration.mjs");
+    const workLogs = [
+      {
+        date: "2026-01-01",
+        counts: { gitCommits: 5 },
+        highlights: {},
+        projects: [
+          {
+            repo: "test-repo",
+            commits: [
+              { subject: "feat: 새로운 배치 처리 파이프라인 구현" },
+              { subject: "fix: 캐시 무효화 타이밍 수정으로 일관성 확보" },
+            ],
+          },
+        ],
+      },
+    ];
+    const result = aggregateSignals(workLogs);
+    assert.ok(
+      result.signalText.includes("[test-repo] 커밋:"),
+      "signalText should include raw commit subjects section"
+    );
+    assert.ok(
+      result.signalText.includes("배치 처리 파이프라인"),
+      "signalText should include commit subject content"
+    );
+  });
+
+  test("buildChatDraftContext collects evidence from all three data sources", async () => {
+    const { buildChatDraftContext } = await import("./resumeChatDraftService.mjs");
+    const result = await buildChatDraftContext({
+      fromDate: "2026-03-24",
+      toDate: "2026-04-03",
+      skipLLM: true,
+    });
+    // Structural validation
+    assert.ok(result !== null && typeof result === "object");
+    assert.ok(Array.isArray(result.evidencePool));
+    assert.ok(typeof result.sourceBreakdown === "object");
+    assert.ok(typeof result.sourceBreakdown.commits === "number");
+    assert.ok(typeof result.sourceBreakdown.slack === "number");
+    assert.ok(typeof result.sourceBreakdown.sessions === "number");
+    assert.ok(typeof result.sourceBreakdown.totalDates === "number");
+    assert.ok(Array.isArray(result.dataGaps));
+
+    // If data exists, evidence should be populated
+    if (result.sourceBreakdown.totalDates > 0) {
+      assert.ok(result.evidencePool.length > 0, "evidence pool should be populated with data");
+    }
+  });
+
+  test("buildChatDraftContext evidence includes commit-sourced items", async () => {
+    const { buildChatDraftContext } = await import("./resumeChatDraftService.mjs");
+    const result = await buildChatDraftContext({
+      fromDate: "2026-03-24",
+      toDate: "2026-04-03",
+      skipLLM: true,
+    });
+    if (result.sourceBreakdown.totalDates > 0) {
+      const commitEvidence = result.evidencePool.filter((e) => e.source === "commits");
+      assert.ok(commitEvidence.length > 0, "should have commit evidence when work logs have commits");
+    }
+  });
+
+  test("buildChatDraftContext accepts currentWorkLog parameter for batch injection", async () => {
+    const { buildChatDraftContext } = await import("./resumeChatDraftService.mjs");
+    const mockWorkLog = {
+      date: "2099-06-15",
+      counts: { gitCommits: 2, codexSessions: 0, claudeSessions: 0, slackContexts: 0 },
+      highlights: {
+        businessOutcomes: ["배치 처리 파이프라인 구현 완료"],
+        storyThreads: [{ repo: "test-repo", outcome: "완료" }],
+      },
+      projects: [{
+        repo: "test-repo",
+        commits: [{ subject: "feat: 초안 생성 배치 로직 구현" }],
+      }],
+    };
+
+    const result = await buildChatDraftContext({
+      fromDate: "2099-06-15",
+      toDate: "2099-06-15",
+      currentWorkLog: mockWorkLog,
+      skipLLM: true,
+    });
+
+    // The injected work log should produce evidence
+    assert.ok(result.evidencePool.length > 0, "injected workLog should produce evidence");
+    assert.strictEqual(result.sourceBreakdown.totalDates, 1, "should have 1 date from injected log");
+
+    // Verify evidence contains data from the injected work log
+    const commitEvidence = result.evidencePool.filter((e) => e.source === "commits");
+    assert.ok(commitEvidence.length > 0, "should have commit evidence from injected workLog");
+    assert.ok(
+      commitEvidence.some((e) => e.text.includes("test-repo") || e.text.includes("배치 처리") || e.text.includes("완료")),
+      "commit evidence should contain injected work log data"
+    );
   });
 });

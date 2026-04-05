@@ -1,0 +1,125 @@
+# Work Log -> Resume narrative promotion
+# Manually crystallized from Ouroboros interview session `interview_20260330_024638`
+# Date: 2026-03-31
+
+goal: >
+  work-log의 Living Resume를 개선해, 업무로그와 Codex/Claude 작업 대화 기록이
+  자연스럽게 이력서 서사로 이어지도록 만든다.
+  시스템은 원본 로그를 직접 이력서화하는 대신 evidence를 만들고,
+  이를 representative core projects, repeated strengths, higher-level axes로
+  승격한 뒤 resume에 반영해야 한다.
+
+constraints:
+  - "Day 1에 Codex/Claude 세션 대화 분석이 반드시 포함되어야 한다"
+  - "세션-커밋 연결은 exact 1:1이 아니어도 되며 same-date + same-repo 휴리스틱이면 충분하다"
+  - "사용자 편집 내용은 자동 업데이트보다 항상 우선한다"
+  - "새 근거가 생겨도 기존 사용자 편집 bullet은 덮어쓰지 않고 제안으로만 보여준다"
+  - "정확도가 비용보다 중요하다"
+  - "기존 resume 데이터와 완전 호환 마이그레이션은 필수가 아니며 필요하면 새로 생성해도 된다"
+  - "새 파이프라인은 기존 파일을 리팩터링/확장하는 방향으로 구현한다"
+  - "Day 1에는 역추적 UI가 필수는 아니다"
+
+non_goals:
+  - "키워드 중심 분석을 메인 가치로 유지하는 것"
+  - "사용자 편집 내용을 자동으로 overwrite하는 것"
+  - "resume에서 source work log를 클릭해 역추적하는 UI를 Day 1에 완성하는 것"
+  - "과하게 세분화된 섹션 구조를 만드는 것"
+
+acceptance_criteria:
+  - "입력 파이프라인은 work logs + Codex/Claude session conversations -> evidence -> core projects -> strengths -> axes -> resume 구조를 따른다"
+  - "특정 repo 하나만 보더라도 대표 프로젝트 약 2개, 강점 3-5개, 축 2-3개가 자연스럽게 보인다"
+  - "strength는 keyword cloud가 아니라 반복되는 행동 패턴과 판단/사고 맥락으로 읽혀야 한다"
+  - "axis는 strength들의 상위 서사로 읽혀야 한다"
+  - "생성된 bullet의 70% 이상이 의미 유사도 기준으로 큰 수정 없이 사용 가능해야 한다"
+  - "시스템은 generated bullet과 final accepted bullet의 의미 유사도를 자동 추적할 수 있어야 한다"
+  - "user-edited bullet에 새 근거가 생기면 inline diff 형태의 수정 제안을 보여준다"
+  - "제안 UI는 bullet별 승인/거절과 전체 일괄 수락/거절을 모두 지원한다"
+  - "재생성은 자동 background trigger와 manual trigger를 모두 지원한다"
+  - "Day 1에는 work log/session을 다시 읽어 projects, strengths, axes, bullets를 재계산하는 manual regenerate 버튼이 존재해야 한다"
+  - "Day 1 성공 기준은 사용자가 resume를 읽고 자신의 실제 업무가 자연스럽게 정리됐다고 납득하는 것이다"
+
+domain_model:
+  evidence:
+    description: "업무로그와 세션 대화에서 뽑힌 문제/행동/결과/판단 단위"
+    fields:
+      - id
+      - date
+      - repo
+      - source_type
+      - problem
+      - action
+      - outcome
+      - reasoning
+      - technologies
+  core_projects:
+    description: "여러 날짜/증거를 묶은 대표 프로젝트 흐름"
+    target_count_per_repo: 2
+    fields:
+      - id
+      - title
+      - summary
+      - repo
+      - source_dates
+      - evidence_ids
+  strengths:
+    description: "프로젝트와 evidence를 가로질러 반복 검증된 행동 패턴"
+    target_count: "3-5"
+    fields:
+      - id
+      - label
+      - summary
+      - project_ids
+      - evidence_ids
+  axes:
+    description: "strength의 상위 narrative positioning"
+    target_count: "2-3"
+    fields:
+      - id
+      - label
+      - tagline
+      - strength_ids
+      - project_ids
+
+implementation_direction:
+  reuse_existing_paths:
+    - "src/lib/resumeRecluster.mjs"
+    - "src/lib/resumeReconstruction.mjs"
+    - "src/routes/resume.mjs"
+    - "src/lib/profile.mjs"
+  ui_touchpoints:
+    - "frontend/src/pages/WorkLogPage.jsx"
+    - "frontend/src/components/resume/ResumeBody.jsx"
+    - "frontend/src/components/resume/DisplayAxesView.jsx"
+  notes:
+    - "새 promotion 레이어를 기존 흐름 위에 리팩터링 방식으로 삽입한다"
+    - "keyword/display_axes 중심 구조는 점진적으로 비중을 낮춘다"
+    - "manual regenerate는 Day 1 핵심 사용자 제어 장치다"
+
+evaluation_principles:
+  - name: narrative_coherence
+    description: "resume가 실제 업무가 자연스럽게 정리된 서사처럼 읽히는가"
+    weight: 0.35
+  - name: bullet_quality
+    description: "생성 bullet이 의미 유사도 기준으로 적은 수정만으로 사용 가능한가"
+    weight: 0.25
+  - name: project_promotion_quality
+    description: "repo별 대표 프로젝트 흐름이 과분화되지 않고 자연스럽게 보이는가"
+    weight: 0.20
+  - name: user_override_safety
+    description: "사용자 편집이 overwrite되지 않고 제안 모델로 안전하게 유지되는가"
+    weight: 0.10
+  - name: regeneration_control
+    description: "자동/수동 재생성이 모두 동작하고 수동 재생성 버튼이 핵심 제어로 기능하는가"
+    weight: 0.10
+
+day1_demo:
+  evaluator: "single user"
+  pass_condition: >
+    특정 repo 하나만 보더라도 representative projects 약 2개,
+    strengths 3-5개, axes 2-3개가 자연스럽게 보이고,
+    사용자가 자신의 실제 업무가 resume로 잘 정리됐다고 납득한다.
+
+metadata:
+  source_session: "interview_20260330_024638"
+  source_type: "manual seed from Ouroboros interview because official generate_seed gate remained at ambiguity 0.23"
+  created: "2026-03-31"

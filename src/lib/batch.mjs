@@ -4,7 +4,12 @@ import { readBulletCache, writeBulletCache } from "./bulletCache.mjs";
 import { loadConfig } from "./config.mjs";
 import { summarizeWithOpenAI } from "./openai.mjs";
 import { buildProfileSummary } from "./profile.mjs";
-import { runResumeCandidateHook } from "./resumeBatchHook.mjs";
+import {
+  emitCommitCollected,
+  emitSessionCollected,
+  emitSlackCollected,
+  emitWorkLogSaved
+} from "./workLogEventBus.mjs";
 import {
   detectPrBranchMentions,
   sortProjectsByPrWeight
@@ -41,6 +46,20 @@ export async function runDailyBatch(inputDate) {
     collectGitCommits(config, date),
     collectShellHistory(config, date)
   ]);
+
+  // ── Granular event emissions (Sub-AC 2-1) ─────────────────────────────────
+  //
+  // Emit informational events for each collected data source immediately after
+  // the parallel collection resolves.  Listeners registered via onWorkLogEvent()
+  // can use these for logging, monitoring, or incremental processing without
+  // waiting for the full summary to be built.
+  //
+  // These are fire-and-forget: the batch pipeline does not await them.
+  emitCommitCollected(date, gitData.commits);
+  if (config.includeSlack) emitSlackCollected(date, slackContexts);
+  if (config.includeSessionLogs) {
+    emitSessionCollected(date, [...codexSessions, ...claudeSessions]);
+  }
 
   // ── PR/branch signal detection (Sub-AC 11b) ────────────────────────────────
   //
@@ -92,8 +111,12 @@ export async function runDailyBatch(inputDate) {
 
   // ── Final stage: delta check + merge candidate generation (Sub-AC 10-3) ─────
   //
-  // After the daily summary has been written, run the resume candidate hook.
-  // This performs:
+  // After the daily summary has been written, emit "work_log_saved" through the
+  // event bus (Sub-AC 2-1).  The event bus sequentially awaits all registered
+  // hooks; by default `registerResumeBatchHook()` is called from server.mjs /
+  // cli.mjs to wire `runResumeCandidateHook` into the bus.
+  //
+  // This performs (via registered hooks):
   //   1. Extract resume-worthy updates from today's work log (LLM, cache-first)
   //   2. Merge updates into the existing resume → proposed document
   //   3. Rule-based diff to identify what changed
@@ -101,30 +124,11 @@ export async function runDailyBatch(inputDate) {
   //   5. Supersede any existing pending candidates (AC 13 semantics)
   //   6. Persist updated suggestions to Vercel Blob
   //
-  // The hook is intentionally non-fatal:
-  //   - Skipped silently when BLOB_READ_WRITE_TOKEN is absent (local dev) or
-  //     when no resume has been bootstrapped yet.
-  //   - Errors are captured in the result object and logged; the batch always
+  // The emission is intentionally non-fatal:
+  //   - If no hooks are registered, a neutral skipped result is returned.
+  //   - Errors inside hooks are captured and returned; the batch always
   //     completes regardless of hook outcome.
-  let candidateHook;
-  try {
-    candidateHook = await runResumeCandidateHook(date, summary);
-  } catch (err) {
-    // This path should never be reached — runResumeCandidateHook is designed
-    // to never throw — but we guard defensively to ensure the batch always
-    // returns successfully.
-    console.warn(
-      `[batch date="${date}"] Resume candidate hook threw unexpectedly (non-fatal):`,
-      err?.message ?? String(err)
-    );
-    candidateHook = {
-      skipped: false,
-      generated: 0,
-      superseded: 0,
-      cacheHit: false,
-      error: err?.message ?? String(err)
-    };
-  }
+  const candidateHook = await emitWorkLogSaved(date, summary);
 
   return {
     ...summary,
@@ -160,6 +164,7 @@ async function buildSummary({ date, codexSessions, claudeSessions, slackContexts
     shellHistory,
     codexSessions,
     claudeSessions,
+    slackContexts,
     heuristicThemes: themeSummaries
   });
   const commitFirstMainWork = deriveMainWorkFromCommits(gitCommits);
@@ -179,6 +184,15 @@ async function buildSummary({ date, codexSessions, claudeSessions, slackContexts
   const finalAiReview = aiSummaries?.aiReview?.length
     ? aiSummaries.aiReview
     : deriveAiReviewFromSignals(gitCommits, codexSessions, claudeSessions, slackContexts, sessionSignalsExist);
+  const finalWorkingStyleSignals = aiSummaries?.workingStyleSignals?.length
+    ? aiSummaries.workingStyleSignals
+    : deriveWorkingStyleSignals({
+        gitCommits,
+        codexSessions,
+        claudeSessions,
+        slackContexts,
+        aiReview: finalAiReview
+      });
   const accomplishments = uniqueStrings([
     ...finalThemeSummaries,
     ...commitHighlights,
@@ -250,6 +264,8 @@ async function buildSummary({ date, codexSessions, claudeSessions, slackContexts
       whyItMatters: finalWhyItMatters,
       commitAnalysis: finalCommitAnalysis,
       aiReview: finalAiReview,
+      workingStyleSignals: finalWorkingStyleSignals,
+      shareableSentence: aiSummaries?.shareableSentence || '',
       storyThreads,
       mainWork: finalMainWork,
       supportingWork: finalSupportingWork,
@@ -346,6 +362,13 @@ function renderDailyMarkdown(summary) {
       ? [
           "### AI Review",
           ...summary.highlights.aiReview.map((item) => `- ${item}`),
+          ""
+        ]
+      : []),
+    ...(summary.highlights.workingStyleSignals?.length
+      ? [
+          "### Working Style Signals",
+          ...summary.highlights.workingStyleSignals.map((item) => `- ${item}`),
           ""
         ]
       : []),
@@ -644,6 +667,42 @@ function deriveAiReviewFromSignals(gitCommits, codexSessions, claudeSessions, sl
   return review.slice(0, 4);
 }
 
+function deriveWorkingStyleSignals({
+  gitCommits,
+  codexSessions,
+  claudeSessions,
+  slackContexts = [],
+  aiReview = []
+}) {
+  const signals = [];
+  const texts = uniqueStrings([
+    ...slackContexts.map((entry) => entry.text),
+    ...slackContexts.flatMap((entry) => entry.context || []),
+    ...codexSessions.flatMap((session) => [session.summary, ...(session.snippets || [])]),
+    ...claudeSessions.flatMap((session) => [session.summary, ...(session.snippets || [])]),
+    ...aiReview,
+    ...gitCommits.map((commit) => commit.subject)
+  ], 40).join(" ");
+
+  if (/(설문|기대|정렬|로드맵|현실적 목표|기대치)/.test(texts)) {
+    signals.push("기대치와 실제 결과의 간극을 먼저 줄이려는 편이다.");
+  }
+  if (/(노이즈|필터|beforeSend|Sentry|잡음|가시성|운영)/i.test(texts)) {
+    signals.push("운영 신호의 잡음을 줄여 판단 비용을 낮추는 방향을 선호한다.");
+  }
+  if (/(흐름|구조|재정비|재구성|파이프라인|블루프린트|timeline|workflow)/i.test(texts)) {
+    signals.push("개별 수정 대신 전체 흐름과 구조를 함께 정리하려는 성향이 있다.");
+  }
+  if (/(브랜드|표현|일관성|quality|품질|자연스럽)/i.test(texts)) {
+    signals.push("완성도 기준을 말로 정리하고 결과물의 일관성을 끝까지 챙기는 편이다.");
+  }
+  if (/(도입|먼저|priorit|정교|리스크|위험|guard|예외)/i.test(texts)) {
+    signals.push("리스크를 먼저 좁히고 그 위에 기능이나 경험을 쌓는 판단 패턴이 보인다.");
+  }
+
+  return uniqueStrings(signals, 5);
+}
+
 function deriveBusinessOutcomesFromCommits(gitCommits) {
   const byRepo = groupBy(gitCommits, "repo");
   const bullets = [];
@@ -700,9 +759,33 @@ function summarizeProjectStory(project, decision = "") {
   const subjects = project.commits.map((commit) => commit.subject).join(" ");
   const repo = project.repo;
 
+  if (repo === "driving-teacher-ai-native") {
+    return {
+      repo,
+      outcome: synthesizeStoryOutcome(subjects, [
+        {
+          test: /(설문|로드맵|커리큘럼|숙제-스킬|브랜드 디자인|현실적 목표)/,
+          outcome: "AI 캠프 커리큘럼과 기대치 정렬 흐름을 재설계함"
+        },
+        {
+          test: /(gdrive|mcp|도메인 지식 플로우)/i,
+          outcome: "AI 캠프 운영을 위한 도메인 지식 흐름을 정비함"
+        }
+      ], "학습 경험의 현실성과 안내 정확도를 높이는 흐름을 다듬음"),
+      keyChange: synthesizeKeyChange(subjects, [
+        /(설문|로드맵|커리큘럼|숙제-스킬|브랜드 디자인|현실적 목표)/,
+        /(gdrive|mcp|도메인 지식 플로우)/i
+      ]),
+      impact: "학습자 기대치와 실제 진행 흐름이 더 잘 맞도록 조정함",
+      why: "초기 안내와 실제 학습 경험의 오차를 줄여 운영 커뮤니케이션 비용을 낮춤",
+      decision
+    };
+  }
+
   if (repo === "driving-teacher-frontend") {
     if (/(체크인|예약 성공|deposit|admission|merchant key|환불)/.test(subjects)) {
       return {
+        repo,
         outcome: "예약·결제·체크인 흐름의 오작동 가능성을 줄임",
         keyChange: "체크인 상태 노출과 merchant key/환불 처리 분기를 정리",
         impact: "운영자가 결제와 체크인 상태를 더 정확하게 확인함",
@@ -713,6 +796,7 @@ function summarizeProjectStory(project, decision = "") {
 
     if (/(gps|지도|셔틀|정류장|qa|cache|lottie|getstaticprops|router|kakao sdk)/i.test(subjects)) {
       return {
+        repo,
         outcome: "셔틀·지도·QA 흐름의 안정성을 높임",
         keyChange: "GPS 인식 범위와 순서를 보정하고 지도/SDK 가드를 추가",
         impact: "운영 화면의 오류와 테스트 중 잡음을 줄임",
@@ -724,6 +808,7 @@ function summarizeProjectStory(project, decision = "") {
 
   if (repo === "kakao-novel-generator") {
     return {
+      repo,
       outcome: "서사 생성 결과의 개연성과 형식 안정성을 높임",
       keyChange: "causal graph·why-chain·deterministic control 파이프라인을 강화",
       impact: "허용도 낮은 결과와 메타 출력이 줄어듦",
@@ -734,6 +819,7 @@ function summarizeProjectStory(project, decision = "") {
 
   if (repo === "ouroboros") {
     return {
+      repo,
       outcome: "에이전트 루프와 재개 흐름의 신뢰성을 높임",
       keyChange: "loop/state restore/install 경로의 결함을 연속적으로 수정",
       impact: "재시도·재개·설치 과정에서 실패 가능성을 줄임",
@@ -743,12 +829,110 @@ function summarizeProjectStory(project, decision = "") {
   }
 
   return {
-    outcome: `${repo} 관련 작업의 안정성과 완성도를 높임`,
-    keyChange: project.commits[0]?.subject || "",
+    repo,
+    outcome: synthesizeStoryOutcome(subjects, [], `${repo}에서 진행한 핵심 흐름을 정리하고 개선함`),
+    keyChange: synthesizeKeyChange(subjects),
     impact: "주요 기능 흐름의 오류 가능성을 줄임",
     why: "운영과 개발 모두에서 예외 상황 대응 비용을 줄일 수 있음",
     decision
   };
+}
+
+function synthesizeStoryOutcome(subjects, rules = [], fallback) {
+  for (const rule of rules) {
+    if (rule.test.test(subjects)) return rule.outcome;
+  }
+
+  if (/(filter|노이즈|sentry|beforeSend)/i.test(subjects)) {
+    return "운영 노이즈를 줄이고 판단 신호를 더 선명하게 만듦";
+  }
+  if (/(qa|guard|retry|resume|stability|안정|예외)/i.test(subjects)) {
+    return "불안정한 흐름을 더 안전하게 운영할 수 있도록 정리함";
+  }
+  if (/(roadmap|survey|curriculum|커리큘럼|설문|로드맵)/i.test(subjects)) {
+    return "기대치와 실제 흐름이 어긋나지 않도록 운영 구조를 조정함";
+  }
+  if (/(rewriter|timeline|blueprint|scene|story|서사|소설)/i.test(subjects)) {
+    return "생성 결과의 흐름과 품질이 더 자연스럽게 이어지도록 다듬음";
+  }
+  if (/(brand|design|리브랜딩|표현|일관성)/i.test(subjects)) {
+    return "브랜드 표현과 사용자 경험의 일관성을 높이는 방향으로 정리함";
+  }
+
+  return fallback;
+}
+
+function synthesizeKeyChange(subjects, preferredPatterns = []) {
+  const commits = subjects
+    .split(/(?:(?<=\))\s+|;\s+)/)
+    .map((text) => cleanCommitSubject(text))
+    .filter(Boolean);
+
+  const joined = commits.join(" ");
+
+  if (preferredPatterns.length > 0) {
+    const preferred = commits.filter((subject) =>
+      preferredPatterns.some((pattern) => pattern.test(subject))
+    );
+    const summarized = summarizeCommitChanges(preferred);
+    if (summarized) return summarized;
+  }
+
+  const summarized = summarizeCommitChanges(commits);
+  if (summarized) return summarized;
+
+  for (const pattern of preferredPatterns) {
+    const hit = commits.find((subject) => pattern.test(subject));
+    if (hit) return cleanCommitSubject(hit);
+  }
+
+  if (/(설문|로드맵|커리큘럼|숙제-스킬|브랜드 디자인|현실적 목표)/.test(joined)) {
+    return "사전 설문, 로드맵, 커리큘럼 흐름을 함께 손봐 학습 안내 구조를 다시 정리";
+  }
+  if (/(sentry|filter|beforeSend|retry|offline|오프라인|노이즈)/i.test(joined)) {
+    return "오류 필터와 예외 대응 설정을 조정해 운영 신호를 더 안정적으로 관리";
+  }
+  if (/(timeline|blueprint|rewriter|scene|dedup|중복|서사|소설)/i.test(joined)) {
+    return "서사 생성 파이프라인의 구조와 후처리 규칙을 다듬어 출력 품질을 개선";
+  }
+
+  return cleanCommitSubject(commits[0] || subjects);
+}
+
+function cleanCommitSubject(subject) {
+  return String(subject || "")
+    .replace(/^([A-Z]+|\w+)(\([^)]+\))?:\s*/i, "")
+    .replace(/\s*\(#\d+\)\s*$/, "")
+    .trim();
+}
+
+function summarizeCommitChanges(commits) {
+  const joined = commits.join(" ");
+  if (!joined) return "";
+
+  if (/(설문|로드맵|커리큘럼|숙제-스킬|브랜드 디자인|현실적 목표)/.test(joined)) {
+    return "사전 설문, 로드맵, 커리큘럼 구성을 함께 조정해 학습 흐름을 재정비";
+  }
+  if (/(block 1|block 3|think-deeper|onboarding|README|SETUP|설명|안내|채널명)/i.test(joined)) {
+    return "온보딩 단계와 안내 문구를 다시 짜서 처음 따라오는 흐름을 단순화";
+  }
+  if (/(windows|fnm|homebrew|path|인코딩|설치 스크립트|개인 계정|mcp)/i.test(joined)) {
+    return "설치 스크립트와 환경별 가이드를 정리해 세팅 실패 지점을 줄임";
+  }
+  if (/(sentry|filter|beforeSend|retry|offline|오프라인|노이즈)/i.test(joined)) {
+    return "오류 필터와 예외 대응 설정을 묶어 운영 노이즈와 장애 탐지 흐름을 정리";
+  }
+  if (/(tablet|가로 모드|responsive|breakpoint|layout)/i.test(joined)) {
+    return "레이아웃 기준값을 조정해 태블릿 환경의 화면 전환 동작을 안정화";
+  }
+  if (/(timeline|blueprint|rewriter|scene|dedup|중복|서사|소설|5w1h|opening_context)/i.test(joined)) {
+    return "서사 생성 구조와 리라이트 규칙을 함께 다듬어 결과물의 개연성과 읽기 흐름을 개선";
+  }
+  if (/(deprecated|studentId|csv)/i.test(joined)) {
+    return "중복 학생 판별 로직을 바로잡아 데이터 정합성과 최신 레코드 판별을 안정화";
+  }
+
+  return "";
 }
 
 function summarizeDecisionCandidate(text) {
@@ -833,6 +1017,7 @@ async function maybeSummarizeWithOpenAI({
   shellHistory,
   codexSessions,
   claudeSessions,
+  slackContexts,
   heuristicThemes
 }) {
   // ── 1. Check cache before calling the LLM ─────────────────────────────────
@@ -868,6 +1053,15 @@ async function maybeSummarizeWithOpenAI({
     claude_sessions: claudeSessions.slice(0, 12).map((session) => ({
       summary: session.summary,
       evidence: (session.snippets || []).slice(0, 2)
+    })),
+    slack_contexts: (slackContexts || []).slice(0, 12).map((entry) => ({
+      text: String(entry.text || "").slice(0, 280),
+      context: Array.isArray(entry.context)
+        ? entry.context
+            .map((text) => String(text || "").trim())
+            .filter(Boolean)
+            .slice(0, 3)
+        : []
     }))
   };
 

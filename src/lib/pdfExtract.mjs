@@ -56,9 +56,8 @@ export async function extractTextFromBuffer(buffer) {
     throw new Error("extractTextFromBuffer: buffer does not start with PDF magic bytes (%PDF-)");
   }
 
-  const pdfParse = _require("pdf-parse");
-  const result = await pdfParse(buffer);
-  const rawText = result.text ?? "";
+  const pdfParseModule = _require("pdf-parse");
+  const rawText = await extractRawPdfText(pdfParseModule, buffer);
 
   return postProcessPdfText(rawText);
 }
@@ -219,4 +218,28 @@ function deduplicateConsecutiveLines(lines) {
   }
 
   return result;
+}
+
+async function extractRawPdfText(pdfParseModule, buffer) {
+  if (typeof pdfParseModule === "function") {
+    const result = await pdfParseModule(buffer);
+    return result.text ?? "";
+  }
+
+  if (typeof pdfParseModule?.default === "function") {
+    const result = await pdfParseModule.default(buffer);
+    return result.text ?? "";
+  }
+
+  if (typeof pdfParseModule?.PDFParse === "function") {
+    const parser = new pdfParseModule.PDFParse({ data: buffer });
+    try {
+      const result = await parser.getText();
+      return result?.text ?? "";
+    } finally {
+      await parser.destroy().catch(() => {});
+    }
+  }
+
+  throw new Error("Unsupported pdf-parse module shape");
 }

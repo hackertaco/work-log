@@ -83,7 +83,13 @@ mock.module("../lib/blob.mjs", {
     STRENGTH_KEYWORDS_PATHNAME:  "resume/strength-keywords.json",
     saveDisplayAxes:             async () => ({ url: "https://blob/resume/display-axes.json" }),
     readDisplayAxes:             async () => null,
-    DISPLAY_AXES_PATHNAME:       "resume/display-axes.json"
+    DISPLAY_AXES_PATHNAME:       "resume/display-axes.json",
+    saveChatDraft:               async () => ({ url: "https://blob/resume/chat-draft.json" }),
+    readChatDraft:               async () => null,
+    saveChatDraftContext:        async () => ({ url: "https://blob/resume/chat-draft-context.json" }),
+    readChatDraftContext:        async () => null,
+    CHAT_DRAFT_PATHNAME:         "resume/chat-draft.json",
+    CHAT_DRAFT_CONTEXT_PATHNAME: "resume/chat-draft-context.json"
   }
 });
 
@@ -126,6 +132,48 @@ mock.module("../lib/resumeDeltaRatio.mjs", {
     computeDeltaRatio:     (...args) => computeDeltaRatioFn(...args),
     exceedsDeltaThreshold: (...args) => exceedsDeltaThresholdFn(...args),
     DELTA_THRESHOLD:       0.03
+  }
+});
+
+// Mock generateResumeDraft — used as fallback inside _generateDraftInBackground
+mock.module("../lib/resumeDraftGeneration.mjs", {
+  namedExports: {
+    generateResumeDraft: async () => ({
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      dateRange: { from: "2026-01-01", to: "2026-03-27" },
+      sources: { dates: [], commitCount: 0, sessionCount: 0, slackCount: 0, repos: [] },
+      strengthCandidates: [],
+      experienceSummaries: [],
+      suggestedSummary: "",
+      dataGaps: []
+    }),
+    loadWorkLogs: async () => [],
+    aggregateSignals: () => ({ signalText: "", commitCount: 0, sessionCount: 0, slackCount: 0, repos: [] })
+  }
+});
+
+// Mock buildChatDraftContext — used by _generateDraftInBackground (Sub-AC 2-2)
+mock.module("../lib/resumeChatDraftService.mjs", {
+  namedExports: {
+    buildChatDraftContext: async () => ({
+      draft: {
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        dateRange: { from: "2026-01-01", to: "2026-03-27" },
+        sources: { dates: [], commitCount: 0, sessionCount: 0, slackCount: 0, repos: [] },
+        strengthCandidates: [],
+        experienceSummaries: [],
+        suggestedSummary: "",
+        dataGaps: []
+      },
+      evidencePool: [],
+      sourceBreakdown: { commits: 0, slack: 0, sessions: 0, totalDates: 0 },
+      dataGaps: []
+    }),
+    refineSectionWithChat: async () => ({ section: "", suggestions: [], evidenceCited: [], clarifications: [] }),
+    searchEvidenceByKeywords: async () => [],
+    extractDraftContentForSection: () => ({ strengths: [], experiences: [], summary: "" })
   }
 });
 

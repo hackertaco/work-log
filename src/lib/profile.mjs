@@ -41,32 +41,20 @@ const TECH_RULES = [
 ];
 
 export async function buildProfileSummary(config) {
-  const dailyDir = path.join(config.dataDir, "daily");
-  if (!(await fileExists(dailyDir))) {
-    return emptyProfile();
-  }
-
-  const entries = (await fs.readdir(dailyDir))
-    .filter((entry) => entry.endsWith(".json"))
-    .sort();
-
-  const days = [];
-  for (const entry of entries) {
-    const filePath = path.join(dailyDir, entry);
-    try {
-      days.push(JSON.parse(await fs.readFile(filePath, "utf8")));
-    } catch {
-      continue;
-    }
-  }
-
+  const days = await readDailySummaries(config);
   const profile = summarizeProfile(days);
   const profilePath = path.join(config.dataDir, "profile", "summary.json");
   await writeJson(profilePath, profile);
   return { profile, profilePath };
 }
 
-export async function readProfileSummary(config) {
+export async function readProfileSummary(config, options = {}) {
+  const windowDays = normalizeWindowDays(options.windowDays);
+  if (windowDays) {
+    const days = await readDailySummaries(config, { windowDays });
+    return summarizeProfile(days, { windowDays });
+  }
+
   const profilePath = path.join(config.dataDir, "profile", "summary.json");
   if (!(await fileExists(profilePath))) {
     return emptyProfile();
@@ -74,11 +62,13 @@ export async function readProfileSummary(config) {
   return JSON.parse(await fs.readFile(profilePath, "utf8"));
 }
 
-function summarizeProfile(days) {
+export function summarizeProfile(days, options = {}) {
+  const windowDays = normalizeWindowDays(options.windowDays);
   const repoMap = new Map();
   const strengthScores = new Map();
   const techScores = new Map();
   const aiReviewLines = [];
+  const workingStyleLines = [];
 
   for (const day of days) {
     const groups = day.projectGroups || {};
@@ -101,9 +91,11 @@ function summarizeProfile(days) {
 
     const subjects = (day.projects || []).flatMap((project) => (project.commits || []).map((commit) => commit.subject));
     const aiReview = day.highlights?.aiReview || [];
+    const workingStyleSignals = day.highlights?.workingStyleSignals || [];
     aiReviewLines.push(...aiReview);
+    workingStyleLines.push(...workingStyleSignals);
 
-    scorePatterns(STRENGTH_RULES, [...subjects, ...aiReview], strengthScores);
+    scorePatterns(STRENGTH_RULES, [...subjects, ...aiReview, ...workingStyleSignals], strengthScores);
     scorePatterns(TECH_RULES, subjects, techScores);
   }
 
@@ -120,16 +112,66 @@ function summarizeProfile(days) {
     }))
     .slice(0, 8);
 
-  const workStyle = inferWorkStyle(aiReviewLines, strengths);
+  const workStyle = inferWorkStyle([...aiReviewLines, ...workingStyleLines], strengths);
+  const narrativeAxes = deriveNarrativeAxes(strengths, projectArcs);
+  const identitySignals = deriveIdentitySignals({
+    days,
+    strengths,
+    workStyle,
+    workingStyleLines,
+    aiReviewLines
+  });
+  const resumeDraft = deriveResumeDraft({
+    strengths,
+    workStyle,
+    narrativeAxes,
+    coreProjects: projectArcs.slice(0, 4)
+  });
+  const coreProjects = projectArcs.slice(0, 4).map((project) => ({
+    repo: project.repo,
+    summary: project.summary
+  }));
 
   return {
     updatedAt: new Date().toISOString(),
     dayCount: days.length,
+    windowDays: windowDays ?? null,
     strengths,
     techSignals,
     projectArcs,
-    workStyle
+    workStyle,
+    identitySignals,
+    narrativeAxes,
+    resumeDraft,
+    coreProjects
   };
+}
+
+async function readDailySummaries(config, options = {}) {
+  const windowDays = normalizeWindowDays(options.windowDays);
+  const dailyDir = path.join(config.dataDir, "daily");
+  if (!(await fileExists(dailyDir))) return [];
+
+  let entries = (await fs.readdir(dailyDir))
+    .filter((entry) => entry.endsWith(".json"))
+    .sort()
+    .reverse();
+
+  if (windowDays) {
+    entries = entries.slice(0, windowDays);
+  }
+
+  const days = [];
+  for (const entry of entries.reverse()) {
+    const filePath = path.join(dailyDir, entry);
+    try {
+      days.push(JSON.parse(await fs.readFile(filePath, "utf8")));
+    } catch {
+      continue;
+    }
+  }
+
+  return days;
 }
 
 function summarizeProjectArc(project) {
@@ -165,8 +207,143 @@ function inferWorkStyle(aiReviewLines, strengths) {
   if (strengths.some((item) => item.label === "Product judgment")) {
     style.push("사용자 경험과 운영 가시성을 함께 고려해 제품 판단을 내리는 편.");
   }
+  if (/(기대치와 실제 결과의 간극|잡음을 줄여 판단 비용|전체 흐름과 구조|완성도 기준|리스크를 먼저)/.test(joined)) {
+    style.push("대화와 정리 과정을 통해 기준을 명확히 하고 팀의 판단 비용을 낮추는 편.");
+  }
 
   return style.slice(0, 3);
+}
+
+function deriveNarrativeAxes(strengths, projectArcs) {
+  const labels = new Set((strengths || []).map((item) => item.label));
+  const axes = [];
+
+  if (labels.has("Reliability engineering") || labels.has("Debugging")) {
+    axes.push("운영 복잡도를 안정된 흐름으로 바꾸는 엔지니어");
+  }
+  if (labels.has("Product judgment") || labels.has("System thinking")) {
+    axes.push("복잡한 작업 흐름을 제품 경험으로 정리하는 엔지니어");
+  }
+  if (labels.has("Developer tooling") || projectArcs.some((project) => /agent|tool|workflow|loop/i.test(project.repo))) {
+    axes.push("반복 작업을 도구와 시스템으로 구조화하는 엔지니어");
+  }
+
+  if (axes.length === 0 && projectArcs.length > 0) {
+    axes.push("반복적으로 개선이 누적되는 프로젝트를 끝까지 구조화하는 엔지니어");
+  }
+
+  return axes.slice(0, 3);
+}
+
+function deriveIdentitySignals({ days, strengths, workStyle, workingStyleLines, aiReviewLines }) {
+  const totalDays = Math.max(days.length, 1);
+  const corpus = [
+    ...workingStyleLines,
+    ...aiReviewLines,
+    ...days.flatMap((day) => day.highlights?.businessOutcomes || []),
+    ...days.flatMap((day) => day.highlights?.keyChanges || [])
+  ].join(" ");
+
+  const candidates = [
+    {
+      id: "expectation-alignment",
+      label: "Expectation Alignment",
+      description: "기대치와 실제 결과의 간극을 먼저 줄이려는 성향.",
+      score:
+        _countMatches(corpus, /(기대치|정렬|설문|로드맵|현실적 목표|간극)/g) +
+        (workStyle.some((item) => /기준을 명확히/.test(item)) ? 2 : 0)
+    },
+    {
+      id: "noise-reduction",
+      label: "Noise Reduction",
+      description: "잡음을 줄여 판단 비용과 운영 피로를 낮추려는 성향.",
+      score:
+        _countMatches(corpus, /(노이즈|잡음|필터|가시성|운영 신호|판단 비용)/g) +
+        (strengths.some((item) => item.label === "Reliability engineering") ? 2 : 0)
+    },
+    {
+      id: "systems-framing",
+      label: "Systems Framing",
+      description: "개별 수정이 아니라 전체 흐름과 구조를 함께 보며 문제를 푸는 성향.",
+      score:
+        _countMatches(corpus, /(구조|흐름|재구성|재정비|파이프라인|블루프린트|system)/g) +
+        (strengths.some((item) => item.label === "System thinking") ? 2 : 0)
+    },
+    {
+      id: "quality-bar",
+      label: "Quality Bar Raising",
+      description: "말과 기준을 먼저 정리하고 결과물의 완성도와 일관성을 끌어올리는 성향.",
+      score:
+        _countMatches(corpus, /(품질|일관성|완성도|자연스럽|브랜드|quality)/g) +
+        (workStyle.some((item) => /제품 판단/.test(item)) ? 1 : 0)
+    },
+    {
+      id: "operator-empathy",
+      label: "Operator Empathy",
+      description: "사용자 경험뿐 아니라 운영자가 실제로 겪는 부담까지 줄이려는 성향.",
+      score: _countMatches(corpus, /(운영|가시성|사용자 경험|현장|대응 효율)/g)
+    }
+  ]
+    .filter((candidate) => candidate.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4)
+    .map((candidate) => ({
+      ...candidate,
+      confidence: Number(Math.min(0.95, 0.35 + (candidate.score / (totalDays * 3))).toFixed(2))
+    }));
+
+  return candidates;
+}
+
+function deriveResumeDraft({ strengths, workStyle, narrativeAxes, coreProjects }) {
+  const topStrength = strengths?.[0]?.label || null;
+  const secondStrength = strengths?.[1]?.label || null;
+  const topAxis = narrativeAxes?.[0] || null;
+  const topStyle = workStyle?.[0] || null;
+  const topProject = coreProjects?.[0]?.summary || null;
+
+  const headline = topAxis || (
+    topStrength
+      ? `${translateStrengthLabel(topStrength)}이 반복되는 엔지니어`
+      : "누적 기록에서 서서히 드러나는 엔지니어"
+  );
+
+  const summaryParts = [];
+  if (topAxis) {
+    summaryParts.push(`${topAxis}라는 방향성이 가장 선명합니다.`);
+  }
+  if (topStrength) {
+    const pair = secondStrength ? `, ${translateStrengthLabel(secondStrength)}` : "";
+    summaryParts.push(`${translateStrengthLabel(topStrength)}${pair}이 강하게 반복됩니다.`);
+  }
+  if (topStyle) {
+    summaryParts.push(topStyle);
+  }
+  if (topProject) {
+    summaryParts.push(`대표적으로는 ${topProject}`);
+  }
+
+  return {
+    headline,
+    summary: summaryParts.join(" ").trim(),
+    strengthLabels: strengths.slice(0, 3).map((item) => translateStrengthLabel(item.label))
+  };
+}
+
+function translateStrengthLabel(label) {
+  const map = {
+    "Reliability engineering": "안정성·운영 신뢰",
+    "Product judgment": "제품 판단력",
+    "System thinking": "구조적 사고",
+    "Debugging": "문제 추적·진단",
+    "Developer tooling": "개발 도구화"
+  };
+  return map[label] || label;
+}
+
+function _countMatches(text, regex) {
+  const matches = String(text || "").match(regex);
+  return matches ? matches.length : 0;
 }
 
 function scorePatterns(rules, texts, store) {
@@ -190,9 +367,24 @@ function emptyProfile() {
   return {
     updatedAt: null,
     dayCount: 0,
+    windowDays: null,
     strengths: [],
     techSignals: [],
     projectArcs: [],
-    workStyle: []
+    workStyle: [],
+    identitySignals: [],
+    narrativeAxes: [],
+    resumeDraft: {
+      headline: "",
+      summary: "",
+      strengthLabels: []
+    },
+    coreProjects: []
   };
+}
+
+function normalizeWindowDays(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return Math.trunc(number);
 }

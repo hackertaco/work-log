@@ -218,11 +218,36 @@ export function BulletProposalChip({ proposal, onApproved, onRejected, onResumeU
         )}
       </div>
 
-      {/* ── For replace: show the old text being replaced ── */}
-      {opType === 'replace' && !isEditing && oldText && (
-        <span class="bpc-old-text" title="현재 bullet 내용">
-          <span class="bpc-old-label">현재:</span> {oldText}
-        </span>
+      {/* ── Diff-style preview ── */}
+      {!isEditing && opType === 'replace' && oldText && (
+        <div class="bpc-diff" aria-label="교체 diff">
+          <div class="bpc-diff-row bpc-diff-row--old" title="현재 bullet 내용">
+            <span class="bpc-diff-label">현재</span>
+            <span class="bpc-diff-text bpc-diff-text--old">{oldText}</span>
+          </div>
+          <div class="bpc-diff-row bpc-diff-row--new" title="제안된 bullet 내용">
+            <span class="bpc-diff-label">제안</span>
+            <span class="bpc-diff-text">{displayText}</span>
+          </div>
+        </div>
+      )}
+
+      {!isEditing && opType === 'add' && (
+        <div class="bpc-diff" aria-label="추가 diff">
+          <div class="bpc-diff-row bpc-diff-row--new" title="추가 제안">
+            <span class="bpc-diff-label">추가</span>
+            <span class="bpc-diff-text">{displayText}</span>
+          </div>
+        </div>
+      )}
+
+      {!isEditing && opType === 'delete' && (
+        <div class="bpc-diff" aria-label="삭제 diff">
+          <div class="bpc-diff-row bpc-diff-row--old" title="삭제 대상 bullet">
+            <span class="bpc-diff-label">삭제</span>
+            <span class="bpc-diff-text bpc-diff-text--old">{displayText}</span>
+          </div>
+        </div>
       )}
 
       {/* ── Proposed text or inline edit textarea ── */}
@@ -238,7 +263,9 @@ export function BulletProposalChip({ proposal, onApproved, onRejected, onResumeU
           aria-label="제안 불릿 텍스트 편집"
           placeholder="제안 내용을 수정하세요"
         />
-      ) : (
+      ) : null}
+
+      {!isEditing && !['replace', 'add', 'delete'].includes(opType) && (
         <span class="bpc-text" aria-label="제안 불릿 내용">
           {displayText}
         </span>
@@ -561,6 +588,52 @@ export const BULLET_PROPOSAL_CSS = `
     font-weight: 600;
     text-decoration: none;
     display: inline;
+  }
+
+  .bpc-diff {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .bpc-diff-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 7px 9px;
+    border-radius: 8px;
+  }
+
+  .bpc-diff-row--old {
+    background: rgba(148, 163, 184, 0.09);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+  }
+
+  .bpc-diff-row--new {
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.16);
+  }
+
+  .bpc-diff-label {
+    flex: 0 0 auto;
+    min-width: 28px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+
+  .bpc-diff-text {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink);
+    word-break: break-word;
+  }
+
+  .bpc-diff-text--old {
+    color: var(--muted);
+    text-decoration: line-through;
+    text-decoration-color: rgba(220, 38, 38, 0.45);
   }
 
   .bpc-text {

@@ -42,7 +42,11 @@ import {
   reclusterPipeline,
   _adaptWorkLogEntries,
   _dedup,
-  DEFAULT_RECLUSTER_THRESHOLD
+  DEFAULT_RECLUSTER_THRESHOLD,
+  buildRepoWorkContext,
+  groupEvidenceEpisodes,
+  extractCoreProjects,
+  TARGET_PROJECTS_PER_REPO
 } from "./resumeRecluster.mjs";
 
 // ─── computeUnclassifiedRatio ──────────────────────────────────────────────────
@@ -419,5 +423,622 @@ describe("reclusterPipeline (WORK_LOG_DISABLE_OPENAI=1)", () => {
     assert.equal(result.triggered, false);
     assert.equal(result.totalKeywords, 0);
     assert.equal(result.ratio, 0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Core Projects Extraction Pipeline Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Test fixtures ────────────────────────────────────────────────────────────
+
+/**
+ * Build a minimal daily entry for testing.
+ */
+function makeDailyEntry(overrides = {}) {
+  return {
+    date: "2026-03-28",
+    projects: [
+      {
+        repo: "my-app",
+        category: "company",
+        commitCount: 2,
+        commits: [
+          {
+            repo: "my-app",
+            repoPath: "/Users/test/my-app",
+            hash: "abc123",
+            authoredAt: "2026-03-28T10:00:00+09:00",
+            subject: "feat: add payment flow"
+          },
+          {
+            repo: "my-app",
+            repoPath: "/Users/test/my-app",
+            hash: "def456",
+            authoredAt: "2026-03-28T14:00:00+09:00",
+            subject: "fix: handle edge case in payment validation"
+          }
+        ]
+      }
+    ],
+    resume: {
+      candidates: [
+        "my-app: Added payment flow with Stripe integration",
+        "my-app: Fixed edge cases in payment validation"
+      ],
+      companyCandidates: [
+        "my-app: Implemented new payment processing pipeline"
+      ],
+      openSourceCandidates: []
+    },
+    aiSessions: {
+      codex: [
+        {
+          source: "codex",
+          cwd: "/Users/test/my-app",
+          summary: "Worked on payment flow: decided to use Stripe webhooks for reliability",
+          snippets: ["payment flow needs webhook verification"]
+        }
+      ],
+      claude: []
+    },
+    highlights: {
+      storyThreads: [
+        {
+          repo: "my-app",
+          outcome: "Payment processing now handles edge cases",
+          keyChange: "Added Stripe webhook verification",
+          impact: "Reduced failed payments by catching validation errors",
+          why: "Revenue protection — failed payments cost money",
+          decision: "Chose webhooks over polling for reliability"
+        }
+      ],
+      aiReview: [
+        "Good pattern of testing edge cases before shipping"
+      ],
+      businessOutcomes: ["Improved payment reliability"],
+      keyChanges: ["Added Stripe webhooks"]
+    },
+    ...overrides
+  };
+}
+
+function makeDailyEntry2(overrides = {}) {
+  return {
+    date: "2026-03-27",
+    projects: [
+      {
+        repo: "my-app",
+        category: "company",
+        commitCount: 1,
+        commits: [
+          {
+            repo: "my-app",
+            repoPath: "/Users/test/my-app",
+            hash: "ghi789",
+            authoredAt: "2026-03-27T11:00:00+09:00",
+            subject: "feat: add user dashboard with analytics"
+          }
+        ]
+      }
+    ],
+    resume: {
+      candidates: [
+        "my-app: Built user analytics dashboard with chart.js"
+      ],
+      companyCandidates: [],
+      openSourceCandidates: []
+    },
+    aiSessions: {
+      codex: [],
+      claude: [
+        {
+          source: "claude",
+          cwd: "/Users/test/my-app",
+          summary: "Designed dashboard layout — chose chart.js over d3 for simplicity",
+          snippets: ["chart.js is simpler for our use case than d3"]
+        }
+      ]
+    },
+    highlights: {
+      storyThreads: [
+        {
+          repo: "my-app",
+          outcome: "Users can now see usage analytics",
+          keyChange: "Built dashboard with chart.js",
+          impact: "Self-service analytics reduces support tickets",
+          why: "Users were asking support for usage data",
+          decision: ""
+        }
+      ],
+      aiReview: [],
+      businessOutcomes: ["User dashboard launched"],
+      keyChanges: ["Chart.js dashboard"]
+    },
+    ...overrides
+  };
+}
+
+// ─── buildRepoWorkContext ─────────────────────────────────────────────────────
+
+describe("buildRepoWorkContext", () => {
+  it("returns empty context when dailyEntries is null/empty", () => {
+    const ctx = buildRepoWorkContext(null, "my-app");
+    assert.equal(ctx.repo, "my-app");
+    assert.deepEqual(ctx.dates, []);
+    assert.deepEqual(ctx.commits, []);
+    assert.deepEqual(ctx.bullets, []);
+    assert.deepEqual(ctx.sessionSnippets, []);
+    assert.deepEqual(ctx.highlights, []);
+  });
+
+  it("returns empty context when repo is empty", () => {
+    const ctx = buildRepoWorkContext([makeDailyEntry()], "");
+    assert.equal(ctx.repo, "");
+    assert.deepEqual(ctx.commits, []);
+  });
+
+  it("collects commits for the target repo", () => {
+    const ctx = buildRepoWorkContext([makeDailyEntry()], "my-app");
+    assert.equal(ctx.commits.length, 2);
+    assert.equal(ctx.commits[0].subject, "feat: add payment flow");
+    assert.equal(ctx.commits[0].date, "2026-03-28");
+    assert.equal(ctx.commits[1].hash, "def456");
+  });
+
+  it("filters out commits from other repos", () => {
+    const entry = makeDailyEntry({
+      projects: [
+        ...makeDailyEntry().projects,
+        {
+          repo: "other-repo",
+          commits: [{ repo: "other-repo", hash: "zzz", subject: "unrelated commit" }]
+        }
+      ]
+    });
+    const ctx = buildRepoWorkContext([entry], "my-app");
+    assert.equal(ctx.commits.length, 2);
+    assert.ok(ctx.commits.every((c) => c.subject !== "unrelated commit"));
+  });
+
+  it("collects bullet candidates mentioning the repo", () => {
+    const ctx = buildRepoWorkContext([makeDailyEntry()], "my-app");
+    assert.ok(ctx.bullets.length >= 2, `Expected ≥2 bullets, got ${ctx.bullets.length}`);
+    assert.ok(ctx.bullets.every((b) => b.text.toLowerCase().includes("my-app")));
+  });
+
+  it("collects session snippets linked by cwd (date+repo heuristic)", () => {
+    const ctx = buildRepoWorkContext([makeDailyEntry()], "my-app");
+    assert.ok(ctx.sessionSnippets.length >= 1, `Expected ≥1 session snippet, got ${ctx.sessionSnippets.length}`);
+    assert.ok(ctx.sessionSnippets[0].text.includes("payment flow"));
+  });
+
+  it("collects session snippets linked by content (date+repo heuristic)", () => {
+    const entry = makeDailyEntry({
+      aiSessions: {
+        codex: [],
+        claude: [
+          {
+            source: "claude",
+            cwd: "/Users/test/some-other-path",
+            summary: "Working on my-app authentication module",
+            snippets: []
+          }
+        ]
+      }
+    });
+    const ctx = buildRepoWorkContext([entry], "my-app");
+    const sessionTexts = ctx.sessionSnippets.map((s) => s.text);
+    assert.ok(
+      sessionTexts.some((t) => t.includes("authentication")),
+      "Should match session by content containing repo name"
+    );
+  });
+
+  it("collects highlights (storyThreads) for the repo", () => {
+    const ctx = buildRepoWorkContext([makeDailyEntry()], "my-app");
+    assert.ok(ctx.highlights.length >= 1);
+    assert.ok(ctx.highlights[0].text.includes("Payment processing"));
+  });
+
+  it("sorts dates ascending", () => {
+    const entries = [makeDailyEntry(), makeDailyEntry2()];
+    const ctx = buildRepoWorkContext(entries, "my-app");
+    assert.deepEqual(ctx.dates, ["2026-03-27", "2026-03-28"]);
+  });
+
+  it("is case-insensitive for repo matching", () => {
+    const ctx = buildRepoWorkContext([makeDailyEntry()], "My-App");
+    assert.ok(ctx.commits.length > 0, "Should match case-insensitively");
+  });
+
+  it("handles entries with missing fields gracefully", () => {
+    const entry = { date: "2026-03-28" }; // minimal entry with no projects/resume/sessions
+    const ctx = buildRepoWorkContext([entry], "my-app");
+    assert.equal(ctx.commits.length, 0);
+    assert.equal(ctx.bullets.length, 0);
+    assert.equal(ctx.sessionSnippets.length, 0);
+    assert.equal(ctx.highlights.length, 0);
+  });
+
+  it("aggregates across multiple daily entries", () => {
+    const entries = [makeDailyEntry(), makeDailyEntry2()];
+    const ctx = buildRepoWorkContext(entries, "my-app");
+    assert.equal(ctx.commits.length, 3); // 2 from day 1 + 1 from day 2
+    assert.equal(ctx.dates.length, 2);
+  });
+
+  it("includes all bullets on single-repo days even without repo name mention", () => {
+    const entry = {
+      date: "2026-03-28",
+      projects: [
+        {
+          repo: "my-app",
+          commits: [{ hash: "a1", subject: "feat: add feature" }]
+        }
+        // Only one repo has commits → single-repo day
+      ],
+      resume: {
+        candidates: [
+          "Added new feature to improve user onboarding" // does NOT mention "my-app"
+        ],
+        companyCandidates: [],
+        openSourceCandidates: []
+      },
+      aiSessions: { codex: [], claude: [] },
+      highlights: {}
+    };
+    const ctx = buildRepoWorkContext([entry], "my-app");
+    assert.equal(ctx.bullets.length, 1, "Single-repo day bullet should be included even without repo name");
+    assert.ok(ctx.bullets[0].text.includes("onboarding"));
+  });
+
+  it("does NOT include non-matching bullets on multi-repo days", () => {
+    const entry = {
+      date: "2026-03-28",
+      projects: [
+        {
+          repo: "my-app",
+          commits: [{ hash: "a1", subject: "feat: add feature" }]
+        },
+        {
+          repo: "other-repo",
+          commits: [{ hash: "b1", subject: "fix: other fix" }]
+        }
+      ],
+      resume: {
+        candidates: [
+          "Generic bullet without repo name" // doesn't mention any repo
+        ],
+        companyCandidates: [],
+        openSourceCandidates: []
+      },
+      aiSessions: { codex: [], claude: [] },
+      highlights: {}
+    };
+    const ctx = buildRepoWorkContext([entry], "my-app");
+    assert.equal(ctx.bullets.length, 0, "Multi-repo day: generic bullet should NOT be attributed");
+  });
+
+  it("collects all session snippets (not just summary) for richer context", () => {
+    const entry = {
+      date: "2026-03-28",
+      projects: [
+        {
+          repo: "my-app",
+          commits: [{ hash: "a1", subject: "feat: add feature" }]
+        }
+      ],
+      resume: { candidates: [], companyCandidates: [], openSourceCandidates: [] },
+      aiSessions: {
+        codex: [
+          {
+            source: "codex",
+            cwd: "/Users/test/my-app",
+            summary: "Session about auth",
+            snippets: ["Decided JWT over session cookies for statelessness", "Need to add refresh token flow"]
+          }
+        ],
+        claude: []
+      },
+      highlights: {}
+    };
+    const ctx = buildRepoWorkContext([entry], "my-app");
+    assert.ok(ctx.sessionSnippets.length >= 1);
+    // Combined text should include both summary and snippet content
+    assert.ok(ctx.sessionSnippets[0].text.includes("auth"), "Should include summary");
+    assert.ok(ctx.sessionSnippets[0].text.includes("JWT"), "Should include snippet details");
+  });
+});
+
+// ─── groupEvidenceEpisodes ───────────────────────────────────────────────────
+
+describe("groupEvidenceEpisodes", () => {
+  it("returns empty array when repoContext has no commits", async () => {
+    const ctx = { repo: "my-app", dates: [], commits: [], bullets: [], sessionSnippets: [], highlights: [] };
+    const episodes = await groupEvidenceEpisodes(ctx);
+    assert.deepEqual(episodes, []);
+  });
+
+  it("returns empty array when repoContext is null", async () => {
+    const episodes = await groupEvidenceEpisodes(null);
+    assert.deepEqual(episodes, []);
+  });
+
+  it("calls LLM and normalizes episode output", async () => {
+    const ctx = buildRepoWorkContext([makeDailyEntry(), makeDailyEntry2()], "my-app");
+
+    // Stub the LLM call
+    const mockLlmFn = async (_ctx) => {
+      return [
+        {
+          title: "Payment Flow Implementation",
+          summary: "Implemented Stripe payment flow with webhook verification for reliability",
+          dates: ["2026-03-28"],
+          commitSubjects: ["feat: add payment flow", "fix: handle edge case in payment validation"],
+          bullets: [
+            "Implemented Stripe payment flow with webhook verification, reducing failed payments",
+            "Added edge-case validation to catch malformed payment data before processing"
+          ],
+          topicTag: "payment-flow",
+          moduleTag: "api/payments"
+        },
+        {
+          title: "User Analytics Dashboard",
+          summary: "Built analytics dashboard with Chart.js to reduce support tickets",
+          dates: ["2026-03-27"],
+          commitSubjects: ["feat: add user dashboard with analytics", "fix: dashboard responsive layout"],
+          bullets: [
+            "Built user analytics dashboard with Chart.js, enabling self-service usage insights",
+            "Optimized dashboard responsive layout for mobile and tablet viewports"
+          ],
+          topicTag: "analytics-dashboard",
+          moduleTag: "frontend/dashboard"
+        }
+      ];
+    };
+
+    const episodes = await groupEvidenceEpisodes(ctx, { llmFn: mockLlmFn });
+
+    assert.equal(episodes.length, 2);
+
+    // Check first episode
+    assert.equal(episodes[0].id, "ep-my-app-0");
+    assert.equal(episodes[0].title, "Payment Flow Implementation");
+    assert.ok(episodes[0].summary.includes("Stripe"));
+    assert.deepEqual(episodes[0].dates, ["2026-03-28"]);
+    assert.equal(episodes[0].commitSubjects.length, 2);
+    assert.equal(episodes[0].bullets.length, 2);
+    assert.equal(episodes[0].decisionReasoning, null); // reasoning embedded in bullets by design
+    assert.equal(episodes[0].topicTag, "payment-flow");
+    assert.equal(episodes[0].moduleTag, "api/payments");
+
+    // Check second episode
+    assert.equal(episodes[1].id, "ep-my-app-1");
+    assert.equal(episodes[1].title, "User Analytics Dashboard");
+    assert.equal(episodes[1].topicTag, "analytics-dashboard");
+  });
+
+  it("filters out episodes with no title", async () => {
+    const ctx = buildRepoWorkContext([makeDailyEntry()], "my-app");
+    const mockLlmFn = async () => [
+      { title: "Valid Episode", summary: "test", dates: [], commitSubjects: [], bullets: [], topicTag: "t", moduleTag: "m" },
+      { title: "", summary: "invalid", dates: [], commitSubjects: [], bullets: [], topicTag: "t", moduleTag: "m" },
+      { summary: "no title field", dates: [], commitSubjects: [], bullets: [], topicTag: "t", moduleTag: "m" }
+    ];
+
+    const episodes = await groupEvidenceEpisodes(ctx, { llmFn: mockLlmFn });
+    assert.equal(episodes.length, 1);
+    assert.equal(episodes[0].title, "Valid Episode");
+  });
+
+  it("truncates long fields", async () => {
+    const ctx = buildRepoWorkContext([makeDailyEntry()], "my-app");
+    const longTitle = "A".repeat(200);
+    const longSummary = "B".repeat(600);
+    const mockLlmFn = async () => [
+      { title: longTitle, summary: longSummary, dates: ["2026-03-28"], commitSubjects: [], bullets: ["test bullet"], topicTag: "t", moduleTag: "m" }
+    ];
+
+    const episodes = await groupEvidenceEpisodes(ctx, { llmFn: mockLlmFn });
+    assert.ok(episodes[0].title.length <= 120);
+    assert.ok(episodes[0].summary.length <= 500);
+  });
+});
+
+// ─── extractCoreProjects ─────────────────────────────────────────────────────
+
+describe("extractCoreProjects", () => {
+  it("returns empty projects when repo has no daily entries", async () => {
+    const result = await extractCoreProjects({ repo: "my-app", dailyEntries: [] });
+    assert.equal(result.repo, "my-app");
+    assert.deepEqual(result.projects, []);
+    assert.equal(result.episodeCount, 0);
+    assert.ok(result.extractedAt);
+  });
+
+  it("returns empty projects when no commits found for repo", async () => {
+    const entry = { date: "2026-03-28", projects: [], resume: { candidates: [] }, aiSessions: { codex: [], claude: [] }, highlights: {} };
+    const result = await extractCoreProjects({ repo: "my-app", dailyEntries: [entry] });
+    assert.deepEqual(result.projects, []);
+  });
+
+  it("extracts ~2 core projects from a repo with multiple episodes", async () => {
+    const entries = [makeDailyEntry(), makeDailyEntry2()];
+
+    const mockEpisodeLlmFn = async (_ctx) => [
+      {
+        title: "Payment Flow Implementation",
+        summary: "Built payment processing with Stripe webhooks",
+        dates: ["2026-03-28"],
+        commitSubjects: ["feat: add payment flow", "fix: handle edge case in payment validation"],
+        bullets: ["Implemented Stripe payment flow with webhook verification"],
+        topicTag: "payment-flow",
+        moduleTag: "api/payments"
+      },
+      {
+        title: "User Analytics Dashboard",
+        summary: "Built analytics dashboard with Chart.js",
+        dates: ["2026-03-27"],
+        commitSubjects: ["feat: add user dashboard with analytics", "fix: dashboard responsive layout"],
+        bullets: ["Built user analytics dashboard enabling self-service insights", "Optimized dashboard responsive layout for mobile viewports"],
+        topicTag: "analytics-dashboard",
+        moduleTag: "frontend/dashboard"
+      }
+    ];
+
+    const mockProjectLlmFn = async (_repo, _episodes, _ctx) => [
+      {
+        title: "Payment Processing Pipeline",
+        description: "End-to-end payment flow with Stripe integration. Added webhook verification for reliability and edge-case validation to catch malformed data. Revenue protection was the key driver.",
+        episodeIndices: [0],
+        bullets: [
+          "Built Stripe payment pipeline with webhook verification for reliable transaction processing",
+          "Added payment validation edge-case handling, reducing failed transaction rate"
+        ],
+        techTags: ["Stripe", "Node.js", "Webhooks"]
+      },
+      {
+        title: "Self-Service Analytics Dashboard",
+        description: "User-facing analytics dashboard built with Chart.js. Chose Chart.js over D3 for faster iteration. Reduced support ticket volume by enabling self-service usage data access.",
+        episodeIndices: [1],
+        bullets: [
+          "Launched user analytics dashboard with Chart.js, reducing support tickets for usage data",
+          "Integrated self-service usage reports enabling users to track activity without contacting support"
+        ],
+        techTags: ["Chart.js", "React", "Analytics"]
+      }
+    ];
+
+    const result = await extractCoreProjects(
+      { repo: "my-app", dailyEntries: entries },
+      { llmFn: mockEpisodeLlmFn, projectLlmFn: mockProjectLlmFn }
+    );
+
+    assert.equal(result.repo, "my-app");
+    assert.equal(result.projects.length, 2);
+    assert.equal(result.episodeCount, 2);
+
+    // Check first project
+    const proj1 = result.projects[0];
+    assert.equal(proj1.id, "proj-my-app-0");
+    assert.equal(proj1.repo, "my-app");
+    assert.equal(proj1.title, "Payment Processing Pipeline");
+    assert.ok(proj1.description.includes("Stripe"));
+    assert.equal(proj1.episodes.length, 1);
+    assert.equal(proj1.episodes[0].title, "Payment Flow Implementation");
+    assert.ok(proj1.bullets.length >= 1);
+    assert.ok(proj1.techTags.includes("Stripe"));
+    assert.equal(proj1._source, "system");
+    assert.equal(proj1.dateRange, "Mar 2026");
+
+    // Check second project
+    const proj2 = result.projects[1];
+    assert.equal(proj2.id, "proj-my-app-1");
+    assert.equal(proj2.title, "Self-Service Analytics Dashboard");
+    assert.equal(proj2.episodes.length, 1);
+    assert.ok(proj2.techTags.includes("Chart.js"));
+  });
+
+  it("caps projects at 4 per repo", async () => {
+    const entries = [makeDailyEntry()];
+
+    const mockEpisodeLlmFn = async () => [
+      { title: "Ep1", summary: "s", dates: ["2026-03-28"], commitSubjects: ["c"], bullets: ["b"], topicTag: "t", moduleTag: "m" }
+    ];
+
+    const mockProjectLlmFn = async () => [
+      { title: "P1", description: "d", episodeIndices: [0], bullets: ["b"], techTags: ["t"] },
+      { title: "P2", description: "d", episodeIndices: [0], bullets: ["b"], techTags: ["t"] },
+      { title: "P3", description: "d", episodeIndices: [0], bullets: ["b"], techTags: ["t"] },
+      { title: "P4", description: "d", episodeIndices: [0], bullets: ["b"], techTags: ["t"] },
+      { title: "P5", description: "d", episodeIndices: [0], bullets: ["b"], techTags: ["t"] }
+    ];
+
+    const result = await extractCoreProjects(
+      { repo: "my-app", dailyEntries: entries },
+      { llmFn: mockEpisodeLlmFn, projectLlmFn: mockProjectLlmFn }
+    );
+
+    assert.ok(result.projects.length <= 4, `Expected ≤4 projects, got ${result.projects.length}`);
+  });
+
+  it("handles episode indices out of range gracefully", async () => {
+    const entries = [makeDailyEntry()];
+
+    const mockEpisodeLlmFn = async () => [
+      { title: "Ep1", summary: "s", dates: ["2026-03-28"], commitSubjects: ["c"], bullets: ["b"], topicTag: "t", moduleTag: "m" }
+    ];
+
+    const mockProjectLlmFn = async () => [
+      {
+        title: "P1",
+        description: "d",
+        episodeIndices: [0, 5, -1, 99], // 5, -1, 99 are out of range
+        bullets: ["b"],
+        techTags: ["t"]
+      }
+    ];
+
+    const result = await extractCoreProjects(
+      { repo: "my-app", dailyEntries: entries },
+      { llmFn: mockEpisodeLlmFn, projectLlmFn: mockProjectLlmFn }
+    );
+
+    assert.equal(result.projects.length, 1);
+    assert.equal(result.projects[0].episodes.length, 1); // Only index 0 is valid
+  });
+
+  it("computes date range spanning multiple months", async () => {
+    const entries = [
+      makeDailyEntry({ date: "2026-01-15" }),
+      makeDailyEntry2({ date: "2026-03-28" })
+    ];
+    // Override project entries to have proper dates
+    entries[0].projects[0].commits[0].authoredAt = "2026-01-15T10:00:00+09:00";
+
+    const mockEpisodeLlmFn = async () => [
+      { title: "Ep1", summary: "s", dates: ["2026-01-15"], commitSubjects: ["c"], bullets: ["b"], topicTag: "t", moduleTag: "m" },
+      { title: "Ep2", summary: "s", dates: ["2026-03-28"], commitSubjects: ["c"], bullets: ["b"], topicTag: "t", moduleTag: "m" }
+    ];
+
+    const mockProjectLlmFn = async () => [
+      {
+        title: "P1",
+        description: "d",
+        episodeIndices: [0, 1],
+        bullets: ["b"],
+        techTags: ["t"]
+      }
+    ];
+
+    const result = await extractCoreProjects(
+      { repo: "my-app", dailyEntries: entries },
+      { llmFn: mockEpisodeLlmFn, projectLlmFn: mockProjectLlmFn }
+    );
+
+    assert.equal(result.projects[0].dateRange, "Jan–Mar 2026");
+  });
+
+  it("returns empty when episode grouping returns empty", async () => {
+    const entries = [makeDailyEntry()];
+
+    const mockEpisodeLlmFn = async () => []; // No episodes found
+
+    const result = await extractCoreProjects(
+      { repo: "my-app", dailyEntries: entries },
+      { llmFn: mockEpisodeLlmFn }
+    );
+
+    assert.deepEqual(result.projects, []);
+    assert.equal(result.episodeCount, 0);
+  });
+});
+
+// ─── TARGET_PROJECTS_PER_REPO ────────────────────────────────────────────────
+
+describe("TARGET_PROJECTS_PER_REPO", () => {
+  it("is 2", () => {
+    assert.equal(TARGET_PROJECTS_PER_REPO, 2);
   });
 });

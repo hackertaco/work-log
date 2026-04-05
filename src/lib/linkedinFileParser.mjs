@@ -148,9 +148,29 @@ export async function parseLinkedInFile(buffer, filename) {
  * @returns {Promise<ProfileData>}
  */
 async function parseLinkedInPdf(buffer) {
-  const pdfParse = _require("pdf-parse");
-  const result = await pdfParse(buffer);
-  return extractFromLinkedInPdfText(result.text || "");
+  const pdfParseModule = _require("pdf-parse");
+
+  if (typeof pdfParseModule === "function") {
+    const result = await pdfParseModule(buffer);
+    return extractFromLinkedInPdfText(result.text || "");
+  }
+
+  if (typeof pdfParseModule?.default === "function") {
+    const result = await pdfParseModule.default(buffer);
+    return extractFromLinkedInPdfText(result.text || "");
+  }
+
+  if (typeof pdfParseModule?.PDFParse === "function") {
+    const parser = new pdfParseModule.PDFParse({ data: buffer });
+    try {
+      const result = await parser.getText();
+      return extractFromLinkedInPdfText(result?.text || "");
+    } finally {
+      await parser.destroy().catch(() => {});
+    }
+  }
+
+  throw new Error("Unsupported pdf-parse module shape");
 }
 
 /**

@@ -7,6 +7,10 @@
  * 별도의 GET 재조회 없이 로컬 상태를 즉시 갱신한다.
  * resume이 응답에 없는 경우 onFallbackRefresh를 호출한다.
  *
+ * The editBullet action also returns a `similarityScore` when the backend
+ * computes one (bullet text changed from a previously existing value).
+ * Callers can use this for inline quality feedback via BulletSimilarityBadge.
+ *
  * 커버하는 API (Sub-AC 8-1):
  *   POST   /api/resume/section-bullet                              — bullet 추가
  *   PATCH  /api/resume/sections/:section/:itemIndex/bullets/:bulletIndex — bullet 편집
@@ -16,6 +20,7 @@
  *   const { addBullet, editBullet, deleteBullet } = useResumeActions({
  *     onResumePatch: setResume,       // ResumePage의 setResume
  *     onFallbackRefresh: fetchResume, // 응답에 resume 없을 때 full re-fetch
+ *     onSimilarityScore: (score) => ..., // optional callback when a similarity score is returned
  *   });
  *
  * @param {Object} opts
@@ -23,14 +28,16 @@
  *   API 응답 resume 객체를 받아 로컬 이력서 상태를 즉시 갱신하는 콜백.
  * @param {() => void} [opts.onFallbackRefresh]
  *   응답에 resume이 없을 때 full re-fetch를 트리거하는 콜백 (방어 fallback).
+ * @param {(score: object) => void} [opts.onSimilarityScore]
+ *   API 응답에 similarityScore가 포함된 경우 호출되는 콜백.
  *
  * @returns {{
  *   addBullet: (section: string, itemIndex: number, bullet: string) => Promise<void>,
- *   editBullet: (section: string, itemIndex: number, bulletIndex: number, text: string) => Promise<void>,
+ *   editBullet: (section: string, itemIndex: number, bulletIndex: number, text: string) => Promise<object>,
  *   deleteBullet: (section: string, itemIndex: number, bulletIndex: number) => Promise<void>,
  * }}
  */
-export function useResumeActions({ onResumePatch, onFallbackRefresh } = {}) {
+export function useResumeActions({ onResumePatch, onFallbackRefresh, onSimilarityScore } = {}) {
   /**
    * Shared response handler.
    * Calls onResumePatch(resume) if the server returned one,
@@ -43,6 +50,10 @@ export function useResumeActions({ onResumePatch, onFallbackRefresh } = {}) {
       onResumePatch?.(data.resume);
     } else {
       onFallbackRefresh?.();
+    }
+    // Forward similarity score when present (bullet edit responses)
+    if (data?.similarityScore) {
+      onSimilarityScore?.(data.similarityScore);
     }
   }
 

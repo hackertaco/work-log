@@ -7,6 +7,13 @@
  * Sub-AC 10-3 (3% delta threshold gate) as the final stage of the daily
  * batch orchestrator.
  *
+ * Also implements Sub-AC 2-2: background resume draft generation.
+ * After the existing resume is loaded (step 1), a background task is kicked
+ * off to aggregate data sources (commits, Slack, session memory) from the
+ * past 90 days and call the LLM to generate a ResumeDraft document.
+ * The draft is saved to Vercel Blob (resume/chat-draft.json) and used as
+ * the starting context for the chat-based resume refinement UI.
+ *
  * This module intentionally mirrors the pipeline of
  * POST /api/resume/generate-candidates in src/routes/resume.mjs, but is
  * decoupled from HTTP context so it can be invoked directly by the CLI
@@ -14,6 +21,9 @@
  *
  * Pipeline steps (mirrors the HTTP route):
  *   1. Load current resume from Vercel Blob
+ *   1b. [Background] Kick off draft generation from all data sources via
+ *       buildChatDraftContext — collects per-source evidence (commits/slack/sessions),
+ *       calls LLM, saves draft + evidence pool to Blob — Sub-AC 2-2
  *   2. Read extract cache for this date (skip LLM on cache HIT)
  *   3. LLM: extract partial resume updates from work log (resumeWorkLogExtract.mjs)
  *   4. Persist extract to cache (fire-and-forget)
@@ -24,10 +34,12 @@
  *   7. Convert diff to pending SuggestionItems (resumeDiffToSuggestions.mjs)
  *   8. Supersede all existing pending candidates — AC 13 semantics
  *   9. Save updated suggestions document to Vercel Blob
+ *  10. Save batch checkpoint snapshot
  *
  * Return value (CandidateHookResult):
  *   { skipped, skipReason?, belowThreshold?, generated, superseded, cacheHit,
- *     deltaRatio?, deltaChangedCount?, deltaTotalCount?, error? }
+ *     deltaRatio?, deltaChangedCount?, deltaTotalCount?,
+ *     draftGenerationTriggered?, error? }
  *
  * The function NEVER throws.  All errors are captured in the returned
  * result object so the batch pipeline always completes successfully.
@@ -51,7 +63,9 @@ import {
   readResumeData,
   readSuggestionsData,
   saveSuggestionsData,
-  saveSnapshot
+  saveSnapshot,
+  saveChatDraft,
+  saveChatDraftContext
 } from "./blob.mjs";
 import { readExtractCache, writeExtractCache } from "./bulletCache.mjs";
 import { extractResumeUpdatesFromWorkLog } from "./resumeWorkLogExtract.mjs";
@@ -62,6 +76,14 @@ import {
   computeDeltaRatio,
   exceedsDeltaThreshold
 } from "./resumeDeltaRatio.mjs";
+import { generateResumeDraft } from "./resumeDraftGeneration.mjs";
+import { buildChatDraftContext } from "./resumeChatDraftService.mjs";
+import {
+  markDraftGenerationPending,
+  markDraftGenerationCompleted,
+  markDraftGenerationFailed,
+  updateDraftGenerationProgress,
+} from "./draftGenerationState.mjs";
 
 // ─── Public API ────────────────────────────────────────────────────────────────
 
@@ -84,6 +106,9 @@ import {
  * @property {string}  [error]            - non-fatal error message when the hook failed
  * @property {string|null} [snapshotKey] - Blob pathname of the batch checkpoint snapshot saved after
  *   candidate generation; null when snapshot save was skipped or failed.
+ * @property {boolean} [draftGenerationTriggered] - true when background draft generation was kicked off
+ *   (Sub-AC 2-2).  The draft is saved to Vercel Blob asynchronously; this field indicates the task
+ *   was started, not that it completed.  Only set when the resume exists and OpenAI is enabled.
  */
 
 /**
@@ -131,6 +156,21 @@ export async function runResumeCandidateHook(date, workLog) {
     return _skip("no_resume");
   }
 
+  // ── Step 1b: Background resume draft generation (Sub-AC 2-2) ───────────────
+  //
+  // Kick off background aggregation of all data sources (commits, Slack,
+  // session memory) from the past 90 days and LLM draft generation.
+  // The draft is saved to Vercel Blob (resume/chat-draft.json) and serves as
+  // the starting context for the chat-based resume refinement UI.
+  //
+  // Also passes the current work log so the draft generation pipeline can
+  // incorporate today's data even before the next daily file is written.
+  //
+  // This is fire-and-forget: the main pipeline does not await it, so the
+  // batch completes within its normal time budget regardless of LLM latency.
+  // Errors inside the background task are logged but never propagate.
+  _generateDraftInBackground(date, existingResume, workLog, tag);
+
   // ── Steps 2–3: Extract — cache-first, then LLM ─────────────────────────────
   //
   // Cache key: date string → blob path `cache/extract/{date}.json`.
@@ -160,7 +200,7 @@ export async function runResumeCandidateHook(date, workLog) {
     }
   } catch (err) {
     console.warn(`${tag} LLM extraction failed (non-fatal):`, err.message ?? String(err));
-    return _error(`LLM extraction failed: ${err.message ?? String(err)}`);
+    return { ..._error(`LLM extraction failed: ${err.message ?? String(err)}`), draftGenerationTriggered: true };
   }
 
   // ── Step 5: Merge — apply extract into existing resume ─────────────────────
@@ -171,7 +211,7 @@ export async function runResumeCandidateHook(date, workLog) {
 
   if (diff.isEmpty) {
     console.info(`${tag} Diff is empty — today's work log produced no resume changes`);
-    return { skipped: false, generated: 0, superseded: 0, cacheHit };
+    return { skipped: false, generated: 0, superseded: 0, cacheHit, draftGenerationTriggered: true };
   }
 
   // ── Step 6b: Delta threshold gate (Sub-AC 10-3) ────────────────────────────
@@ -198,7 +238,8 @@ export async function runResumeCandidateHook(date, workLog) {
       cacheHit,
       deltaRatio: deltaMetrics.ratio,
       deltaChangedCount: deltaMetrics.changedCount,
-      deltaTotalCount: deltaMetrics.totalCount
+      deltaTotalCount: deltaMetrics.totalCount,
+      draftGenerationTriggered: true
     };
   }
 
@@ -207,7 +248,7 @@ export async function runResumeCandidateHook(date, workLog) {
 
   if (rawSuggestions.length === 0) {
     console.info(`${tag} Diff produced no actionable suggestions`);
-    return { skipped: false, generated: 0, superseded: 0, cacheHit };
+    return { skipped: false, generated: 0, superseded: 0, cacheHit, draftGenerationTriggered: true };
   }
 
   // ── Step 8: Load existing suggestions + supersede pending items (AC 13) ────
@@ -225,7 +266,7 @@ export async function runResumeCandidateHook(date, workLog) {
       `${tag} Could not read suggestions from Blob (non-fatal):`,
       err.message ?? String(err)
     );
-    return _error(`Could not read suggestions: ${err.message ?? String(err)}`);
+    return { ..._error(`Could not read suggestions: ${err.message ?? String(err)}`), draftGenerationTriggered: true };
   }
 
   const supersededAt = new Date().toISOString();
@@ -263,7 +304,7 @@ export async function runResumeCandidateHook(date, workLog) {
       `${tag} Could not save suggestions to Blob (non-fatal):`,
       err.message ?? String(err)
     );
-    return _error(`Could not save suggestions: ${err.message ?? String(err)}`);
+    return { ..._error(`Could not save suggestions: ${err.message ?? String(err)}`), draftGenerationTriggered: true };
   }
 
   console.info(
@@ -310,11 +351,137 @@ export async function runResumeCandidateHook(date, workLog) {
     deltaRatio: deltaMetrics.ratio,
     deltaChangedCount: deltaMetrics.changedCount,
     deltaTotalCount: deltaMetrics.totalCount,
-    snapshotKey
+    snapshotKey,
+    draftGenerationTriggered: true
   };
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Trigger background resume draft generation — fire-and-forget (Sub-AC 2-2).
+ *
+ * Aggregates all data sources (commits, Slack, session memory) for the past
+ * 90 days up to `date` via buildChatDraftContext(), then saves the full draft
+ * context (draft + evidence pool + source breakdown) to Vercel Blob.
+ *
+ * Uses the richer buildChatDraftContext pipeline instead of bare generateResumeDraft
+ * so the persisted output includes:
+ *   - ResumeDraft: strength candidates, experience summaries, suggested summary
+ *   - Evidence pool: individual evidence items from commits, slack, sessions
+ *   - Source breakdown: per-source counts (commits, slack, sessions, totalDates)
+ *   - Data gaps: areas where more user information is needed
+ *
+ * The complete draft context is saved to resume/chat-draft.json and serves as
+ * the starting context for the chat-based resume refinement UI.
+ *
+ * Also receives the current workLog so the pipeline can incorporate today's
+ * signals (commits, Slack contexts, session memory) even before the daily
+ * file is finalized to disk.
+ *
+ * Falls back to generateResumeDraft() if buildChatDraftContext is unavailable,
+ * ensuring backward compatibility with existing deployments.
+ *
+ * Errors inside this background task are logged but never propagate to
+ * the caller — the main batch pipeline is not affected.
+ *
+ * @param {string}      date            YYYY-MM-DD (upper bound of the date range)
+ * @param {object|null} existingResume  Current resume document (optional context for the LLM)
+ * @param {object}      workLog         Current day's work log (for supplementary signal injection)
+ * @param {string}      tag             Log prefix tag for consistent formatting
+ */
+function _generateDraftInBackground(date, existingResume, workLog, tag) {
+  // Sub-AC 2-3: Track background generation state
+  const taskId = markDraftGenerationPending("batch");
+
+  _buildAndSaveDraftContext(date, existingResume, workLog, tag, taskId)
+    .then(() => {
+      markDraftGenerationCompleted(taskId);
+    })
+    .catch((err) => {
+      markDraftGenerationFailed(taskId, err.message ?? String(err));
+      console.warn(
+        `${tag} Background draft generation failed (non-fatal):`,
+        err.message ?? String(err)
+      );
+    });
+}
+
+/**
+ * Build the full draft context from all data sources and save to Blob.
+ *
+ * Pipeline:
+ *   1. buildChatDraftContext — loads work logs, aggregates signals, collects
+ *      per-source evidence (commits/slack/sessions), calls LLM for draft
+ *      Also directly queries Slack API for recent messages to augment the
+ *      evidence pool beyond what's captured in work log highlights.
+ *   2. saveChatDraft — persists the ResumeDraft to resume/chat-draft.json
+ *   3. saveChatDraftContext — persists the full context (draft + evidence pool
+ *      + source breakdown) to resume/chat-draft-context.json
+ *
+ * @param {string}      date
+ * @param {object|null} existingResume
+ * @param {object}      workLog         Current day's work log (supplementary signals)
+ * @param {string}      tag
+ * @param {string}      [taskId]        State tracker task id (Sub-AC 2-3)
+ */
+async function _buildAndSaveDraftContext(date, existingResume, workLog, tag, taskId) {
+  if (taskId) updateDraftGenerationProgress(taskId, { stage: "building_context" });
+
+  const draftContext = await buildChatDraftContext({
+    toDate: date,
+    existingResume,
+    currentWorkLog: workLog,
+  });
+
+  if (!draftContext.draft) {
+    const reason = draftContext.dataGaps?.[0] ?? "unknown";
+    console.info(`${tag} Background draft generation skipped — ${reason}`);
+    if (taskId) markDraftGenerationFailed(taskId, reason);
+    return;
+  }
+
+  const draft = draftContext.draft;
+
+  if (taskId) updateDraftGenerationProgress(taskId, { stage: "saving" });
+
+  // Save the ResumeDraft for backward compatibility (chat-draft.json)
+  await saveChatDraft(draft);
+
+  // Save the full DraftContext with evidence pool for the chat UI (chat-draft-context.json)
+  await saveChatDraftContext({
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    draft,
+    evidencePool: draftContext.evidencePool,
+    sourceBreakdown: draftContext.sourceBreakdown,
+    dataGaps: draftContext.dataGaps,
+  });
+
+  const sb = draftContext.sourceBreakdown;
+
+  // Update final progress with source stats (Sub-AC 2-3)
+  if (taskId) {
+    updateDraftGenerationProgress(taskId, {
+      stage: "done",
+      datesLoaded: sb.totalDates ?? 0,
+      commitCount: sb.commits ?? 0,
+      slackCount: sb.slack ?? 0,
+      sessionCount: sb.sessions ?? 0,
+    });
+  }
+
+  console.info(
+    `${tag} Background draft generation complete` +
+      ` — commits=${sb.commits}` +
+      ` sessions=${sb.sessions}` +
+      ` slack=${sb.slack}` +
+      ` dates=${sb.totalDates}` +
+      ` evidence=${draftContext.evidencePool.length}` +
+      ` dataGaps=${draftContext.dataGaps.length}` +
+      ` → resume/chat-draft.json + resume/chat-draft-context.json`
+  );
+}
 
 /**
  * Build a "skipped" result (graceful no-op).

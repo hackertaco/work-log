@@ -30,8 +30,25 @@ import { useResumeActions } from '../../hooks/useResumeActions.js';
  *                     제공 시 bullet 추가/편집/삭제 후 GET 재조회를 생략하고
  *                     응답 resume으로 직접 상태를 갱신한다.
  */
-export function ResumeMainView({ resume, onRefresh, onResumePatched }) {
+export function ResumeMainView({
+  resume,
+  onRefresh,
+  onResumePatched,
+  suggestions = [],
+  onSuggestionResolved,
+}) {
   const [mode, setMode] = useState('view'); // 'view' | 'edit'
+
+  // ── Section bridges state ─────────────────────────────────────────────────
+  const [sectionBridges, setSectionBridges] = useState([]);
+
+  // ── Identified strengths state ────────────────────────────────────────────
+  const [identifiedStrengths, setIdentifiedStrengths] = useState([]);
+  const [narrativeAxes, setNarrativeAxes] = useState([]);
+  const [threadingData, setThreadingData] = useState(null);
+
+  // ── Coherence validation report state ───────────────────────────────────
+  const [coherenceReport, setCoherenceReport] = useState(null);
 
   // ── Bullet action handlers (Sub-AC 8-3) ───────────────────────────────────
   /**
@@ -45,12 +62,6 @@ export function ResumeMainView({ resume, onRefresh, onResumePatched }) {
     onFallbackRefresh: onRefresh,
   });
 
-  // ── Bullet-level proposals state ─────────────────────────────────────────
-  /** @type {[object[], function]} */
-  const [proposals, setProposals] = useState([]);
-  /** @type {[Set<string>, function]} */
-  const [removedProposalIds, setRemovedProposalIds] = useState(() => new Set());
-
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -59,24 +70,14 @@ export function ResumeMainView({ resume, onRefresh, onResumePatched }) {
     };
   }, []);
 
-  // Fetch bullet-level proposals on mount and when resume changes
+  // Fetch analysis/supporting data on mount
   useEffect(() => {
-    fetchBulletProposals();
+    fetchSectionBridges();
+    fetchIdentifiedStrengths();
+    fetchNarrativeAxes();
+    fetchThreadingData();
+    fetchCoherenceReport();
   }, []);
-
-  async function fetchBulletProposals() {
-    try {
-      const res = await fetch('/api/resume/suggestions', { credentials: 'include' });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (mountedRef.current) {
-        setProposals(data.suggestions ?? []);
-        setRemovedProposalIds(new Set());
-      }
-    } catch {
-      // Non-critical: inline proposals simply won't show if fetch fails
-    }
-  }
 
   // Bullet-level action types for legacy SuggestionItem format
   const BULLET_LEGACY_ACTIONS = ['append_bullet', 'replace_bullet', 'delete_bullet'];
@@ -85,10 +86,9 @@ export function ResumeMainView({ resume, onRefresh, onResumePatched }) {
   // Supports both:
   //   - Legacy SuggestionItem: { action: 'append_bullet'|'replace_bullet'|'delete_bullet', ... }
   //   - New BulletProposal:    { kind: 'bullet', op: 'add'|'replace'|'delete', ... }
-  const bulletProposals = proposals.filter(
+  const bulletProposals = suggestions.filter(
     (p) =>
       p.status === 'pending' &&
-      !removedProposalIds.has(p.id) &&
       (p.kind === 'bullet' || BULLET_LEGACY_ACTIONS.includes(p.action)),
   );
 
@@ -96,28 +96,146 @@ export function ResumeMainView({ resume, onRefresh, onResumePatched }) {
 
   /** Called when a bullet proposal is approved. */
   function handleProposalApproved(id) {
-    if (!mountedRef.current) return;
-    setRemovedProposalIds((prev) => new Set([...prev, id]));
-    // Re-fetch resume (server has applied the patch)
+    onSuggestionResolved?.(id, 'approved');
     onRefresh?.();
-    // Re-fetch proposals to sync state with server
-    // Use a short delay to let the server finish writing
-    setTimeout(fetchBulletProposals, 800);
+    setTimeout(() => {
+      fetchThreadingData();
+      fetchCoherenceReport();
+    }, 800);
   }
 
   /** Called when a bullet proposal is rejected. */
   function handleProposalRejected(id) {
-    if (!mountedRef.current) return;
-    setRemovedProposalIds((prev) => new Set([...prev, id]));
+    onSuggestionResolved?.(id, 'rejected');
+  }
+
+  // ── Section bridges ──────────────────────────────────────────────────────
+
+  async function fetchSectionBridges() {
+    try {
+      const res = await fetch('/api/resume/section-bridges', { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (mountedRef.current) {
+        setSectionBridges(data.bridges ?? []);
+      }
+    } catch {
+      // Non-critical: bridges simply won't show if fetch fails
+    }
+  }
+
+  // ── Identified strengths ─────────────────────────────────────────────────
+
+  async function fetchIdentifiedStrengths() {
+    try {
+      const res = await fetch('/api/resume/identified-strengths', { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (mountedRef.current) {
+        setIdentifiedStrengths(Array.isArray(data.strengths) ? data.strengths : []);
+      }
+    } catch {
+      // Non-critical: strengths section simply won't show if fetch fails
+    }
+  }
+
+  async function fetchNarrativeAxes() {
+    try {
+      const res = await fetch('/api/resume/narrative-axes', { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (mountedRef.current) {
+        setNarrativeAxes(Array.isArray(data.axes) ? data.axes : []);
+      }
+    } catch {
+      // Non-critical: project view can still render without axis labels
+    }
+  }
+
+  async function fetchThreadingData() {
+    try {
+      const res = await fetch('/api/resume/narrative-threading', { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (mountedRef.current) {
+        setThreadingData(data?.ok === false ? null : data);
+      }
+    } catch {
+      // Non-critical: project view can still render without threading annotations
+    }
+  }
+
+  // ── Coherence validation report ───────────────────────────────────────────
+
+  async function fetchCoherenceReport() {
+    try {
+      const res = await fetch('/api/resume/coherence-validation', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (mountedRef.current && data.ok) {
+        setCoherenceReport({
+          overallScore: data.overallScore,
+          grade: data.grade,
+          structuralFlow: data.structuralFlow,
+          redundancy: data.redundancy,
+          tonalConsistency: data.tonalConsistency,
+          issues: data.issues ?? [],
+          autoFixes: data.autoFixes ?? [],
+        });
+      }
+    } catch {
+      // Non-critical: coherence badge simply won't show if fetch fails
+    }
+  }
+
+  /** Edit a bridge's text — marks it as user-edited server-side. */
+  async function handleBridgeEdit(from, to, text) {
+    const res = await fetch(`/api/resume/section-bridges/${encodeURIComponent(from)}/${encodeURIComponent(to)}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (res.ok) {
+      // Optimistically update local state
+      setSectionBridges((prev) => {
+        const idx = prev.findIndex((b) => b.from === from && b.to === to);
+        const updated = { from, to, text, _source: 'user' };
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = updated;
+          return next;
+        }
+        return [...prev, updated];
+      });
+    }
+  }
+
+  /** Dismiss (delete) a bridge — user doesn't want this transition. */
+  async function handleBridgeDismiss(from, to) {
+    const res = await fetch(`/api/resume/section-bridges/${encodeURIComponent(from)}/${encodeURIComponent(to)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+    if (res.ok) {
+      setSectionBridges((prev) => prev.filter((b) => !(b.from === from && b.to === to)));
+    }
   }
 
   function enterEdit() {
     setMode('edit');
   }
 
-  function handleSaved() {
+  function handleSaved(updatedResume) {
     setMode('view');
-    onRefresh?.();
+    if (updatedResume && onResumePatched) {
+      onResumePatched(updatedResume);
+    } else {
+      onRefresh?.();
+    }
   }
 
   function handleCancel() {
@@ -128,15 +246,25 @@ export function ResumeMainView({ resume, onRefresh, onResumePatched }) {
     <div class="rmv-root">
       {mode === 'view' && (
         <>
-          {/* 편집 진입 버튼 */}
+          {/* 툴바: 편집 화면 안내 + 분석 이동 */}
           <div class="rmv-toolbar">
-            <button
-              class="rmv-edit-btn"
-              type="button"
-              onClick={enterEdit}
-            >
-              이력서 편집
-            </button>
+            <div class="rmv-context">
+              <span class="rmv-context-kicker">Resume Editor</span>
+              <h2 class="rmv-context-title">이력서 본문과 제안 승인에 집중합니다.</h2>
+            </div>
+
+            <div class="rmv-toolbar-actions">
+              <a class="rmv-analysis-link" href="/resume/analysis">
+                분석 화면
+              </a>
+              <button
+                class="rmv-edit-btn"
+                type="button"
+                onClick={enterEdit}
+              >
+                이력서 편집
+              </button>
+            </div>
           </div>
           <ResumeBody
             resume={resume}
@@ -148,6 +276,13 @@ export function ResumeMainView({ resume, onRefresh, onResumePatched }) {
             onProposalApproved={handleProposalApproved}
             onProposalRejected={handleProposalRejected}
             onResumeUpdated={onRefresh}
+            threadingData={threadingData}
+            strengths={identifiedStrengths}
+            narrativeAxes={narrativeAxes}
+            sectionBridges={sectionBridges}
+            onBridgeEdit={handleBridgeEdit}
+            onBridgeDismiss={handleBridgeDismiss}
+            coherenceReport={coherenceReport}
           />
         </>
       )}
@@ -172,13 +307,47 @@ const RMV_CSS = `
     gap: var(--space-4);
   }
 
-  /* ─── 편집 버튼 툴바 ─── */
+  /* ─── 툴바: 편집 화면 안내 + 액션 ─── */
   .rmv-toolbar {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
   }
 
+  .rmv-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+
+  .rmv-context {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .rmv-context-kicker {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .rmv-context-title {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.3;
+    color: var(--ink);
+  }
+
+  .rmv-analysis-link,
   .rmv-edit-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     padding: 6px 14px;
     font-size: 13px;
     font-weight: 600;
@@ -187,18 +356,33 @@ const RMV_CSS = `
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-md);
     transition: color 0.15s, border-color 0.15s, background 0.15s;
+    text-decoration: none;
   }
 
+  .rmv-analysis-link:hover,
   .rmv-edit-btn:hover {
     color: var(--ink);
     border-color: var(--ink);
     background: var(--surface);
   }
 
-  /* ─── 인쇄 시 편집 버튼 숨김 ─── */
+  /* ─── 인쇄 시 툴바 숨김 ─── */
   @media print {
     .rmv-toolbar {
       display: none;
+    }
+  }
+
+  @media (max-width: 900px) {
+    .rmv-toolbar {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .rmv-toolbar-actions {
+      width: 100%;
+      flex-wrap: wrap;
+      justify-content: flex-start;
     }
   }
 `;
