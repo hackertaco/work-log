@@ -58,16 +58,16 @@ export function ResumeChatPage() {
     }
   }, [insightStatus, insightDraft]);
 
-  /** Sub-AC 3: 강점 항목 클릭 → 해당 강점에 대한 채팅 질의 트리거 */
+  /** Sub-AC 3: 강점 항목 클릭 → 해당 강점에 대한 어필 포인트 검색 트리거 */
   const handleStrengthClick = useCallback((strength) => {
-    const query = `"${strength.label}" 강점을 이력서에 어떻게 반영하면 좋을까?`;
+    const query = `"${strength.label}" 강점에 대한 어필 포인트를 찾아줘`;
     const parsed = parseResumeQuery(query);
     handleSubmitRef.current?.(parsed);
   }, []);
 
-  /** Sub-AC 3: 경력 항목 클릭 → 해당 경력에 대한 채팅 질의 트리거 */
+  /** Sub-AC 3: 경력 항목 클릭 → 해당 경력에 대한 어필 포인트 검색 트리거 */
   const handleExperienceClick = useCallback((experience) => {
-    const query = `${experience.company} 경력의 주요 성과를 이력서에 반영해줘`;
+    const query = `${experience.company} 경력의 주요 성과 어필 포인트를 찾아줘`;
     const parsed = parseResumeQuery(query);
     handleSubmitRef.current?.(parsed);
   }, []);
