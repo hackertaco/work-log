@@ -31,6 +31,32 @@ import path from "node:path";
 import { fileExists } from "./utils.mjs";
 import { extractResumeUpdatesFromWorkLog } from "./resumeWorkLogExtract.mjs";
 import { writeExtractCache } from "./bulletCache.mjs";
+import { buildRepoWorkContext, extractCoreProjects } from "./resumeRecluster.mjs";
+import {
+  trackBulletEditBatch,
+  tokenJaccardSimilarity,
+} from "./resumeBulletSimilarity.mjs";
+import {
+  buildFullVoiceBlock,
+  buildVoiceDirective,
+  buildLanguageDirective,
+  buildDecisionReasoningDirective,
+  normalizeBullets,
+  normalizeVoice,
+  normalizeSection,
+  harmonizeResumeVoice,
+  scoreResumeVoiceConsistency,
+} from "./resumeVoice.mjs";
+import {
+  embedDecisionInBullet,
+  matchDecisionsToEvidence,
+  selectContextualPattern,
+  CONTEXTUAL_PATTERNS,
+} from "./resumeBulletTextGenerator.mjs";
+import {
+  extractDecisionPointsFromSnippets,
+  buildDecisionContext,
+} from "./resumeDecisionExtractor.mjs";
 
 const OPENAI_URL =
   process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
@@ -63,6 +89,10 @@ const STALE_THRESHOLD_DAYS = Math.max(
  * @property {string[]} candidates          Combined candidate bullets
  * @property {string[]} companyCandidates   Company-project bullets
  * @property {string[]} openSourceCandidates Open-source project bullets
+ * @property {object[]} [projects]          Categorized project entries from daily batch
+ * @property {object}   [projectGroups]     Project groups from daily batch
+ * @property {object}   [aiSessions]        Codex/Claude session summaries/snippets
+ * @property {object}   [highlights]        Daily highlight summary
  */
 export async function gatherWorkLogBullets(dataDir) {
   const dailyDir = path.join(dataDir, "daily");
@@ -100,7 +130,17 @@ export async function gatherWorkLogBullets(dataDir) {
           : [],
         openSourceCandidates: Array.isArray(resumeSection.openSourceCandidates)
           ? resumeSection.openSourceCandidates.filter((s) => typeof s === "string" && s.trim())
-          : []
+          : [],
+        projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+        projectGroups: parsed.projectGroups && typeof parsed.projectGroups === "object"
+          ? parsed.projectGroups
+          : {},
+        aiSessions: parsed.aiSessions && typeof parsed.aiSessions === "object"
+          ? parsed.aiSessions
+          : { codex: [], claude: [] },
+        highlights: parsed.highlights && typeof parsed.highlights === "object"
+          ? parsed.highlights
+          : {}
       });
     } catch {
       // Skip unparseable files; reconstruction continues with remaining data.
@@ -339,7 +379,7 @@ export function mergeWithUserEdits(current, { resumeData, strengthKeywords, disp
       ? cur.certifications
       : (fresh.certifications ?? []);
 
-  return {
+  const mergedResult = {
     meta: mergedMeta,
     _sources: mergedSources,
     contact: mergedContact,
@@ -352,6 +392,92 @@ export function mergeWithUserEdits(current, { resumeData, strengthKeywords, disp
     strength_keywords: Array.isArray(strengthKeywords) ? strengthKeywords : (cur.strength_keywords ?? []),
     display_axes: Array.isArray(displayAxes) ? displayAxes : (cur.display_axes ?? [])
   };
+
+  // ── Automatic quality tracking for reconstructed bullets ──────────────────
+  // Compare old system-generated bullets against their fresh reconstructions.
+  // Only track system-sourced bullets (user bullets are preserved, not compared).
+  // Fire-and-forget: errors are logged but never block the merge.
+  _trackReconstructionBulletQuality(cur, fresh).catch((err) =>
+    console.warn("[resumeReconstruction/mergeWithUserEdits] quality tracking failed (non-fatal):", err)
+  );
+
+  return mergedResult;
+}
+
+/**
+ * Compare system-generated bullets from the previous resume against the
+ * freshly reconstructed bullets.  Tracks how much the reconstruction changed
+ * each bullet, enabling quality monitoring of the reconstruction pipeline.
+ *
+ * Only compares bullets from items whose _source is NOT user/user_approved
+ * (user-edited items are preserved as-is and don't participate in
+ * reconstruction quality measurement).
+ *
+ * @param {object} previous — the resume before reconstruction
+ * @param {object} fresh    — the newly reconstructed resume
+ * @returns {Promise<void>}
+ */
+async function _trackReconstructionBulletQuality(previous, fresh) {
+  const isHumanConfirmed = (src) => src === "user" || src === "user_approved";
+  const pairs = [];
+
+  for (const section of ["experience", "projects"]) {
+    const oldItems = Array.isArray(previous?.[section]) ? previous[section] : [];
+    const newItems = Array.isArray(fresh?.[section]) ? fresh[section] : [];
+
+    // Match items by normalized company/name
+    const keyFn = section === "experience"
+      ? (item) => (item.company ?? "").toLowerCase().trim()
+      : (item) => (item.name ?? item.title ?? "").toLowerCase().trim();
+
+    const newItemMap = new Map();
+    for (const item of newItems) {
+      const key = keyFn(item);
+      if (key) newItemMap.set(key, item);
+    }
+
+    for (const oldItem of oldItems) {
+      // Skip user-edited items (they're preserved, not reconstructed)
+      if (isHumanConfirmed(oldItem._source)) continue;
+
+      const key = keyFn(oldItem);
+      const newItem = newItemMap.get(key);
+      if (!newItem) continue;
+
+      const oldBullets = Array.isArray(oldItem.bullets) ? oldItem.bullets : [];
+      const newBullets = Array.isArray(newItem.bullets) ? newItem.bullets : [];
+
+      // Compare by index position
+      const maxLen = Math.max(oldBullets.length, newBullets.length);
+      for (let j = 0; j < maxLen; j++) {
+        const oldText = oldBullets[j];
+        const newText = newBullets[j];
+
+        if (typeof oldText === "string" && typeof newText === "string" && oldText !== newText) {
+          pairs.push({
+            generatedText: oldText,
+            finalText: newText,
+            action: "edited",
+            section,
+            logDate: null,
+          });
+        } else if (typeof oldText === "string" && newText === undefined) {
+          pairs.push({
+            generatedText: oldText,
+            finalText: oldText,
+            action: "discarded",
+            section,
+            logDate: null,
+          });
+        }
+      }
+    }
+  }
+
+  if (pairs.length > 0) {
+    console.info(`[resumeReconstruction] tracking ${pairs.length} bullet changes from reconstruction`);
+    await trackBulletEditBatch(pairs, { useEmbeddings: false });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +559,41 @@ function buildReconstructionUserMessage({ pdfText, workLogEntries, currentResume
       // Cap at 200 bullets to stay within token budget
       allBullets.slice(0, 200).forEach((b) => parts.push(`- ${b}`));
     }
+
+    const repoHints = buildRepoNarrativeHints(workLogEntries);
+    if (repoHints.length > 0) {
+      parts.push("");
+      parts.push("=== REPO NARRATIVE HINTS ===");
+      repoHints.forEach((hint) => parts.push(`- ${hint}`));
+    }
+
+    // ── 4. Decision reasoning context from sessions ──────────────────────────
+    // Collect session snippets and build local enrichment examples using the
+    // bullet text generator's contextual patterns.  This shows the reconstruction
+    // LLM HOW to naturally embed reasoning into bullet text.
+    const sessionSnippets = _collectSessionSnippets(recent);
+    if (sessionSnippets.length > 0) {
+      parts.push("");
+      parts.push("=== SESSION DECISION REASONING ===");
+      parts.push("(Use this context to embed WHY into resume bullets — not as metadata, but as natural sentence flow)");
+      parts.push("");
+
+      // Include decision-enriched bullet examples using contextual patterns
+      const enrichmentExamples = _buildDecisionEnrichmentExamples(allBullets, sessionSnippets);
+      if (enrichmentExamples.length > 0) {
+        parts.push("BULLET ENRICHMENT EXAMPLES (embed reasoning like these):");
+        for (const ex of enrichmentExamples.slice(0, 5)) {
+          parts.push(`  Original: "${ex.original}"`);
+          parts.push(`  Enriched: "${ex.enriched}"`);
+          parts.push("");
+        }
+      }
+
+      // Include raw session context for additional signal
+      for (const s of sessionSnippets.slice(0, 20)) {
+        parts.push(`[${s.date}] ${s.text}`);
+      }
+    }
   }
 
   return parts.join("\n");
@@ -463,6 +624,150 @@ function buildResumeSkeleton(resume) {
   return lines.join("\n");
 }
 
+function buildRepoNarrativeHints(workLogEntries) {
+  const repos = new Set();
+  for (const entry of Array.isArray(workLogEntries) ? workLogEntries : []) {
+    for (const project of Array.isArray(entry?.projects) ? entry.projects : []) {
+      if (typeof project?.repo === "string" && project.repo.trim()) {
+        repos.add(project.repo.trim());
+      }
+    }
+  }
+
+  const hints = [];
+  for (const repo of repos) {
+    const ctx = buildRepoWorkContext(workLogEntries, repo);
+    if (ctx.commits.length === 0 && ctx.bullets.length === 0) continue;
+
+    const firstCommit = ctx.commits[0]?.subject || "";
+    const lastCommit = ctx.commits[ctx.commits.length - 1]?.subject || "";
+    const sessionHint = ctx.sessionSnippets[0]?.text || "";
+    const timeSpan = ctx.dates.length > 1
+      ? `${ctx.dates[0]} to ${ctx.dates[ctx.dates.length - 1]}`
+      : (ctx.dates[0] || "recent");
+
+    hints.push(
+      [
+        `${repo}: ${ctx.commits.length} commits across ${timeSpan}.`,
+        firstCommit ? `Started around "${firstCommit}".` : "",
+        lastCommit && lastCommit !== firstCommit ? `Later work includes "${lastCommit}".` : "",
+        sessionHint ? `Session context: "${sessionHint}".` : ""
+      ].filter(Boolean).join(" ")
+    );
+  }
+
+  return hints.slice(0, 8);
+}
+
+/**
+ * Collect session snippets from work-log entries for decision extraction.
+ *
+ * @param {object[]} entries  Work-log entries
+ * @returns {Array<{date: string, text: string}>}
+ */
+function _collectSessionSnippets(entries) {
+  const snippets = [];
+  for (const entry of entries) {
+    if (!entry || !entry.aiSessions) continue;
+    const date = entry.date || "unknown";
+    const sessions = [
+      ...(Array.isArray(entry.aiSessions.codex) ? entry.aiSessions.codex : []),
+      ...(Array.isArray(entry.aiSessions.claude) ? entry.aiSessions.claude : []),
+    ];
+    for (const session of sessions) {
+      if (!session) continue;
+      const textParts = [];
+      if (session.summary) textParts.push(session.summary);
+      if (Array.isArray(session.snippets)) {
+        for (const s of session.snippets) {
+          if (typeof s === "string" && s.trim() && s !== session.summary) {
+            textParts.push(s);
+          }
+        }
+      }
+      const combined = textParts.join(" | ");
+      if (combined) {
+        snippets.push({ date, text: combined });
+      }
+    }
+  }
+  return snippets;
+}
+
+/**
+ * Build decision-enrichment examples by applying embedDecisionInBullet locally
+ * on work-log bullets.  These examples are included in the LLM prompt to
+ * demonstrate the desired output style (natural reasoning integration using
+ * contextual patterns).
+ *
+ * This is a cheap local operation (no LLM call) that leverages the
+ * resumeBulletTextGenerator's pattern-based enrichment.
+ *
+ * @param {string[]} bullets        Work-log bullet candidates
+ * @param {Array<{date: string, text: string}>} sessionSnippets
+ * @returns {Array<{original: string, enriched: string}>}
+ */
+function _buildDecisionEnrichmentExamples(bullets, sessionSnippets) {
+  if (!bullets || bullets.length === 0 || !sessionSnippets || sessionSnippets.length === 0) {
+    return [];
+  }
+
+  // Build synthetic decision-like objects from session snippets using
+  // simple heuristics (no LLM call — runs synchronously).
+  const syntheticDecisions = _extractSyntheticDecisions(sessionSnippets);
+  if (syntheticDecisions.length === 0) return [];
+
+  const examples = [];
+  for (const bullet of bullets.slice(0, 30)) {
+    if (!bullet || bullet.length < 30) continue;
+
+    for (const decision of syntheticDecisions) {
+      const enriched = embedDecisionInBullet(bullet, decision);
+      if (enriched !== bullet && enriched.length > bullet.length) {
+        examples.push({ original: bullet, enriched });
+        break; // One enrichment example per bullet is sufficient
+      }
+    }
+    if (examples.length >= 5) break; // Cap examples to keep prompt focused
+  }
+
+  return examples;
+}
+
+/**
+ * Extract synthetic decision-like objects from session snippets using
+ * simple heuristics.  These are NOT full DecisionPoints from the LLM —
+ * they're lightweight approximations used only for generating enrichment
+ * examples in the reconstruction prompt.
+ *
+ * @param {Array<{date: string, text: string}>} snippets
+ * @returns {object[]}  Synthetic decision objects with topic/chosen/rationale
+ */
+function _extractSyntheticDecisions(snippets) {
+  const decisions = [];
+
+  for (const s of snippets.slice(0, 10)) {
+    const text = s.text || "";
+
+    // Look for "chose X over Y" / "decided on X because Y" patterns
+    const choiceMatch = text.match(
+      /(?:chose|decided|opted for|selected|picked)\s+(.{10,60}?)(?:\s+(?:over|instead of|rather than)\s+(.{5,40}?))?(?:\s+(?:because|since|for|after)\s+(.{10,80}))?/i
+    );
+    if (choiceMatch) {
+      decisions.push({
+        topic: choiceMatch[1]?.trim() || "",
+        alternatives: choiceMatch[2] ? [choiceMatch[2].trim()] : [],
+        chosen: choiceMatch[1]?.trim() || "",
+        rationale: choiceMatch[3]?.trim() || "improved system design",
+        date: s.date,
+        confidence: 0.6,
+      });
+    }
+  }
+
+  return decisions.slice(0, 5);
+}
+
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
@@ -484,13 +789,7 @@ structure as guidance for company names and role titles.
 • Assign each work-log bullet to the most relevant experience entry (by company name).
 • Merge them with bullets derived from the PDF.
 • Remove redundant or near-duplicate bullets (keep the most specific/quantified version).
-• Rewrite bullets in achievement-oriented active voice.  Start with a strong verb.
-• Keep each bullet under 140 characters.
 • Add at most 5 new bullets per role (quality over quantity).
-
-━━━ LANGUAGE RULE ━━━
-Detect the primary language of the PDF text (ISO 639-1, e.g. "ko", "en").
-Write ALL generated text in that SAME language.
 
 ━━━ SECTIONS ━━━
 • contact: name, email, phone, location, website, linkedin (null if not found)
@@ -501,11 +800,27 @@ Write ALL generated text in that SAME language.
 • projects: side projects or open-source contributions; empty array if none
 • certifications: professional certs only; empty array if none
 
+━━━ ANTI-FRAGMENTATION (CRITICAL) ━━━
+• Every experience entry MUST have at least 2 bullets.  If a role has too little
+  evidence for 2 bullets, merge it into the nearest related role or expand with
+  more detail from the PDF text.  A single-bullet experience entry looks
+  incomplete and users will delete the entire section.
+• Every project entry MUST have at least 2 bullets.  A project with 1 bullet is
+  not worth a standalone section — merge it or expand it.
+• Prefer 3-5 strong bullets per role over 7-8 thin ones.
+• Do NOT create experience entries for roles where you have zero bullet material.
+  Omit them or merge into an adjacent role at the same company.
+• Skills arrays should not be overly granular — group related tools together.
+  Example: "React ecosystem" instead of listing "React", "React Router",
+  "React Query", "React Hook Form" as 4 separate entries.
+
 ━━━ STRENGTH KEYWORDS ━━━
 5–15 short marketable keywords (hard + soft skills, under 40 chars each).
 
 ━━━ DISPLAY AXES ━━━
-2–4 distinct career narrative lenses (label + tagline + 3-6 highlight skills each).`;
+2–4 distinct career narrative lenses (label + tagline + 3-6 highlight skills each).
+
+${buildFullVoiceBlock(["bullet", "summary", "displayAxisLabel", "displayAxisTagline", "keyword"])}`;
 
 // ---------------------------------------------------------------------------
 // JSON Schema (mirrors resumeBootstrap.mjs schema structure)
@@ -652,11 +967,11 @@ function normalizeReconstructionResult(parsed, currentResume) {
       skills:  "system"
     },
     contact:        normalizeContact(rawResume.contact),
-    summary:        typeof rawResume.summary === "string" ? rawResume.summary.trim() : "",
-    experience:     normalizeExperience(rawResume.experience),
+    summary:        normalizeVoice(typeof rawResume.summary === "string" ? rawResume.summary : "", "summary"),
+    experience:     consolidateThinExperience(normalizeExperience(rawResume.experience)),
     education:      normalizeEducation(rawResume.education),
     skills:         normalizeSkills(rawResume.skills),
-    projects:       normalizeProjects(rawResume.projects),
+    projects:       consolidateThinProjects(normalizeProjects(rawResume.projects)),
     certifications: normalizeCertifications(rawResume.certifications)
   };
 
@@ -702,8 +1017,175 @@ function normalizeExperience(arr) {
       start_date: nullableString(item.start_date),
       end_date:   nullableString(item.end_date),
       location:   nullableString(item.location),
-      bullets:    normalizeStringArray(item.bullets, 160, 8)
+      bullets:    normalizeBullets(normalizeStringArray(item.bullets, 160, 8))
     }));
+}
+
+/**
+ * Anti-fragmentation: consolidate experience entries that are too thin.
+ *
+ * Experience entries with 0 bullets are removed entirely (they add no value
+ * and users would delete them).
+ *
+ * Experience entries with only 1 bullet at the same company are merged into
+ * the entry with the most bullets at that company, if one exists.
+ *
+ * This prevents the common LLM failure mode of splitting a single role at
+ * a company into multiple thin entries that each look incomplete.
+ *
+ * @param {object[]} experience  Normalized experience entries
+ * @returns {object[]}
+ */
+function consolidateThinExperience(experience) {
+  if (!Array.isArray(experience) || experience.length === 0) return experience;
+
+  // Remove entries with zero bullets
+  const nonEmpty = experience.filter((e) => {
+    const bulletCount = Array.isArray(e.bullets) ? e.bullets.length : 0;
+    return bulletCount > 0;
+  });
+
+  // Group by company (case-insensitive)
+  const byCompany = new Map();
+  for (const entry of nonEmpty) {
+    const key = (entry.company || "").toLowerCase().trim();
+    if (!byCompany.has(key)) byCompany.set(key, []);
+    byCompany.get(key).push(entry);
+  }
+
+  const result = [];
+  for (const [, entries] of byCompany) {
+    if (entries.length <= 1) {
+      result.push(...entries);
+      continue;
+    }
+
+    // Sort by bullet count descending
+    entries.sort((a, b) => (b.bullets || []).length - (a.bullets || []).length);
+
+    // Merge single-bullet entries into the strongest entry at the same company
+    const strong = [];
+    const weak = [];
+    for (const e of entries) {
+      if ((e.bullets || []).length < 2) {
+        weak.push(e);
+      } else {
+        strong.push(e);
+      }
+    }
+
+    // If no strong entries, the first one becomes the merge target
+    if (strong.length === 0 && weak.length > 0) {
+      strong.push(weak.shift());
+    }
+
+    // Merge weak entries' bullets into the first strong entry
+    if (weak.length > 0 && strong.length > 0) {
+      const target = strong[0];
+      const existingBullets = new Set(
+        (target.bullets || []).map((b) => b.toLowerCase().trim())
+      );
+      const mergedBullets = [...(target.bullets || [])];
+      for (const w of weak) {
+        for (const b of w.bullets || []) {
+          if (!existingBullets.has(b.toLowerCase().trim()) && mergedBullets.length < 8) {
+            existingBullets.add(b.toLowerCase().trim());
+            mergedBullets.push(b);
+          }
+        }
+      }
+      strong[0] = { ...target, bullets: mergedBullets };
+    }
+
+    result.push(...strong);
+  }
+
+  // Preserve original ordering (by first appearance)
+  const orderMap = new Map();
+  for (let i = 0; i < experience.length; i++) {
+    const key = (experience[i].company || "").toLowerCase().trim() + "|" +
+                (experience[i].title || "").toLowerCase().trim();
+    if (!orderMap.has(key)) orderMap.set(key, i);
+  }
+  result.sort((a, b) => {
+    const keyA = (a.company || "").toLowerCase().trim() + "|" + (a.title || "").toLowerCase().trim();
+    const keyB = (b.company || "").toLowerCase().trim() + "|" + (b.title || "").toLowerCase().trim();
+    return (orderMap.get(keyA) ?? 999) - (orderMap.get(keyB) ?? 999);
+  });
+
+  return result;
+}
+
+/**
+ * Anti-fragmentation: consolidate project entries that are too thin.
+ *
+ * Projects with 0 bullets are removed.
+ * Projects with only 1 bullet are merged with the most similar project
+ * (by name/description overlap) if available.
+ *
+ * @param {object[]} projects  Normalized project entries
+ * @returns {object[]}
+ */
+function consolidateThinProjects(projects) {
+  if (!Array.isArray(projects) || projects.length <= 1) return projects;
+
+  const strong = [];
+  const weak = [];
+
+  for (const p of projects) {
+    const bulletCount = Array.isArray(p.bullets) ? p.bullets.length : 0;
+    if (bulletCount === 0) continue; // Drop projects with 0 bullets
+    if (bulletCount < 2) {
+      weak.push(p);
+    } else {
+      strong.push(p);
+    }
+  }
+
+  // If no strong projects exist, promote the most substantial weak one
+  if (strong.length === 0 && weak.length > 0) {
+    strong.push(weak.shift());
+  }
+
+  // Merge weak projects into their best match among strong ones
+  for (const w of weak) {
+    if (strong.length === 0) {
+      strong.push(w);
+      continue;
+    }
+
+    // Find best match by name word overlap
+    let bestIdx = 0;
+    let bestScore = 0;
+    const wWords = new Set((w.name || "").toLowerCase().split(/\s+/));
+    for (let i = 0; i < strong.length; i++) {
+      const sWords = new Set((strong[i].name || "").toLowerCase().split(/\s+/));
+      let score = 0;
+      for (const word of wWords) {
+        if (word.length > 2 && sWords.has(word)) score++;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+
+    // Merge bullets
+    const target = strong[bestIdx];
+    const existing = new Set(
+      (target.bullets || []).map((b) => b.toLowerCase().trim())
+    );
+    const merged = [...(target.bullets || [])];
+    for (const b of w.bullets || []) {
+      if (!existing.has(b.toLowerCase().trim()) && merged.length < 6) {
+        existing.add(b.toLowerCase().trim());
+        merged.push(b);
+      }
+    }
+    strong[bestIdx] = { ...target, bullets: merged };
+  }
+
+  return strong;
 }
 
 function normalizeEducation(arr) {
@@ -741,7 +1223,7 @@ function normalizeProjects(arr) {
       name:        String(item.name || "").trim(),
       description: nullableString(item.description),
       url:         nullableString(item.url),
-      bullets:     normalizeStringArray(item.bullets, 160, 6)
+      bullets:     normalizeBullets(normalizeStringArray(item.bullets, 160, 6))
     }));
 }
 
@@ -763,8 +1245,8 @@ function normalizeDisplayAxes(arr) {
     .filter((item) => item && typeof item === "object" && item.label && item.tagline)
     .slice(0, 4)
     .map((item) => ({
-      label:            String(item.label   || "").trim(),
-      tagline:          String(item.tagline || "").trim(),
+      label:            normalizeVoice(String(item.label   || ""), "displayAxisLabel"),
+      tagline:          normalizeVoice(String(item.tagline || ""), "displayAxisTagline"),
       highlight_skills: normalizeStringArray(item.highlight_skills, 60, 6)
     }));
 }
@@ -888,6 +1370,4644 @@ export async function fullReconstructExtractCache({
     dates
   };
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Strengths Identification Pipeline
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Target number of strengths to identify (3-5 range). */
+export const TARGET_STRENGTHS_MIN = 3;
+export const TARGET_STRENGTHS_MAX = 5;
+
+// ─── Behavioral signal detection patterns ────────────────────────────────────
+//
+// These heuristic rules detect micro-behaviors from episode text (bullets,
+// commit subjects, summaries, decision reasoning) BEFORE the LLM call.
+// The pre-extracted signals are clustered and passed to the LLM as structured
+// input, giving it a head start on behavioral pattern recognition.
+//
+// Each rule maps regex patterns → a behavioral category + micro-behavior label.
+// Categories group related micro-behaviors into higher-level strength areas.
+
+/**
+ * @typedef {Object} BehavioralSignalRule
+ * @property {string}   category      High-level behavioral category (e.g. "reliability")
+ * @property {string}   microBehavior Short micro-behavior label (e.g. "error handling")
+ * @property {RegExp[]} patterns      Regex patterns to detect this behavior
+ */
+
+/** @type {BehavioralSignalRule[]} */
+const BEHAVIORAL_SIGNAL_RULES = [
+  // ── Reliability / Resilience ──────────────────────────────────────────────
+  { category: "reliability", microBehavior: "error handling",
+    patterns: [/\berror\s*(?:handling|boundar|recover)/i, /\bcatch\b.*\b(?:error|exception)/i, /예외\s*처리/] },
+  { category: "reliability", microBehavior: "retry logic",
+    patterns: [/\bretry\b/i, /\bretries\b/i, /\bbackoff\b/i, /재시도/] },
+  { category: "reliability", microBehavior: "circuit breaker",
+    patterns: [/circuit\s*break/i, /\bfallback\b/i, /graceful\s*degrad/i] },
+  { category: "reliability", microBehavior: "guard clause",
+    patterns: [/\bguard\b/i, /\bvalidat/i, /\bsanitiz/i, /\bdefensiv/i, /방어\s*로직/] },
+  { category: "reliability", microBehavior: "stability fix",
+    patterns: [/\bstabil/i, /crash\s*fix/i, /\bflaky\b/i, /안정/] },
+
+  // ── System design / Architecture ──────────────────────────────────────────
+  { category: "system_design", microBehavior: "abstraction",
+    patterns: [/\babstract/i, /\bdecompos/i, /\bmodular/i, /\bencapsulat/i] },
+  { category: "system_design", microBehavior: "pipeline design",
+    patterns: [/\bpipeline\b/i, /\bworkflow\b/i, /\borchestrat/i, /파이프라인/] },
+  { category: "system_design", microBehavior: "state management",
+    patterns: [/state\s*(?:machine|management|flow)/i, /\bfsm\b/i, /상태\s*관리/] },
+  { category: "system_design", microBehavior: "API design",
+    patterns: [/\bapi\s*design/i, /\binterface\s*design/i, /\bcontract\b/i, /\bschema\s*design/i] },
+
+  // ── Code quality / Craft ──────────────────────────────────────────────────
+  { category: "code_quality", microBehavior: "refactoring",
+    patterns: [/\brefactor/i, /\bclean\s*up/i, /\bsimplif/i, /리팩터/] },
+  { category: "code_quality", microBehavior: "testing",
+    patterns: [/\btest\s*(?:coverage|suite|case)/i, /\bunit\s*test/i, /\btdd\b/i, /테스트/] },
+  { category: "code_quality", microBehavior: "documentation",
+    patterns: [/\bdocument/i, /\bjsdoc\b/i, /\breadme\b/i, /\btypedoc\b/i, /문서/] },
+  { category: "code_quality", microBehavior: "type safety",
+    patterns: [/\btype\s*safe/i, /\btypescript/i, /\btype\s*check/i, /\bstrict\s*mode/i] },
+
+  // ── User experience / Product sense ───────────────────────────────────────
+  { category: "product_sense", microBehavior: "UX improvement",
+    patterns: [/\bux\b/i, /\buser\s*experience/i, /\busability/i, /사용자\s*경험/] },
+  { category: "product_sense", microBehavior: "UI polish",
+    patterns: [/\bui\s*(?:polish|improve|update)/i, /\bresponsive/i, /\baccessib/i] },
+  { category: "product_sense", microBehavior: "flow optimization",
+    patterns: [/\bflow\b.*\b(?:optimiz|improve|simplif)/i, /\bonboard/i, /흐름\s*개선/] },
+
+  // ── Performance / Optimization ────────────────────────────────────────────
+  { category: "performance", microBehavior: "performance optimization",
+    patterns: [/\bperform/i, /\boptimiz/i, /\blatency\b/i, /\bcache\b/i, /성능/] },
+  { category: "performance", microBehavior: "bundle optimization",
+    patterns: [/\bbundle\b/i, /\blazy\s*load/i, /\bcode\s*split/i, /\btree\s*shak/i] },
+
+  // ── Debugging / Investigation ─────────────────────────────────────────────
+  { category: "debugging", microBehavior: "root cause analysis",
+    patterns: [/\broot\s*cause/i, /\bdiagnos/i, /\binvestigat/i, /원인\s*분석/] },
+  { category: "debugging", microBehavior: "observability",
+    patterns: [/\bobservab/i, /\blog(?:ging|s)\b/i, /\bmonitor/i, /\bsentry\b/i, /\btrace\b/i] },
+
+  // ── Automation / Tooling ──────────────────────────────────────────────────
+  { category: "automation", microBehavior: "build automation",
+    patterns: [/\bautomat/i, /\bci\s*[/\\]?\s*cd\b/i, /\bgithub\s*action/i, /자동화/] },
+  { category: "automation", microBehavior: "developer tooling",
+    patterns: [/\bdev\s*tool/i, /\bcli\b/i, /\bscript\b.*\b(?:build|deploy|generate)/i, /\bhook/i] },
+  { category: "automation", microBehavior: "code generation",
+    patterns: [/\bgenerat/i, /\bscaffold/i, /\btemplate\b/i, /\bboilerplate\b/i] },
+];
+
+// ─── Session decision pattern categories ────────────────────────────────────
+// Patterns that detect intentional decision-making from session conversations.
+// These signals confirm that a behavior is deliberate, not coincidental.
+
+/** @type {Array<{category: string, pattern: RegExp, signal: string}>} */
+const DECISION_INTENTIONALITY_PATTERNS = [
+  { category: "reliability", pattern: /(?:chose|decided|opted)\b.*\b(?:safe|stable|defensive|guard)/i,
+    signal: "deliberately chose safety/stability" },
+  { category: "reliability", pattern: /(?:instead of|rather than)\b.*\b(?:quick|fast|shortcut)/i,
+    signal: "prioritized reliability over speed" },
+  { category: "system_design", pattern: /(?:abstract|decompos|modular|separate)\b.*\b(?:concern|responsib|layer)/i,
+    signal: "intentional architectural separation" },
+  { category: "code_quality", pattern: /(?:refactor|clean|simplif)\b.*\b(?:before|first|prior)/i,
+    signal: "refactors before adding features" },
+  { category: "product_sense", pattern: /(?:user|customer|ux)\b.*\b(?:first|priority|consider)/i,
+    signal: "user-centric decision making" },
+  { category: "performance", pattern: /(?:optimiz|performance|latency)\b.*\b(?:measur|benchmark|profil)/i,
+    signal: "data-driven performance decisions" },
+];
+
+/**
+ * @typedef {Object} BehavioralSignal
+ * @property {string} category       High-level behavioral category
+ * @property {string} microBehavior  Specific micro-behavior detected
+ * @property {string} episodeId      Evidence episode ID where detected
+ * @property {string} sourceText     The text snippet where the signal was found (truncated)
+ * @property {string} [projectId]    Core project ID (if derivable)
+ * @property {string} [repo]         Repository name
+ */
+
+/**
+ * @typedef {Object} BehavioralCluster
+ * @property {string}   category        High-level category label
+ * @property {string[]} microBehaviors  Distinct micro-behaviors found
+ * @property {string[]} episodeIds      Episode IDs where behaviors were detected
+ * @property {string[]} projectIds      Project IDs involved
+ * @property {string[]} repos           Repositories where behavior appears
+ * @property {number}   frequency       Total signal count (raw occurrence)
+ * @property {string[]} intentionalitySignals  Decision reasoning that confirms deliberate behavior
+ * @property {string[]} sampleTexts     Representative text snippets (up to 3)
+ */
+
+/**
+ * Extract behavioral signals from evidence episodes using heuristic pattern
+ * matching.  This pre-analysis runs BEFORE the LLM call to provide structured
+ * input that guides the LLM toward higher-quality strength identification.
+ *
+ * Each signal represents a detected micro-behavior (e.g. "retry logic",
+ * "refactoring", "error handling") tied to a specific evidence episode.
+ *
+ * @param {object[]} episodes   All evidence episodes across repos
+ * @param {object[]} projects   All core projects (for project→repo mapping)
+ * @returns {BehavioralSignal[]}  Extracted signals, unsorted
+ */
+export function extractBehavioralSignals(episodes, projects) {
+  const episodeProjectMap = new Map();
+  const episodeRepoMap = new Map();
+  for (const proj of projects) {
+    for (const ep of Array.isArray(proj.episodes) ? proj.episodes : []) {
+      episodeProjectMap.set(ep.id, proj.id);
+      episodeRepoMap.set(ep.id, proj.repo);
+    }
+  }
+
+  const signals = [];
+
+  for (const ep of episodes) {
+    // Combine all text sources from the episode for pattern matching
+    const texts = [
+      ep.summary || "",
+      ep.decisionReasoning || "",
+      ...(Array.isArray(ep.bullets) ? ep.bullets : []),
+      ...(Array.isArray(ep.commitSubjects) ? ep.commitSubjects : []),
+    ].filter(Boolean);
+
+    const joinedText = texts.join(" ");
+
+    for (const rule of BEHAVIORAL_SIGNAL_RULES) {
+      for (const pattern of rule.patterns) {
+        if (pattern.test(joinedText)) {
+          // Find the specific text that matched for context
+          const matchedText = texts.find((t) => pattern.test(t)) || "";
+          signals.push({
+            category: rule.category,
+            microBehavior: rule.microBehavior,
+            episodeId: ep.id,
+            sourceText: matchedText.slice(0, 120),
+            projectId: episodeProjectMap.get(ep.id) || undefined,
+            repo: episodeRepoMap.get(ep.id) || undefined,
+          });
+          break; // One match per rule per episode is sufficient
+        }
+      }
+    }
+  }
+
+  return signals;
+}
+
+/**
+ * Analyze session decision reasoning from episodes to detect intentionality
+ * signals.  These confirm that behavioral patterns are deliberate choices
+ * rather than coincidental occurrences.
+ *
+ * @param {object[]} episodes  Evidence episodes with decisionReasoning
+ * @returns {Array<{category: string, signal: string, episodeId: string, reasoning: string}>}
+ */
+export function extractIntentionalitySignals(episodes) {
+  const signals = [];
+
+  for (const ep of episodes) {
+    const reasoning = ep.decisionReasoning;
+    if (!reasoning || typeof reasoning !== "string" || !reasoning.trim()) continue;
+
+    for (const rule of DECISION_INTENTIONALITY_PATTERNS) {
+      if (rule.pattern.test(reasoning)) {
+        signals.push({
+          category: rule.category,
+          signal: rule.signal,
+          episodeId: ep.id,
+          reasoning: reasoning.slice(0, 200),
+        });
+      }
+    }
+  }
+
+  return signals;
+}
+
+/**
+ * Cluster behavioral signals into higher-level behavior groups.
+ *
+ * Groups signals by category, deduplicates micro-behaviors, computes
+ * cross-project/cross-repo span, and integrates intentionality signals
+ * from session decisions.
+ *
+ * Clusters with signals from ≥2 episodes are the primary candidates for
+ * strength identification.  Clusters from only 1 episode are returned but
+ * flagged as thin evidence.
+ *
+ * @param {BehavioralSignal[]} signals       Raw behavioral signals
+ * @param {Array<{category: string, signal: string, episodeId: string, reasoning: string}>} intentionality
+ *   Intentionality signals from session decision analysis
+ * @returns {BehavioralCluster[]}  Clustered behaviors, sorted by frequency desc
+ */
+export function clusterBehaviorSignals(signals, intentionality = []) {
+  // Group signals by category
+  const categoryMap = new Map();
+
+  for (const sig of signals) {
+    if (!categoryMap.has(sig.category)) {
+      categoryMap.set(sig.category, {
+        category: sig.category,
+        microBehaviors: new Set(),
+        episodeIds: new Set(),
+        projectIds: new Set(),
+        repos: new Set(),
+        frequency: 0,
+        sampleTexts: [],
+        intentionalitySignals: [],
+      });
+    }
+    const cluster = categoryMap.get(sig.category);
+    cluster.microBehaviors.add(sig.microBehavior);
+    cluster.episodeIds.add(sig.episodeId);
+    if (sig.projectId) cluster.projectIds.add(sig.projectId);
+    if (sig.repo) cluster.repos.add(sig.repo);
+    cluster.frequency += 1;
+    if (cluster.sampleTexts.length < 3 && sig.sourceText) {
+      cluster.sampleTexts.push(sig.sourceText);
+    }
+  }
+
+  // Integrate intentionality signals
+  for (const intent of intentionality) {
+    const cluster = categoryMap.get(intent.category);
+    if (cluster) {
+      cluster.intentionalitySignals.push(
+        `[${intent.episodeId}] ${intent.signal}: "${intent.reasoning}"`
+      );
+    }
+  }
+
+  // Convert to output format and sort by frequency
+  return [...categoryMap.values()]
+    .map((c) => ({
+      category: c.category,
+      microBehaviors: [...c.microBehaviors].sort(),
+      episodeIds: [...c.episodeIds].sort(),
+      projectIds: [...c.projectIds].sort(),
+      repos: [...c.repos].sort(),
+      frequency: c.frequency,
+      intentionalitySignals: c.intentionalitySignals.slice(0, 5),
+      sampleTexts: c.sampleTexts,
+    }))
+    .sort((a, b) => b.frequency - a.frequency || b.episodeIds.length - a.episodeIds.length);
+}
+
+/**
+ * Analyze evidence episodes and core projects across all repos to identify
+ * 3-5 repeated strengths/skills with frequency and evidence backing.
+ *
+ * Enhanced pipeline:
+ *   1. Collects all episodes and projects from the provided extraction results
+ *   2. Extracts behavioral signals using heuristic pattern matching (pre-LLM)
+ *   3. Extracts intentionality signals from session decision reasoning
+ *   4. Clusters behavioral signals into higher-level behavior groups
+ *   5. Builds an enriched evidence summary with pre-clustered signals
+ *   6. Calls the LLM to identify cross-repo repeated strengths
+ *   7. Validates reasoning quality (repetition, intentionality, impact, differentiation)
+ *   8. Normalizes and validates the results
+ *   9. Merges with existing user-edited strengths (user edits always win)
+ *
+ * Strengths are unified cross-repo — a single strength may draw evidence from
+ * multiple repositories.  The pipeline aggregates all evidence before analysis
+ * rather than analyzing per-repo.
+ *
+ * @param {Object} input
+ * @param {import("./resumeTypes.mjs").CoreProjectExtractionResult[]} input.extractionResults
+ *   Core project extraction results for each repo (from extractCoreProjects)
+ * @param {import("./resumeTypes.mjs").IdentifiedStrength[]} [input.existingStrengths=[]]
+ *   Previously identified strengths (user-edited ones are preserved unchanged)
+ * @param {object} [options={}]
+ * @param {Function} [options.llmFn]  Override LLM call for testing
+ * @returns {Promise<import("./resumeTypes.mjs").StrengthsIdentificationResult>}
+ */
+export async function identifyStrengths(input, options = {}) {
+  const { extractionResults, existingStrengths = [] } = input;
+
+  // Collect all episodes and projects across repos
+  const allEpisodes = [];
+  const allProjects = [];
+
+  for (const result of Array.isArray(extractionResults) ? extractionResults : []) {
+    if (!result || !Array.isArray(result.projects)) continue;
+    for (const project of result.projects) {
+      allProjects.push(project);
+      if (Array.isArray(project.episodes)) {
+        for (const ep of project.episodes) {
+          allEpisodes.push(ep);
+        }
+      }
+    }
+  }
+
+  if (allEpisodes.length === 0 && allProjects.length === 0) {
+    return {
+      strengths: Array.isArray(existingStrengths) ? existingStrengths : [],
+      totalEpisodes: 0,
+      totalProjects: 0,
+      identifiedAt: new Date().toISOString()
+    };
+  }
+
+  // ── Pre-LLM behavioral analysis ───────────────────────────────────────────
+  // Extract behavioral signals from episodes using heuristic pattern matching.
+  // This gives the LLM structured pre-clustered input for better accuracy.
+  const behavioralSignals = extractBehavioralSignals(allEpisodes, allProjects);
+  const intentionalitySignals = extractIntentionalitySignals(allEpisodes);
+  const behavioralClusters = clusterBehaviorSignals(behavioralSignals, intentionalitySignals);
+
+  console.info(
+    `[identifyStrengths] Pre-LLM analysis: ${behavioralSignals.length} signals → ` +
+    `${behavioralClusters.length} clusters (` +
+    `${behavioralClusters.filter((c) => c.episodeIds.length >= 2).length} with ≥2 episodes), ` +
+    `${intentionalitySignals.length} intentionality signals from session decisions`
+  );
+
+  // Call LLM to identify strengths from evidence + pre-clustered signals
+  const llmFn = options.llmFn || _callLlmForStrengths;
+  let rawStrengths;
+  try {
+    rawStrengths = await llmFn(allEpisodes, allProjects, behavioralClusters);
+  } catch (err) {
+    console.warn(
+      `[identifyStrengths] LLM failed, falling back to heuristic strengths: ${err.message ?? String(err)}`
+    );
+    rawStrengths = _buildHeuristicStrengthsFromClusters(behavioralClusters, allEpisodes, allProjects);
+  }
+
+  if (!Array.isArray(rawStrengths) || rawStrengths.length === 0) {
+    rawStrengths = _buildHeuristicStrengthsFromClusters(behavioralClusters, allEpisodes, allProjects);
+  }
+
+  // Normalize raw LLM output into typed IdentifiedStrength objects
+  const systemStrengths = _normalizeStrengths(rawStrengths, allEpisodes, allProjects);
+
+  // Validate reasoning quality — log warnings for weak reasoning
+  for (const str of systemStrengths) {
+    const quality = _assessReasoningQuality(str.reasoning);
+    if (!quality.adequate) {
+      console.warn(
+        `[identifyStrengths] Weak reasoning for strength "${str.label}": ` +
+        `missing ${quality.missingAspects.join(", ")}`
+      );
+    }
+  }
+
+  // ── Post-LLM validation: frequency correction + minimum evidence filter ──
+  const validatedStrengths = _validateAndFilterStrengths(systemStrengths, allEpisodes);
+  if (validatedStrengths.length < systemStrengths.length) {
+    console.info(
+      `[identifyStrengths] Post-validation: ${systemStrengths.length} → ${validatedStrengths.length} strengths ` +
+      `(filtered ${systemStrengths.length - validatedStrengths.length} with insufficient evidence)`
+    );
+  }
+
+  // ── Deduplicate overlapping behavioral clusters ───────────────────────────
+  const dedupedStrengths = _deduplicateStrengthClusters(validatedStrengths);
+  if (dedupedStrengths.length < validatedStrengths.length) {
+    console.info(
+      `[identifyStrengths] Dedup: merged ${validatedStrengths.length - dedupedStrengths.length} ` +
+      `overlapping strength clusters → ${dedupedStrengths.length} unique strengths`
+    );
+  }
+
+  // Merge with existing strengths (user edits always win)
+  const merged = _mergeStrengths(
+    Array.isArray(existingStrengths) ? existingStrengths : [],
+    dedupedStrengths
+  );
+
+  return {
+    strengths: merged,
+    totalEpisodes: allEpisodes.length,
+    totalProjects: allProjects.length,
+    identifiedAt: new Date().toISOString()
+  };
+}
+
+// ─── Post-LLM strength validation ────────────────────────────────────────────
+
+/**
+ * Validate and filter strengths after LLM normalization.
+ *
+ * Post-LLM validation:
+ *   1. Correct frequency to match actual validated evidence count
+ *   2. Filter out strengths below MIN_EVIDENCE_EPISODES threshold (≥2)
+ *
+ * @param {import("./resumeTypes.mjs").IdentifiedStrength[]} strengths
+ * @param {object[]} allEpisodes  All episodes for cross-referencing
+ * @returns {import("./resumeTypes.mjs").IdentifiedStrength[]}
+ */
+function _validateAndFilterStrengths(strengths, allEpisodes) {
+  if (!Array.isArray(strengths)) return [];
+  const MIN_EVIDENCE = 2;
+  const normalized = strengths
+    .map((s) => {
+      const actualEvidenceCount = Array.isArray(s.evidenceIds) ? s.evidenceIds.length : 0;
+      return { ...s, frequency: Math.max(actualEvidenceCount, 1) };
+    });
+
+  const filtered = normalized.filter((s) => {
+      const evidenceCount = Array.isArray(s.evidenceIds) ? s.evidenceIds.length : 0;
+      return evidenceCount >= MIN_EVIDENCE;
+    });
+
+  if (filtered.length > 0) {
+    return filtered;
+  }
+
+  // Graceful degradation: when the pipeline found candidate strengths but none
+  // crossed the 2-episode threshold, keep the strongest 1-episode patterns
+  // rather than surfacing an empty strengths section.
+  return normalized
+    .sort((a, b) => {
+      const evidenceDiff = (b.evidenceIds?.length || 0) - (a.evidenceIds?.length || 0);
+      if (evidenceDiff !== 0) return evidenceDiff;
+      return (b.frequency || 0) - (a.frequency || 0);
+    })
+    .slice(0, Math.min(3, normalized.length));
+}
+
+// ─── Behavioral cluster deduplication ────────────────────────────────────────
+
+/**
+ * Detect and merge overlapping strength clusters.
+ *
+ * Uses Jaccard similarity (intersection / union) to detect overlap.
+ * Two strengths must share >60% of their combined evidence pool to be
+ * considered duplicates.  This prevents false merges when a broad
+ * strength covers many episodes that partially overlap with more
+ * focused strengths.
+ *
+ * @param {import("./resumeTypes.mjs").IdentifiedStrength[]} strengths
+ * @returns {import("./resumeTypes.mjs").IdentifiedStrength[]}
+ */
+function _deduplicateStrengthClusters(strengths) {
+  if (!Array.isArray(strengths) || strengths.length <= 1) return strengths;
+  const JACCARD_THRESHOLD = 0.6; // Jaccard similarity threshold for merging
+  const merged = [...strengths];
+  const toRemove = new Set();
+
+  for (let i = 0; i < merged.length; i++) {
+    if (toRemove.has(i)) continue;
+    for (let j = i + 1; j < merged.length; j++) {
+      if (toRemove.has(j)) continue;
+      const idsA = new Set(merged[i].evidenceIds || []);
+      const idsB = new Set(merged[j].evidenceIds || []);
+      if (idsA.size === 0 || idsB.size === 0) continue;
+
+      // Jaccard similarity: intersection / union
+      let intersection = 0;
+      for (const id of idsA) { if (idsB.has(id)) intersection++; }
+      const union = new Set([...idsA, ...idsB]).size;
+      const overlap = union > 0 ? intersection / union : 0;
+
+      if (overlap >= JACCARD_THRESHOLD) {
+        const [primary, secondary] = merged[i].frequency >= merged[j].frequency
+          ? [i, j] : [j, i];
+        const prim = merged[primary];
+        const sec = merged[secondary];
+
+        merged[primary] = {
+          ...prim,
+          evidenceIds: [...new Set([...(prim.evidenceIds || []), ...(sec.evidenceIds || [])])],
+          projectIds: [...new Set([...(prim.projectIds || []), ...(sec.projectIds || [])])],
+          repos: [...new Set([...(prim.repos || []), ...(sec.repos || [])])].sort(),
+          behaviorCluster: [...new Set([...(prim.behaviorCluster || []), ...(sec.behaviorCluster || [])])].slice(0, 5),
+          exampleBullets: [...new Set([...(prim.exampleBullets || []), ...(sec.exampleBullets || [])])].slice(0, 3),
+          frequency: new Set([...(prim.evidenceIds || []), ...(sec.evidenceIds || [])]).size
+        };
+        toRemove.add(secondary === i ? i : j);
+      }
+    }
+  }
+  return merged.filter((_, idx) => !toRemove.has(idx));
+}
+
+// ─── Reasoning quality assessment ───────────────────────────────────────────
+
+/**
+ * Assess whether a strength's reasoning narrative adequately addresses the
+ * four required dimensions: repetition, intentionality, impact, differentiation.
+ *
+ * Uses keyword heuristics (not LLM) for fast validation.  This is a quality
+ * gate, not a rewrite mechanism — when reasoning is weak, we log a warning
+ * and pass through rather than blocking the pipeline.
+ *
+ * @param {string} reasoning  The reasoning text to assess
+ * @returns {{ adequate: boolean, missingAspects: string[], scores: Record<string, boolean> }}
+ */
+function _assessReasoningQuality(reasoning) {
+  if (!reasoning || typeof reasoning !== "string") {
+    return { adequate: false, missingAspects: ["repetition", "intentionality", "impact", "differentiation"], scores: {} };
+  }
+
+  const text = reasoning.toLowerCase();
+  const scores = {
+    repetition: /\b(?:repeat|recur|across|multiple|pattern|times|consistent|several|frequen)/i.test(text),
+    intentionality: /\b(?:deliberate|intentional|chose|decided|prioriti|conscious|explicit)/i.test(text),
+    impact: /\b(?:impact|result|outcome|improve|reduc|eliminat|enable|prevent|increas)/i.test(text),
+    differentiation: /\b(?:differenti|notable|beyond|distin|unique|specific|stand.?out|unusual)/i.test(text),
+  };
+
+  const missingAspects = Object.entries(scores)
+    .filter(([, present]) => !present)
+    .map(([aspect]) => aspect);
+
+  // Adequate if at least 2 of 4 aspects are present (LLM may phrase differently)
+  const presentCount = Object.values(scores).filter(Boolean).length;
+  return { adequate: presentCount >= 2, missingAspects, scores };
+}
+
+// ─── LLM call for strengths identification ──────────────────────────────────
+
+const STRENGTHS_SYSTEM_PROMPT = `\
+You are an expert career coach analyzing a developer's work evidence to identify
+their core professional strengths.
+
+You are given evidence episodes (coherent units of work) and core projects from
+potentially multiple repositories, along with PRE-CLUSTERED BEHAVIORAL SIGNALS
+extracted from the evidence.  Your task is to identify 3-5 REPEATED behavioral
+patterns that qualify as professional strengths.
+
+STEP 1 — REVIEW PRE-CLUSTERED SIGNALS:
+The system has already extracted behavioral signals from the evidence and
+clustered them by category.  Review these clusters first — they show which
+micro-behaviors appear repeatedly across episodes.  Use them as starting
+hypotheses, but DO NOT be limited by them.  You may:
+  - Merge multiple pre-clusters into one strength (when they represent facets
+    of the same underlying capability)
+  - Split a pre-cluster into multiple strengths (when it covers distinct skills)
+  - Identify strengths that the heuristic signals missed entirely
+  - Ignore thin clusters (only 1 episode) unless the evidence is compelling
+
+STEP 2 — CROSS-CONTEXT BEHAVIORAL ANALYSIS:
+Look for recurring patterns across different contexts:
+  - Same type of decision made repeatedly (e.g., always adding error handling,
+    always refactoring for clarity before adding features)
+  - Same approach to problems across different domains (e.g., building
+    abstractions, writing defensive code, decomposing complex flows)
+  - Consistent priorities visible in session conversations and decision
+    reasoning (e.g., reliability over speed, user experience over shortcuts)
+  - Similar technical strategies in unrelated projects (e.g., always building
+    retry logic, always adding observability)
+
+STEP 3 — STRENGTH IDENTIFICATION CRITERIA:
+- A strength must draw evidence from at least 2 different episodes
+- Focus on patterns of BEHAVIOR and CAPABILITY, not just technologies
+- Look for both technical strengths (e.g., "system resilience design")
+  and professional strengths (e.g., "cross-team alignment", "technical mentorship")
+- Strengths should be specific enough to differentiate this developer
+  (avoid generic labels like "coding" or "teamwork")
+- When session conversations or decision reasoning is available, use the
+  developer's stated rationale to validate that the pattern reflects genuine
+  intentional behavior — not coincidence
+- When intentionality signals are provided, they confirm the developer
+  DELIBERATELY chose this behavior — weigh these heavily in your analysis
+
+STEP 4 — QUALIFYING REASONING (CRITICAL):
+For each identified strength, you MUST provide a "reasoning" field that explains
+WHY this pattern qualifies as a genuine professional strength.  The reasoning
+MUST explicitly address ALL FOUR of these dimensions:
+  1. Repetition: how many times and across what contexts the behavior appears
+     (reference specific episode counts and cross-repo appearance)
+  2. Intentionality: evidence that this is a deliberate choice (cite session
+     reasoning, commit patterns, or explicit design decisions — especially
+     any provided intentionality signals)
+  3. Impact: what outcomes this behavior produces (reliability improvements,
+     faster delivery, better code quality, etc.)
+  4. Differentiation: why this specific pattern is notable compared to baseline
+     engineering competence
+
+OUTPUT REQUIREMENTS:
+- Return exactly 3-5 strengths (prefer 4-5 when evidence supports it)
+- label: 2-6 word strength name (e.g., "Reliability-First Engineering")
+- description: 1-2 sentences explaining HOW this strength manifests in their work.
+  Write this as a RESUME-READY narrative paragraph — it will be displayed
+  directly on the resume with no further editing. The reader is a hiring manager
+  or recruiter, not the developer themselves. Embed specific examples and
+  decision reasoning naturally into the prose. Show the "why" behind decisions
+  (e.g., "Consistently chose circuit breakers over simple retries, prioritizing
+  system stability during partial outages") rather than just listing what was done.
+  DO NOT write in analytical/metadata style (no "This strength is demonstrated by..."
+  or "Evidence shows that...").
+- reasoning: 2-3 sentences explaining WHY this qualifies as a genuine strength.
+  Write this also in professional narrative tone — it will be appended to the
+  description to form a flowing paragraph when both are shown together.
+  You MUST address repetition, intentionality, impact, and differentiation.
+  Reference specific episodes or session decisions as evidence.
+- frequency: number of distinct episodes demonstrating this strength
+- behaviorCluster: array of 2-5 short phrases describing the micro-behaviors
+  that were clustered to form this strength (e.g., ["retry logic", "circuit breakers",
+  "error boundaries", "graceful degradation"])
+- evidenceEpisodeIds: array of episode IDs (e.g., ["ep-repo-0", "ep-repo-2"])
+  that demonstrate this strength
+- evidenceProjectIds: array of project IDs (e.g., ["proj-repo-0"])
+  where this strength appears
+- exampleBullets: 1-3 of the BEST resume bullets from the evidence that
+  demonstrate this strength. Write each bullet as a standalone, polished
+  accomplishment statement suitable for a resume (action verb + context + impact).
+  Copy from episode/project bullets when they are well-written; improve phrasing
+  if the original is rough.
+
+${buildFullVoiceBlock(["strengthLabel", "strengthDescription", "bullet"], null, { includeDecisionReasoning: true })}`;
+
+const STRENGTHS_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["strengths"],
+  properties: {
+    strengths: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "label",
+          "description",
+          "reasoning",
+          "frequency",
+          "behaviorCluster",
+          "evidenceEpisodeIds",
+          "evidenceProjectIds",
+          "exampleBullets"
+        ],
+        properties: {
+          label:              { type: "string" },
+          description:        { type: "string" },
+          reasoning:          { type: "string" },
+          frequency:          { type: "integer" },
+          behaviorCluster:    { type: "array", items: { type: "string" } },
+          evidenceEpisodeIds: { type: "array", items: { type: "string" } },
+          evidenceProjectIds: { type: "array", items: { type: "string" } },
+          exampleBullets:     { type: "array", items: { type: "string" } }
+        }
+      }
+    }
+  }
+};
+
+/**
+ * Call the LLM to identify strengths from evidence episodes, projects,
+ * and pre-clustered behavioral signals.
+ *
+ * @param {object[]} episodes           All evidence episodes across repos
+ * @param {object[]} projects           All core projects across repos
+ * @param {BehavioralCluster[]} [behavioralClusters=[]]  Pre-clustered behavioral signals
+ * @returns {Promise<object[]>} Raw strength objects from LLM
+ */
+async function _callLlmForStrengths(episodes, projects, behavioralClusters = []) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "OPENAI_API_KEY is not set — cannot identify strengths"
+    );
+  }
+  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+    throw new Error(
+      "OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)"
+    );
+  }
+
+  const userMessage = _buildStrengthsUserMessage(episodes, projects, behavioralClusters);
+
+  const payload = {
+    model: OPENAI_MODEL,
+    reasoning: { effort: "high" },
+    text: {
+      format: {
+        type: "json_schema",
+        name: "strengths_identification",
+        strict: true,
+        schema: STRENGTHS_OUTPUT_SCHEMA
+      }
+    },
+    max_output_tokens: 4000,
+    input: [
+      {
+        role: "system",
+        content: [{ type: "input_text", text: STRENGTHS_SYSTEM_PROMPT }]
+      },
+      {
+        role: "user",
+        content: [{ type: "input_text", text: userMessage }]
+      }
+    ]
+  };
+
+  const response = await fetch(OPENAI_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Strengths identification LLM call failed: ${response.status} ${errorText.slice(0, 400)}`
+    );
+  }
+
+  const data = await response.json();
+  const rawText = data.output_text || extractOutputText(data);
+  if (!rawText) {
+    throw new Error("Strengths identification LLM call returned empty output");
+  }
+
+  const parsed = JSON.parse(rawText);
+  return Array.isArray(parsed.strengths) ? parsed.strengths : [];
+}
+
+/**
+ * Build the user message for the strengths identification LLM call.
+ *
+ * Enhanced to include:
+ *   1. Pre-clustered behavioral signals (structured input for the LLM)
+ *   2. Intentionality signals from session decision analysis
+ *   3. Cross-repo repetition summary
+ *   4. Core projects + evidence episodes (existing content)
+ *   5. Session reasoning patterns (aggregated)
+ *
+ * @param {object[]} episodes
+ * @param {object[]} projects
+ * @param {BehavioralCluster[]} [behavioralClusters=[]]
+ * @returns {string}
+ */
+function _buildStrengthsUserMessage(episodes, projects, behavioralClusters = []) {
+  const parts = [];
+
+  // ── Pre-clustered behavioral signals (new: structured pre-analysis) ───────
+  const significantClusters = behavioralClusters.filter((c) => c.episodeIds.length >= 2);
+  const thinClusters = behavioralClusters.filter((c) => c.episodeIds.length < 2);
+
+  if (significantClusters.length > 0) {
+    parts.push(`=== PRE-CLUSTERED BEHAVIORAL SIGNALS (${significantClusters.length} significant clusters) ===`);
+    parts.push("These behavioral patterns were detected across ≥2 episodes via heuristic analysis.");
+    parts.push("Use as starting hypotheses — you may merge, split, or ignore these clusters.");
+    parts.push("");
+
+    for (const cluster of significantClusters) {
+      parts.push(`--- Cluster: "${cluster.category}" ---`);
+      parts.push(`  Micro-behaviors: ${cluster.microBehaviors.join(", ")}`);
+      parts.push(`  Episodes (${cluster.episodeIds.length}): ${cluster.episodeIds.join(", ")}`);
+      parts.push(`  Repos: ${cluster.repos.length > 0 ? cluster.repos.join(", ") : "single-repo"}`);
+      parts.push(`  Signal count: ${cluster.frequency}`);
+
+      if (cluster.intentionalitySignals.length > 0) {
+        parts.push(`  Intentionality evidence (from session decisions):`);
+        for (const sig of cluster.intentionalitySignals) {
+          parts.push(`    ★ ${sig}`);
+        }
+      }
+
+      if (cluster.sampleTexts.length > 0) {
+        parts.push(`  Sample evidence:`);
+        for (const sample of cluster.sampleTexts) {
+          parts.push(`    > "${sample}"`);
+        }
+      }
+      parts.push("");
+    }
+  }
+
+  if (thinClusters.length > 0) {
+    parts.push(`[${thinClusters.length} additional thin clusters with only 1 episode — may not qualify as strengths]`);
+    parts.push("");
+  }
+
+  // ── Cross-repo repetition summary ─────────────────────────────────────────
+  const repoEpisodeCount = new Map();
+  for (const proj of projects) {
+    const repo = proj.repo || "unknown";
+    const epCount = Array.isArray(proj.episodes) ? proj.episodes.length : 0;
+    repoEpisodeCount.set(repo, (repoEpisodeCount.get(repo) || 0) + epCount);
+  }
+  if (repoEpisodeCount.size > 1) {
+    parts.push(`=== CROSS-REPO SUMMARY ===`);
+    parts.push(`Evidence spans ${repoEpisodeCount.size} repositories:`);
+    for (const [repo, count] of [...repoEpisodeCount.entries()].sort((a, b) => b[1] - a[1])) {
+      parts.push(`  - ${repo}: ${count} episodes`);
+    }
+    parts.push("IMPORTANT: Strengths that appear across multiple repos are especially strong evidence.");
+    parts.push("");
+  }
+
+  // ── Core projects summary ──────────────────────────────────────────────────
+  if (projects.length > 0) {
+    parts.push(`=== CORE PROJECTS (${projects.length} across all repos) ===`);
+    for (const proj of projects) {
+      parts.push("");
+      parts.push(`--- Project: "${proj.title}" [${proj.id}] (repo: ${proj.repo}) ---`);
+      parts.push(`Description: ${proj.description}`);
+      parts.push(`Tech: ${(proj.techTags || []).join(", ")}`);
+      parts.push(`Date range: ${proj.dateRange || "unknown"}`);
+      if (Array.isArray(proj.bullets) && proj.bullets.length > 0) {
+        parts.push("Bullets:");
+        for (const b of proj.bullets) {
+          parts.push(`  - ${b}`);
+        }
+      }
+    }
+  }
+
+  // ── Evidence episodes ─────────────────────────────────────────────────────
+  if (episodes.length > 0) {
+    parts.push("");
+    parts.push(`=== EVIDENCE EPISODES (${episodes.length} across all repos) ===`);
+    for (const ep of episodes) {
+      parts.push("");
+      parts.push(`--- Episode: "${ep.title}" [${ep.id}] ---`);
+      parts.push(`Topic: ${ep.topicTag} | Module: ${ep.moduleTag}`);
+      parts.push(`Dates: ${(ep.dates || []).join(", ")}`);
+      parts.push(`Summary: ${ep.summary}`);
+      if (ep.decisionReasoning) {
+        parts.push(`Session decision reasoning: ${ep.decisionReasoning}`);
+      }
+      if (Array.isArray(ep.bullets) && ep.bullets.length > 0) {
+        parts.push("Bullets:");
+        for (const b of ep.bullets) {
+          parts.push(`  - ${b}`);
+        }
+      }
+    }
+  }
+
+  // ── Session reasoning summary (aggregated for behavioral pattern analysis)
+  const reasoningEpisodes = episodes.filter(
+    (ep) => ep.decisionReasoning && ep.decisionReasoning.trim()
+  );
+  if (reasoningEpisodes.length > 0) {
+    parts.push("");
+    parts.push(`=== SESSION DECISION PATTERNS (${reasoningEpisodes.length} episodes with reasoning) ===`);
+    parts.push("Use these decision patterns to identify INTENTIONAL behavioral strengths.");
+    parts.push("Intentionality evidence carries extra weight — it confirms deliberate choices:");
+    for (const ep of reasoningEpisodes) {
+      parts.push(`  [${ep.id}] "${ep.title}": ${ep.decisionReasoning}`);
+    }
+  }
+
+  return parts.join("\n");
+}
+
+// ─── Normalization helpers ──────────────────────────────────────────────────
+
+/**
+ * Normalize raw LLM strength output into typed IdentifiedStrength objects.
+ * Validates episode/project ID references and computes repos set.
+ *
+ * @param {object[]} rawStrengths  Raw strengths from LLM
+ * @param {object[]} allEpisodes   All episodes for ID validation
+ * @param {object[]} allProjects   All projects for ID validation and repo resolution
+ * @returns {import("./resumeTypes.mjs").IdentifiedStrength[]}
+ */
+function _normalizeStrengths(rawStrengths, allEpisodes, allProjects) {
+  if (!Array.isArray(rawStrengths)) return [];
+
+  // Build lookup sets for ID validation
+  const validEpisodeIds = new Set(allEpisodes.map((ep) => ep.id));
+  const validProjectIds = new Set(allProjects.map((p) => p.id));
+  const projectRepoMap = new Map(allProjects.map((p) => [p.id, p.repo]));
+  const episodeProjectMap = new Map();
+  for (const proj of allProjects) {
+    for (const ep of Array.isArray(proj.episodes) ? proj.episodes : []) {
+      episodeProjectMap.set(ep.id, proj.repo);
+    }
+  }
+
+  return rawStrengths
+    .filter((s) => s && typeof s === "object" && s.label)
+    .slice(0, TARGET_STRENGTHS_MAX)
+    .map((s, idx) => {
+      // Validate and filter episode IDs
+      const evidenceIds = _normalizeIdArray(s.evidenceEpisodeIds, validEpisodeIds);
+
+      // Validate and filter project IDs
+      const projectIds = _normalizeIdArray(s.evidenceProjectIds, validProjectIds);
+
+      // Compute repos from validated evidence
+      const repoSet = new Set();
+      for (const epId of evidenceIds) {
+        const repo = episodeProjectMap.get(epId);
+        if (repo) repoSet.add(repo);
+      }
+      for (const projId of projectIds) {
+        const repo = projectRepoMap.get(projId);
+        if (repo) repoSet.add(repo);
+      }
+
+      // Compute frequency from validated evidence count
+      const frequency = Math.max(
+        typeof s.frequency === "number" && s.frequency > 0
+          ? s.frequency
+          : evidenceIds.length,
+        evidenceIds.length
+      );
+
+      return {
+        id: `str-${idx}`,
+        label: normalizeVoice(String(s.label || ""), "strengthLabel"),
+        description: normalizeVoice(String(s.description || ""), "strengthDescription"),
+        reasoning: String(s.reasoning || "").trim().slice(0, 600),
+        frequency,
+        behaviorCluster: _normalizeStringArrayLocal(s.behaviorCluster, 80, 5),
+        evidenceIds,
+        projectIds,
+        repos: [...repoSet].sort(),
+        exampleBullets: normalizeBullets(_normalizeStringArrayLocal(s.exampleBullets, 160, 3)),
+        _source: "system"
+      };
+    });
+}
+
+/**
+ * Validate an array of IDs against a set of known-valid IDs.
+ * @param {*} ids        Raw IDs from LLM
+ * @param {Set<string>} validIds  Set of valid IDs
+ * @returns {string[]}
+ */
+function _normalizeIdArray(ids, validIds) {
+  if (!Array.isArray(ids)) return [];
+  return ids
+    .map((id) => String(id || "").trim())
+    .filter((id) => id && validIds.has(id));
+}
+
+/**
+ * Local version of normalizeStringArray to avoid naming conflict with the
+ * existing function in this module.
+ * @param {*} value
+ * @param {number} maxItemLength
+ * @param {number} maxItems
+ * @returns {string[]}
+ */
+function _normalizeStringArrayLocal(value, maxItemLength = 200, maxItems = 20) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .map((item) => item.slice(0, maxItemLength))
+    .slice(0, maxItems);
+}
+
+/**
+ * Merge newly identified system strengths with existing strengths,
+ * ensuring user-edited strengths are never overwritten.
+ *
+ * Merge rules:
+ *   1. User-edited strengths (_source === "user" or "user_approved") are
+ *      always preserved unchanged.
+ *   2. Existing system strengths with the same label (case-insensitive)
+ *      as a new strength are replaced with the new version (updated evidence).
+ *   3. New strengths that don't match any existing are appended.
+ *   4. Total capped at TARGET_STRENGTHS_MAX (5).
+ *   5. If user has 5+ strengths already, no system strengths are added.
+ *
+ * @param {import("./resumeTypes.mjs").IdentifiedStrength[]} existing
+ * @param {import("./resumeTypes.mjs").IdentifiedStrength[]} fresh
+ * @returns {import("./resumeTypes.mjs").IdentifiedStrength[]}
+ */
+function _mergeStrengths(existing, fresh) {
+  const isHumanConfirmed = (src) => src === "user" || src === "user_approved";
+
+  // Split existing by provenance
+  const userStrengths = existing.filter((s) => isHumanConfirmed(s._source));
+  const systemStrengths = existing.filter((s) => !isHumanConfirmed(s._source));
+
+  // If user already has 5+ strengths, just return them
+  if (userStrengths.length >= TARGET_STRENGTHS_MAX) {
+    return userStrengths.slice(0, TARGET_STRENGTHS_MAX);
+  }
+
+  // Build label set for existing system strengths (for dedup)
+  const systemLabelMap = new Map();
+  for (const s of systemStrengths) {
+    systemLabelMap.set((s.label || "").toLowerCase().trim(), s);
+  }
+
+  // Build label set for user strengths (to avoid duplicating)
+  const userLabels = new Set(
+    userStrengths.map((s) => (s.label || "").toLowerCase().trim())
+  );
+
+  // Process fresh strengths: update matching system, or append new
+  const updatedSystem = new Map(systemLabelMap);
+  const freshAppend = [];
+
+  for (const s of Array.isArray(fresh) ? fresh : []) {
+    const labelKey = (s.label || "").toLowerCase().trim();
+    if (!labelKey) continue;
+
+    // Skip if a user strength already has this label
+    if (userLabels.has(labelKey)) continue;
+
+    if (updatedSystem.has(labelKey)) {
+      // Replace existing system strength with fresh version
+      updatedSystem.set(labelKey, s);
+    } else {
+      // New strength — append
+      freshAppend.push(s);
+    }
+  }
+
+  // Combine: user strengths first, then updated system, then new
+  const combined = [
+    ...userStrengths,
+    ...[...updatedSystem.values()],
+    ...freshAppend
+  ];
+
+  // Cap at TARGET_STRENGTHS_MAX, prioritizing user strengths
+  return combined.slice(0, TARGET_STRENGTHS_MAX);
+}
+
+// Exported for testing
+export {
+  _normalizeStrengths,
+  _mergeStrengths,
+  _buildStrengthsUserMessage,
+  _validateAndFilterStrengths,
+  _deduplicateStrengthClusters,
+  _assessReasoningQuality,
+  consolidateThinExperience,
+  consolidateThinProjects
+};
+
+// Narrative Axes Generation
+// ---------------------------------------------------------------------------
+
+/** Target range for narrative axes: 2–3 */
+export const TARGET_AXES_MIN = 2;
+export const TARGET_AXES_MAX = 3;
+
+/** Minimum coverage ratio (0-1) before triggering an LLM retry. */
+const MIN_COVERAGE_RATIO = 0.6;
+
+/** Maximum LLM retry attempts for low-coverage results. */
+const MAX_COVERAGE_RETRIES = 1;
+
+/**
+ * Generate 2-3 coherent narrative axes (career themes/trajectories) by
+ * synthesizing core projects and identified strengths.
+ *
+ * Narrative axes are higher-level career stories that tie together multiple
+ * projects, strengths, and decision patterns into natural professional
+ * narratives.  Unlike display axes (keyword filters), these represent
+ * the "why" behind a developer's career trajectory.
+ *
+ * Enhancements over basic generation:
+ *   - Coverage scoring: measures how well axes span all projects/strengths
+ *   - Complementarity validation: detects excessive overlap between axes
+ *   - Session conversation integration: includes AI session reasoning context
+ *   - Auto-retry: regenerates when coverage is below MIN_COVERAGE_RATIO
+ *
+ * User-edited axes (_source === "user" or "user_approved") are always
+ * preserved unchanged.
+ *
+ * @param {Object} input
+ * @param {import("./resumeTypes.mjs").CoreProjectExtractionResult[]} input.extractionResults
+ *   Core project extraction results for each repo
+ * @param {import("./resumeTypes.mjs").IdentifiedStrength[]} input.strengths
+ *   Identified strengths (from identifyStrengths pipeline)
+ * @param {import("./resumeTypes.mjs").NarrativeAxis[]} [input.existingAxes=[]]
+ *   Previously generated narrative axes (user-edited ones preserved)
+ * @param {object[]} [input.sessionSummaries=[]]
+ *   AI session summaries (Codex/Claude) with decision reasoning context
+ * @param {object} [options={}]
+ * @param {Function} [options.llmFn]  Override LLM call for testing
+ * @param {boolean}  [options.skipRetry=false]  Skip auto-retry on low coverage
+ * @returns {Promise<import("./resumeTypes.mjs").NarrativeAxesResult>}
+ */
+export async function generateNarrativeAxes(input, options = {}) {
+  const {
+    extractionResults,
+    strengths = [],
+    existingAxes = [],
+    sessionSummaries = []
+  } = input;
+
+  // Collect all projects and episodes across repos
+  const allProjects = [];
+  const allEpisodes = [];
+
+  for (const result of Array.isArray(extractionResults) ? extractionResults : []) {
+    if (!result || !Array.isArray(result.projects)) continue;
+    for (const project of result.projects) {
+      allProjects.push(project);
+      if (Array.isArray(project.episodes)) {
+        for (const ep of project.episodes) {
+          allEpisodes.push(ep);
+        }
+      }
+    }
+  }
+
+  const validStrengths = Array.isArray(strengths) ? strengths : [];
+  const validSessions = Array.isArray(sessionSummaries) ? sessionSummaries : [];
+
+  // If insufficient evidence, return existing or empty
+  if (allProjects.length === 0 && validStrengths.length === 0) {
+    return {
+      axes: Array.isArray(existingAxes) ? existingAxes : [],
+      totalProjects: 0,
+      totalStrengths: 0,
+      coverage: { projectCoverage: 0, strengthCoverage: 0, overallCoverage: 0 },
+      complementarity: { maxOverlap: 0, isComplementary: true },
+      generatedAt: new Date().toISOString()
+    };
+  }
+
+  // Call LLM to synthesize narrative axes (with optional retry on low coverage)
+  const llmFn = options.llmFn || _callLlmForNarrativeAxes;
+  let rawAxes = await llmFn(allProjects, validStrengths, allEpisodes, validSessions);
+  let systemAxes = _normalizeNarrativeAxes(rawAxes, allProjects, validStrengths);
+
+  // Coverage check + auto-retry
+  if (!options.skipRetry) {
+    const initialCoverage = _computeCoverage(systemAxes, allProjects, validStrengths);
+    if (
+      initialCoverage.overallCoverage < MIN_COVERAGE_RATIO &&
+      (allProjects.length + validStrengths.length) >= 3
+    ) {
+      // Retry with explicit coverage hint
+      for (let attempt = 0; attempt < MAX_COVERAGE_RETRIES; attempt++) {
+        const retryAxes = await llmFn(
+          allProjects, validStrengths, allEpisodes, validSessions
+        );
+        const retryNormalized = _normalizeNarrativeAxes(
+          retryAxes, allProjects, validStrengths
+        );
+        const retryCoverage = _computeCoverage(
+          retryNormalized, allProjects, validStrengths
+        );
+        if (retryCoverage.overallCoverage > initialCoverage.overallCoverage) {
+          systemAxes = retryNormalized;
+          break;
+        }
+      }
+    }
+  }
+
+  // Merge with existing axes (user edits always win)
+  const merged = _mergeNarrativeAxes(
+    Array.isArray(existingAxes) ? existingAxes : [],
+    systemAxes
+  );
+
+  // Compute final metrics
+  const coverage = _computeCoverage(merged, allProjects, validStrengths);
+  const complementarity = _computeComplementarity(merged);
+
+  return {
+    axes: merged,
+    totalProjects: allProjects.length,
+    totalStrengths: validStrengths.length,
+    coverage,
+    complementarity,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+// ─── Coverage & complementarity scoring ───────────────────────────────────────
+
+/**
+ * Compute how well a set of axes covers all available projects and strengths.
+ *
+ * @param {import("./resumeTypes.mjs").NarrativeAxis[]} axes
+ * @param {object[]} allProjects
+ * @param {object[]} allStrengths
+ * @returns {{ projectCoverage: number, strengthCoverage: number, overallCoverage: number,
+ *             uncoveredProjectIds: string[], uncoveredStrengthIds: string[] }}
+ */
+export function _computeCoverage(axes, allProjects, allStrengths) {
+  const coveredProjects = new Set();
+  const coveredStrengths = new Set();
+
+  for (const axis of axes) {
+    for (const id of axis.projectIds || []) coveredProjects.add(id);
+    for (const id of axis.strengthIds || []) coveredStrengths.add(id);
+  }
+
+  const totalProjects = allProjects.length;
+  const totalStrengths = allStrengths.length;
+  const totalEvidence = totalProjects + totalStrengths;
+
+  const projectCoverage = totalProjects > 0
+    ? coveredProjects.size / totalProjects
+    : 1;
+  const strengthCoverage = totalStrengths > 0
+    ? coveredStrengths.size / totalStrengths
+    : 1;
+  const overallCoverage = totalEvidence > 0
+    ? (coveredProjects.size + coveredStrengths.size) / totalEvidence
+    : 1;
+
+  const allProjectIds = new Set(allProjects.map((p) => p.id));
+  const allStrengthIds = new Set(allStrengths.map((s) => s.id));
+
+  return {
+    projectCoverage,
+    strengthCoverage,
+    overallCoverage,
+    uncoveredProjectIds: [...allProjectIds].filter((id) => !coveredProjects.has(id)),
+    uncoveredStrengthIds: [...allStrengthIds].filter((id) => !coveredStrengths.has(id))
+  };
+}
+
+/**
+ * Compute pairwise complementarity between axes.
+ * Returns the maximum overlap ratio (Jaccard-style) between any two axes
+ * and a boolean flag for whether the axes are sufficiently complementary.
+ *
+ * Two axes are "overlapping" when their combined project + strength IDs
+ * intersect heavily — if one axis is nearly a subset of another, they should
+ * likely be merged.
+ *
+ * @param {import("./resumeTypes.mjs").NarrativeAxis[]} axes
+ * @returns {{ maxOverlap: number, isComplementary: boolean, overlapPairs: Array<[string, string, number]> }}
+ */
+export function _computeComplementarity(axes) {
+  if (axes.length < 2) {
+    return { maxOverlap: 0, isComplementary: true, overlapPairs: [] };
+  }
+
+  // Build combined ID sets for each axis
+  const axisSets = axes.map((a) => {
+    const ids = new Set([
+      ...(a.projectIds || []),
+      ...(a.strengthIds || [])
+    ]);
+    return { id: a.id, label: a.label, ids };
+  });
+
+  let maxOverlap = 0;
+  const overlapPairs = [];
+
+  for (let i = 0; i < axisSets.length; i++) {
+    for (let j = i + 1; j < axisSets.length; j++) {
+      const a = axisSets[i];
+      const b = axisSets[j];
+
+      // Jaccard similarity: |A ∩ B| / |A ∪ B|
+      const intersection = new Set([...a.ids].filter((x) => b.ids.has(x)));
+      const union = new Set([...a.ids, ...b.ids]);
+
+      if (union.size === 0) continue;
+
+      const overlap = intersection.size / union.size;
+      if (overlap > 0) {
+        overlapPairs.push([a.id, b.id, Math.round(overlap * 100) / 100]);
+      }
+      if (overlap > maxOverlap) maxOverlap = overlap;
+    }
+  }
+
+  return {
+    maxOverlap: Math.round(maxOverlap * 100) / 100,
+    isComplementary: maxOverlap < 0.6, // < 60% overlap is acceptable
+    overlapPairs
+  };
+}
+
+// ─── LLM call for narrative axes ─────────────────────────────────────────────
+
+const NARRATIVE_AXES_SYSTEM_PROMPT = `\
+You are an expert career strategist synthesizing a developer's work evidence
+into coherent career narratives that feel genuinely personal — not templated.
+
+You are given:
+- Core projects (grouped work within repos, with titles, descriptions, bullets)
+- Identified strengths (cross-repo professional differentiators with evidence)
+- Evidence episodes (atomic work units with decision reasoning)
+- AI session summaries (Codex/Claude conversations showing HOW decisions were made)
+
+Your task: synthesize 2-3 NARRATIVE AXES — career trajectories that naturally
+unite this person's work into a story someone would tell about themselves.
+
+WHAT A NARRATIVE AXIS IS:
+- A professional identity thread that runs through multiple projects
+  (NOT a skill category, NOT a technology grouping, NOT a job title)
+- Answers: "What kind of engineer is this person, and why does their work
+  hang together?"
+- Should sound natural in a sentence: "I'm the kind of engineer who..."
+- Captures the INTENT and JUDGMENT behind technical work, not just the output
+
+SYNTHESIS APPROACH:
+1. Look for REPEATED PATTERNS across projects — what problems does this person
+   gravitate toward? What approaches do they keep choosing?
+2. Mine the decision reasoning for WHY — the reasoning behind choices reveals
+   professional identity more than the choices themselves
+3. Connect the dots that the person might not see — a payment error-handling
+   project and a monitoring dashboard might both reveal someone who
+   "systematically eliminates operational uncertainty"
+4. Each axis should illuminate a DIFFERENT FACET of the same person — they
+   should feel complementary, like chapters of the same story
+
+QUALITY CRITERIA:
+- Each axis MUST compose at least 2 identified strengths — an axis is a
+  HIGHER-LEVEL narrative that weaves multiple strengths into a coherent story.
+  Think of strengths as ingredients and axes as the recipe.
+- Each axis should also span at least 2 projects
+- Axes MUST be complementary, not overlapping — each reveals something distinct
+- Together, axes should cover ALL (or nearly all) projects and strengths
+- Embed decision reasoning naturally into descriptions — show HOW this person
+  thinks, not just what they built
+- A project or strength may appear in multiple axes when genuinely multi-faceted
+- No axis should be a subset of another
+- Avoid generic labels that could describe any engineer
+
+STRENGTH COMPOSITION (CRITICAL):
+Each axis must explain HOW each referenced strength contributes to the axis
+narrative. For each strength in an axis, provide a "strengthRoles" entry that
+explains the strength's role within this specific narrative theme.
+Example: If axis is "Engineer who turns operational chaos into reliable systems"
+  and it composes strengths "Reliability-First Engineering" and "Systematic
+  Debugging", then strengthRoles should explain:
+  - "Reliability-First Engineering": "Drives the proactive error boundary
+    design that prevents cascading failures"
+  - "Systematic Debugging": "Provides the analytical framework for tracing
+    root causes across distributed service boundaries"
+
+OUTPUT REQUIREMENTS:
+- Return exactly 2-3 axes (prefer 3 when evidence supports distinct themes)
+- label: 1 sentence professional identity statement (max 60 chars)
+  Examples: "운영 복잡도를 안정된 흐름으로 바꾸는 엔지니어"
+            "Engineer who turns operational chaos into reliable systems"
+            "Developer who builds user trust through invisible reliability"
+- description: 2-4 sentences explaining how this theme manifests across
+  projects, embedding specific decision reasoning and examples naturally.
+  Show the THINKING pattern, not just the output pattern.
+  Good: "When the payment system kept failing silently, chose to add
+  structured error boundaries over quick-fix retries — a pattern that
+  repeated in the monitoring dashboard where observability was prioritized
+  over feature velocity."
+  Bad: "Works on payment systems and monitoring dashboards using error
+  handling and observability."
+- strengthIds: IDs of strengths that contribute to this axis (MUST be ≥2)
+- strengthRoles: array of objects, each with:
+  - strengthId: the ID of the strength
+  - role: 1-sentence explanation of how that strength contributes to THIS axis narrative
+- projectIds: IDs of core projects that exemplify this axis
+- supportingBullets: 1-3 of the BEST bullets from projects/episodes that
+  illustrate this narrative (copy verbatim from evidence)
+
+${buildFullVoiceBlock(["axisLabel", "axisDescription", "bullet"], null, { includeDecisionReasoning: true })}`;
+
+const NARRATIVE_AXES_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["axes"],
+  properties: {
+    axes: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "label",
+          "description",
+          "strengthIds",
+          "strengthRoles",
+          "projectIds",
+          "supportingBullets"
+        ],
+        properties: {
+          label:             { type: "string" },
+          description:       { type: "string" },
+          strengthIds:       { type: "array", items: { type: "string" } },
+          strengthRoles:     {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["strengthId", "role"],
+              properties: {
+                strengthId: { type: "string" },
+                role: { type: "string" }
+              }
+            }
+          },
+          projectIds:        { type: "array", items: { type: "string" } },
+          supportingBullets: { type: "array", items: { type: "string" } }
+        }
+      }
+    }
+  }
+};
+
+/**
+ * Call the LLM to synthesize narrative axes from projects, strengths,
+ * episodes, and session conversation summaries.
+ *
+ * @param {object[]} projects    All core projects across repos
+ * @param {object[]} strengths   Identified strengths
+ * @param {object[]} episodes    All evidence episodes across repos
+ * @param {object[]} [sessions]  AI session summaries with decision context
+ * @returns {Promise<object[]>}  Raw axis objects from LLM
+ */
+async function _callLlmForNarrativeAxes(projects, strengths, episodes, sessions) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "OPENAI_API_KEY is not set — cannot generate narrative axes"
+    );
+  }
+  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+    throw new Error(
+      "OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)"
+    );
+  }
+
+  const userMessage = _buildNarrativeAxesUserMessage(
+    projects, strengths, episodes, sessions
+  );
+
+  const payload = {
+    model: OPENAI_MODEL,
+    reasoning: { effort: "high" },
+    text: {
+      format: {
+        type: "json_schema",
+        name: "narrative_axes_generation",
+        strict: true,
+        schema: NARRATIVE_AXES_OUTPUT_SCHEMA
+      }
+    },
+    max_output_tokens: 3000,
+    input: [
+      {
+        role: "system",
+        content: [{ type: "input_text", text: NARRATIVE_AXES_SYSTEM_PROMPT }]
+      },
+      {
+        role: "user",
+        content: [{ type: "input_text", text: userMessage }]
+      }
+    ]
+  };
+
+  const response = await fetch(OPENAI_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Narrative axes LLM call failed: ${response.status} ${errorText.slice(0, 400)}`
+    );
+  }
+
+  const data = await response.json();
+  const rawText = data.output_text || extractOutputText(data);
+  if (!rawText) {
+    throw new Error("Narrative axes LLM call returned empty output");
+  }
+
+  const parsed = JSON.parse(rawText);
+  return Array.isArray(parsed.axes) ? parsed.axes : [];
+}
+
+/**
+ * Build the user message for the narrative axes LLM call.
+ * Presents core projects, identified strengths, key episodes,
+ * and AI session summaries for decision context.
+ *
+ * @param {object[]} projects
+ * @param {object[]} strengths
+ * @param {object[]} episodes
+ * @param {object[]} [sessions]  AI session summaries (Codex/Claude)
+ * @returns {string}
+ */
+function _buildNarrativeAxesUserMessage(projects, strengths, episodes, sessions) {
+  const parts = [];
+
+  // ── Identified strengths ──────────────────────────────────────────────────
+  if (strengths.length > 0) {
+    parts.push(`=== IDENTIFIED STRENGTHS (${strengths.length}) ===`);
+    for (const str of strengths) {
+      parts.push("");
+      parts.push(`--- Strength: "${str.label}" [${str.id}] ---`);
+      parts.push(`Description: ${str.description}`);
+      parts.push(`Frequency: ${str.frequency} episodes`);
+      parts.push(`Repos: ${(str.repos || []).join(", ") || "unknown"}`);
+      if (Array.isArray(str.exampleBullets) && str.exampleBullets.length > 0) {
+        parts.push("Example bullets:");
+        for (const b of str.exampleBullets) {
+          parts.push(`  - ${b}`);
+        }
+      }
+    }
+  }
+
+  // ── Core projects ─────────────────────────────────────────────────────────
+  if (projects.length > 0) {
+    parts.push("");
+    parts.push(`=== CORE PROJECTS (${projects.length} across all repos) ===`);
+    for (const proj of projects) {
+      parts.push("");
+      parts.push(`--- Project: "${proj.title}" [${proj.id}] (repo: ${proj.repo}) ---`);
+      parts.push(`Description: ${proj.description}`);
+      parts.push(`Tech: ${(proj.techTags || []).join(", ")}`);
+      parts.push(`Date range: ${proj.dateRange || "unknown"}`);
+      if (Array.isArray(proj.bullets) && proj.bullets.length > 0) {
+        parts.push("Bullets:");
+        for (const b of proj.bullets) {
+          parts.push(`  - ${b}`);
+        }
+      }
+    }
+  }
+
+  // ── Key episodes with decision reasoning ──────────────────────────────────
+  const episodesWithReasoning = (episodes || []).filter((ep) => ep.decisionReasoning);
+  if (episodesWithReasoning.length > 0) {
+    parts.push("");
+    parts.push(`=== KEY DECISION EPISODES (${episodesWithReasoning.length}) ===`);
+    for (const ep of episodesWithReasoning.slice(0, 15)) {
+      parts.push("");
+      parts.push(`--- Episode: "${ep.title}" [${ep.id}] ---`);
+      parts.push(`Topic: ${ep.topicTag} | Module: ${ep.moduleTag}`);
+      parts.push(`Decision reasoning: ${ep.decisionReasoning}`);
+    }
+  }
+
+  // ── AI session conversation summaries ─────────────────────────────────────
+  const validSessions = (sessions || []).filter(
+    (s) => s && (s.summary || s.keyDecisions || s.reasoning)
+  );
+  if (validSessions.length > 0) {
+    parts.push("");
+    parts.push(`=== AI SESSION CONVERSATIONS (${validSessions.length}) ===`);
+    parts.push("(These show HOW the developer thinks and makes decisions)");
+    for (const session of validSessions.slice(0, 10)) {
+      parts.push("");
+      parts.push(`--- Session: ${session.date || "unknown"} (${session.tool || "AI"}) ---`);
+      if (session.repo) {
+        parts.push(`Repo: ${session.repo}`);
+      }
+      if (session.summary) {
+        parts.push(`Summary: ${session.summary}`);
+      }
+      if (session.reasoning) {
+        parts.push(`Reasoning pattern: ${session.reasoning}`);
+      }
+      if (Array.isArray(session.keyDecisions) && session.keyDecisions.length > 0) {
+        parts.push("Key decisions:");
+        for (const d of session.keyDecisions.slice(0, 3)) {
+          parts.push(`  - ${typeof d === "string" ? d : d.description || d.decision || JSON.stringify(d)}`);
+        }
+      }
+      if (session.tradeoffs) {
+        parts.push(`Tradeoffs considered: ${session.tradeoffs}`);
+      }
+    }
+  }
+
+  // ── Summary statistics for coverage guidance ──────────────────────────────
+  const allProjectIds = projects.map((p) => p.id);
+  const allStrengthIds = strengths.map((s) => s.id);
+  if (allProjectIds.length > 0 || allStrengthIds.length > 0) {
+    parts.push("");
+    parts.push("=== COVERAGE TARGET ===");
+    parts.push(`Total project IDs to cover: [${allProjectIds.join(", ")}]`);
+    parts.push(`Total strength IDs to cover: [${allStrengthIds.join(", ")}]`);
+    parts.push("Your axes should collectively reference ALL of these IDs.");
+    parts.push("");
+    parts.push("CRITICAL: Each axis MUST compose ≥2 strengths. An axis is a");
+    parts.push("higher-level narrative that weaves multiple strengths together.");
+    parts.push("For each strength in an axis, provide a strengthRoles array entry");
+    parts.push("with { strengthId, role } explaining that strength's specific role in the axis narrative.");
+  }
+
+  return parts.join("\n");
+}
+
+// ─── Narrative axes normalization ────────────────────────────────────────────
+
+/**
+ * Normalize raw LLM narrative axis output into typed NarrativeAxis objects.
+ * Validates strength/project ID references, computes repos set, and builds
+ * the strengthComposition array that makes the axis→strength composition
+ * relationship explicit for frontend rendering.
+ *
+ * If an axis references fewer than 2 strengths AND sufficient strengths exist,
+ * the axis is still included (graceful degradation) but a console warning is
+ * emitted for diagnostic purposes.
+ *
+ * @param {object[]} rawAxes       Raw axes from LLM
+ * @param {object[]} allProjects   All projects for ID validation and repo resolution
+ * @param {object[]} allStrengths  All strengths for ID validation
+ * @returns {import("./resumeTypes.mjs").NarrativeAxis[]}
+ */
+function _normalizeNarrativeAxes(rawAxes, allProjects, allStrengths) {
+  if (!Array.isArray(rawAxes)) return [];
+
+  const validProjectIds = new Set(allProjects.map((p) => p.id));
+  const validStrengthIds = new Set(allStrengths.map((s) => s.id));
+  const projectRepoMap = new Map(allProjects.map((p) => [p.id, p.repo]));
+  // Build strength lookup map for denormalization
+  const strengthMap = new Map(allStrengths.map((s) => [s.id, s]));
+
+  return rawAxes
+    .filter((a) => a && typeof a === "object" && a.label)
+    .slice(0, TARGET_AXES_MAX)
+    .map((a, idx) => {
+      // Validate project IDs
+      const projectIds = _normalizeIdArray(
+        a.projectIds,
+        validProjectIds
+      );
+
+      // Validate strength IDs
+      const strengthIds = _normalizeIdArray(
+        a.strengthIds,
+        validStrengthIds
+      );
+
+      // Warn if axis doesn't compose enough strengths (axes should be higher-level)
+      if (strengthIds.length < 2 && allStrengths.length >= 2) {
+        console.warn(
+          `[narrative-axes] Axis "${a.label}" references only ${strengthIds.length} strength(s) ` +
+          `(expected ≥2). Axes should be higher-level narratives composed of multiple strengths.`
+        );
+      }
+
+      // Build strengthComposition: denormalized strength entries with roles
+      const rawRoles = Array.isArray(a.strengthRoles)
+        ? Object.fromEntries(
+            a.strengthRoles
+              .filter((entry) => entry && typeof entry === "object")
+              .map((entry) => [String(entry.strengthId || ""), String(entry.role || "").trim()])
+              .filter(([id, role]) => id && role)
+          )
+        : (a.strengthRoles && typeof a.strengthRoles === "object")
+          ? a.strengthRoles
+          : {};
+      const strengthComposition = strengthIds.map((strId) => {
+        const str = strengthMap.get(strId);
+        return {
+          strengthId: strId,
+          label: str ? String(str.label || "") : strId,
+          description: str ? String(str.description || "") : "",
+          role: typeof rawRoles[strId] === "string"
+            ? rawRoles[strId].slice(0, 200).trim()
+            : undefined
+        };
+      });
+
+      // Compute repos from validated project IDs
+      const repoSet = new Set();
+      for (const projId of projectIds) {
+        const repo = projectRepoMap.get(projId);
+        if (repo) repoSet.add(repo);
+      }
+      // Also add repos from validated strengths
+      for (const strId of strengthIds) {
+        const str = strengthMap.get(strId);
+        if (str && Array.isArray(str.repos)) {
+          for (const r of str.repos) repoSet.add(r);
+        }
+      }
+
+      return {
+        id: `naxis-${idx}`,
+        label: normalizeVoice(String(a.label || ""), "axisLabel"),
+        description: normalizeVoice(String(a.description || ""), "axisDescription"),
+        strengthIds,
+        projectIds,
+        repos: [...repoSet].sort(),
+        supportingBullets: normalizeBullets(_normalizeStringArrayLocal(a.supportingBullets, 200, 3)),
+        strengthComposition,
+        _source: "system"
+      };
+    });
+}
+
+function _buildHeuristicStrengthsFromClusters(behavioralClusters, allEpisodes, allProjects) {
+  const projectRepoMap = new Map(allProjects.map((p) => [p.id, p.repo]));
+  const episodeMap = new Map(allEpisodes.map((ep) => [ep.id, ep]));
+
+  const clusters = (Array.isArray(behavioralClusters) ? behavioralClusters : []);
+  const strongClusters = clusters.filter(
+    (cluster) => Array.isArray(cluster.episodeIds) && cluster.episodeIds.length >= 2
+  );
+  const sourceClusters = strongClusters.length > 0 ? strongClusters : clusters.filter(
+    (cluster) => Array.isArray(cluster.episodeIds) && cluster.episodeIds.length >= 1
+  );
+
+  return sourceClusters
+    .sort((a, b) => b.episodeIds.length - a.episodeIds.length || b.frequency - a.frequency)
+    .slice(0, TARGET_STRENGTHS_MAX)
+    .map((cluster) => {
+      const episodeIds = cluster.episodeIds.slice(0, 6);
+      const projectIds = Array.isArray(cluster.projectIds) ? cluster.projectIds.slice(0, 4) : [];
+      const repos = [...new Set([
+        ...(Array.isArray(cluster.repos) ? cluster.repos : []),
+        ...projectIds.map((id) => projectRepoMap.get(id)).filter(Boolean)
+      ])];
+      const exampleBullets = episodeIds
+        .flatMap((id) => episodeMap.get(id)?.bullets || [])
+        .filter(Boolean)
+        .slice(0, 3);
+
+      const meta = HEURISTIC_STRENGTH_LABELS[cluster.category] || {
+        label: _titleCase(cluster.category.replace(/_/g, " ")),
+        description: `${cluster.microBehaviors.join(", ")}을 반복적으로 구조화하는 방식이 드러납니다.`
+      };
+
+      return {
+        label: meta.label,
+        description: meta.description,
+        reasoning: `${episodeIds.length}개 이상의 에피소드와 ${repos.length || 1}개 맥락에서 반복됐고, ${cluster.microBehaviors.slice(0, 3).join(", ")} 같은 행동이 일관되게 관찰되었습니다. 신뢰성 있는 작업 패턴으로 해석할 수 있습니다.`,
+        frequency: episodeIds.length,
+        behaviorCluster: cluster.microBehaviors.slice(0, 5),
+        evidenceEpisodeIds: episodeIds,
+        evidenceProjectIds: projectIds,
+        exampleBullets
+      };
+    });
+}
+
+const HEURISTIC_STRENGTH_LABELS = {
+  reliability: {
+    label: "Reliability-First Engineering",
+    description: "예외 상황과 운영 리스크를 먼저 줄이는 선택이 반복적으로 드러납니다."
+  },
+  system_design: {
+    label: "Systems Framing",
+    description: "개별 기능보다 흐름과 구조를 먼저 정리하는 방식이 일관되게 보입니다."
+  },
+  code_quality: {
+    label: "Quality Bar Raising",
+    description: "기능 추가와 별개로 코드 품질과 기준 정리를 꾸준히 끌어올리는 편입니다."
+  },
+  product_sense: {
+    label: "Product Judgment",
+    description: "사용자 경험과 운영 맥락을 함께 고려하는 제품 판단이 반복됩니다."
+  },
+  performance: {
+    label: "Performance Optimization",
+    description: "성능과 효율 문제를 측정 가능하게 다루며 반복해서 개선하는 편입니다."
+  },
+  debugging: {
+    label: "Root-Cause Debugging",
+    description: "문제의 표면 증상보다 원인과 관측 가능성을 먼저 정리하는 성향이 강합니다."
+  },
+  automation: {
+    label: "Workflow Automation",
+    description: "반복 작업을 도구와 자동화 흐름으로 구조화하려는 경향이 보입니다."
+  }
+};
+
+function _titleCase(value) {
+  return String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+// ─── Narrative axes merge ────────────────────────────────────────────────────
+
+/**
+ * Merge newly generated system narrative axes with existing axes,
+ * ensuring user-edited axes are never overwritten.
+ *
+ * Merge rules:
+ *   1. User-edited axes (_source === "user" or "user_approved") are always
+ *      preserved unchanged.
+ *   2. Existing system axes with similar labels (case-insensitive partial match)
+ *      are replaced with the new version.
+ *   3. New axes that don't match any existing are appended.
+ *   4. Total capped at TARGET_AXES_MAX (3).
+ *   5. If user already has 3+ axes, no system axes are added.
+ *
+ * @param {import("./resumeTypes.mjs").NarrativeAxis[]} existing
+ * @param {import("./resumeTypes.mjs").NarrativeAxis[]} fresh
+ * @returns {import("./resumeTypes.mjs").NarrativeAxis[]}
+ */
+function _mergeNarrativeAxes(existing, fresh) {
+  const isHumanConfirmed = (src) => src === "user" || src === "user_approved";
+
+  // Split by provenance
+  const userAxes = existing.filter((a) => isHumanConfirmed(a._source));
+  const systemAxes = existing.filter((a) => !isHumanConfirmed(a._source));
+
+  // If user already has enough axes, just return them
+  if (userAxes.length >= TARGET_AXES_MAX) {
+    return userAxes.slice(0, TARGET_AXES_MAX);
+  }
+
+  // Build label map for existing system axes
+  const systemLabelMap = new Map();
+  for (const a of systemAxes) {
+    systemLabelMap.set((a.label || "").toLowerCase().trim(), a);
+  }
+
+  // Build label set for user axes
+  const userLabels = new Set(
+    userAxes.map((a) => (a.label || "").toLowerCase().trim())
+  );
+
+  // Process fresh axes
+  const updatedSystem = new Map(systemLabelMap);
+  const freshAppend = [];
+
+  for (const a of Array.isArray(fresh) ? fresh : []) {
+    const labelKey = (a.label || "").toLowerCase().trim();
+    if (!labelKey) continue;
+
+    // Skip if user already has this label
+    if (userLabels.has(labelKey)) continue;
+
+    if (updatedSystem.has(labelKey)) {
+      // Replace existing system axis
+      updatedSystem.set(labelKey, a);
+    } else {
+      freshAppend.push(a);
+    }
+  }
+
+  // Combine: user first, then updated system, then new
+  const combined = [
+    ...userAxes,
+    ...[...updatedSystem.values()],
+    ...freshAppend
+  ];
+
+  return combined.slice(0, TARGET_AXES_MAX);
+}
+
+// Exported for testing
+export {
+  _normalizeNarrativeAxes,
+  _mergeNarrativeAxes,
+  _buildNarrativeAxesUserMessage
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Narrative Threading Pipeline
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Minimum confidence score for a bullet-thread annotation to be included.
+ * Annotations below this threshold are discarded to reduce noise.
+ */
+const THREAD_CONFIDENCE_THRESHOLD = 0.3;
+
+/**
+ * Weave narrative threads through resume sections — linking bullets to the
+ * strengths and narrative axes they demonstrate, grounded in evidence episodes.
+ *
+ * This is the connective tissue between:
+ *   - Evidence episodes (atomic work units)
+ *   - Identified strengths (cross-repo patterns)
+ *   - Narrative axes (career themes)
+ *   - Resume bullets (the final rendered text)
+ *
+ * The threading process:
+ *   1. Collects all resume bullets from experience and projects sections
+ *   2. Builds an evidence index from episodes, strengths, and axes
+ *   3. For each bullet, computes thread annotations (which strengths/axes/episodes it connects to)
+ *   4. Uses text similarity matching (keyword + semantic) rather than LLM calls
+ *      for speed — the LLM already did the hard work in strength/axis generation
+ *   5. Aggregates section-level and document-level threading summaries
+ *   6. Identifies evidence gaps (ungrounded strengths/axes)
+ *
+ * User-edited bullets are threaded the same way as system bullets — threading
+ * is read-only annotation, never mutating the source data.
+ *
+ * @param {Object} input
+ * @param {object}   input.resume           The current resume document (ResumeData)
+ * @param {import("./resumeTypes.mjs").IdentifiedStrength[]} input.strengths
+ *   Identified strengths from identifyStrengths pipeline
+ * @param {import("./resumeTypes.mjs").NarrativeAxis[]} input.axes
+ *   Narrative axes from generateNarrativeAxes pipeline
+ * @param {import("./resumeTypes.mjs").CoreProjectExtractionResult[]} [input.extractionResults=[]]
+ *   Core project extraction results (for episode evidence)
+ * @returns {import("./resumeTypes.mjs").NarrativeThreadingResult}
+ */
+export function weaveNarrativeThreads(input) {
+  const {
+    resume,
+    strengths = [],
+    axes = [],
+    extractionResults = []
+  } = input || {};
+
+  const validStrengths = Array.isArray(strengths) ? strengths.filter(Boolean) : [];
+  const validAxes = Array.isArray(axes) ? axes.filter(Boolean) : [];
+
+  // ── Collect all episodes from extraction results ──────────────────────────
+  const allEpisodes = [];
+  const allProjects = [];
+  for (const result of Array.isArray(extractionResults) ? extractionResults : []) {
+    if (!result || !Array.isArray(result.projects)) continue;
+    for (const project of result.projects) {
+      allProjects.push(project);
+      if (Array.isArray(project.episodes)) {
+        for (const ep of project.episodes) allEpisodes.push(ep);
+      }
+    }
+  }
+
+  // ── Build evidence index ──────────────────────────────────────────────────
+  const evidenceIndex = _buildEvidenceIndex(validStrengths, validAxes, allEpisodes, allProjects);
+
+  // ── Collect resume bullets ────────────────────────────────────────────────
+  const resumeBullets = _collectResumeBullets(resume);
+
+  // ── Annotate each bullet ──────────────────────────────────────────────────
+  const bulletAnnotations = [];
+  for (const bullet of resumeBullets) {
+    const annotation = _annotateBullet(bullet, evidenceIndex);
+    if (annotation) {
+      bulletAnnotations.push(annotation);
+    }
+  }
+
+  // ── Build section summaries ───────────────────────────────────────────────
+  const sectionSummaries = _buildSectionSummaries(resume, bulletAnnotations);
+
+  // ── Compute coverage maps ─────────────────────────────────────────────────
+  const strengthCoverage = _computeStrengthCoverage(validStrengths, bulletAnnotations);
+  const axisCoverage = _computeAxisCoverage(validAxes, bulletAnnotations);
+
+  // ── Identify evidence gaps ────────────────────────────────────────────────
+  const ungroundedStrengthIds = validStrengths
+    .filter((s) => !strengthCoverage[s.id] || strengthCoverage[s.id].bulletCount === 0)
+    .map((s) => s.id);
+  const ungroundedAxisIds = validAxes
+    .filter((a) => !axisCoverage[a.id] || axisCoverage[a.id].bulletCount === 0)
+    .map((a) => a.id);
+
+  const totalEvidence = validStrengths.length + validAxes.length;
+  const groundedCount = totalEvidence - ungroundedStrengthIds.length - ungroundedAxisIds.length;
+  const groundedRatio = totalEvidence > 0 ? groundedCount / totalEvidence : 1;
+
+  return {
+    bulletAnnotations,
+    sectionSummaries,
+    strengthCoverage,
+    axisCoverage,
+    ungroundedStrengthIds,
+    ungroundedAxisIds,
+    totalAnnotations: bulletAnnotations.length,
+    groundedRatio: Math.round(groundedRatio * 100) / 100,
+    threadedAt: new Date().toISOString()
+  };
+}
+
+// ─── Evidence index builder ─────────────────────────────────────────────────
+
+/**
+ * Build a search index from strengths, axes, and episodes for efficient
+ * bullet-to-evidence matching.
+ *
+ * The index maps normalized keyword tokens to the evidence items that
+ * contain them, enabling fast approximate matching without LLM calls.
+ *
+ * @param {object[]} strengths
+ * @param {object[]} axes
+ * @param {object[]} episodes
+ * @param {object[]} projects
+ * @returns {Object}
+ */
+function _buildEvidenceIndex(strengths, axes, episodes, projects) {
+  // ── Strength index: keyword tokens → strength IDs ─────────────────────────
+  const strengthTokenMap = new Map(); // token → Set<strengthId>
+  const strengthBulletMap = new Map(); // normalized bullet text → Set<strengthId>
+  const strengthDescTokens = new Map(); // strengthId → Set<token>
+
+  for (const str of strengths) {
+    const tokens = _extractTokens(str.label + " " + str.description);
+    strengthDescTokens.set(str.id, new Set(tokens));
+
+    for (const token of tokens) {
+      if (!strengthTokenMap.has(token)) strengthTokenMap.set(token, new Set());
+      strengthTokenMap.get(token).add(str.id);
+    }
+
+    // Index example bullets for direct matching
+    for (const bullet of str.exampleBullets || []) {
+      const normalizedBullet = _normalizeBulletText(bullet);
+      if (!strengthBulletMap.has(normalizedBullet)) strengthBulletMap.set(normalizedBullet, new Set());
+      strengthBulletMap.get(normalizedBullet).add(str.id);
+    }
+  }
+
+  // ── Axis index: strength/project IDs → axis IDs ───────────────────────────
+  const axisTokenMap = new Map(); // token → Set<axisId>
+  const axisBulletMap = new Map(); // normalized bullet text → Set<axisId>
+  const axisStrengthMap = new Map(); // strengthId → Set<axisId>
+  const axisProjectMap = new Map(); // projectId → Set<axisId>
+  const axisDescTokens = new Map(); // axisId → Set<token>
+
+  for (const axis of axes) {
+    const tokens = _extractTokens(axis.label + " " + axis.description);
+    axisDescTokens.set(axis.id, new Set(tokens));
+
+    for (const token of tokens) {
+      if (!axisTokenMap.has(token)) axisTokenMap.set(token, new Set());
+      axisTokenMap.get(token).add(axis.id);
+    }
+
+    // Map strength→axis and project→axis relationships
+    for (const strId of axis.strengthIds || []) {
+      if (!axisStrengthMap.has(strId)) axisStrengthMap.set(strId, new Set());
+      axisStrengthMap.get(strId).add(axis.id);
+    }
+    for (const projId of axis.projectIds || []) {
+      if (!axisProjectMap.has(projId)) axisProjectMap.set(projId, new Set());
+      axisProjectMap.get(projId).add(axis.id);
+    }
+
+    // Index supporting bullets
+    for (const bullet of axis.supportingBullets || []) {
+      const normalizedBullet = _normalizeBulletText(bullet);
+      if (!axisBulletMap.has(normalizedBullet)) axisBulletMap.set(normalizedBullet, new Set());
+      axisBulletMap.get(normalizedBullet).add(axis.id);
+    }
+  }
+
+  // ── Episode index: bullet text → episode IDs ─────────────────────────────
+  const episodeBulletMap = new Map(); // normalized bullet text → Set<episodeId>
+  const episodeTokenMap = new Map(); // token → Set<episodeId>
+
+  for (const ep of episodes) {
+    const tokens = _extractTokens(
+      (ep.title || "") + " " + (ep.summary || "") + " " + (ep.topicTag || "") + " " + (ep.moduleTag || "")
+    );
+    for (const token of tokens) {
+      if (!episodeTokenMap.has(token)) episodeTokenMap.set(token, new Set());
+      episodeTokenMap.get(token).add(ep.id);
+    }
+
+    for (const bullet of ep.bullets || []) {
+      const normalizedBullet = _normalizeBulletText(bullet);
+      if (!episodeBulletMap.has(normalizedBullet)) episodeBulletMap.set(normalizedBullet, new Set());
+      episodeBulletMap.get(normalizedBullet).add(ep.id);
+    }
+  }
+
+  // ── Project → episode mapping ─────────────────────────────────────────────
+  const projectEpisodeMap = new Map(); // projectId → Set<episodeId>
+  for (const proj of projects) {
+    const epIds = new Set();
+    for (const ep of proj.episodes || []) {
+      epIds.add(ep.id);
+    }
+    projectEpisodeMap.set(proj.id, epIds);
+  }
+
+  return {
+    strengthTokenMap,
+    strengthBulletMap,
+    strengthDescTokens,
+    axisTokenMap,
+    axisBulletMap,
+    axisStrengthMap,
+    axisProjectMap,
+    axisDescTokens,
+    episodeBulletMap,
+    episodeTokenMap,
+    projectEpisodeMap,
+    strengths,
+    axes,
+    episodes
+  };
+}
+
+// ─── Bullet collection ──────────────────────────────────────────────────────
+
+/**
+ * Collect all bullets from resume experience and projects sections.
+ * @param {object} resume
+ * @returns {Array<{text: string, section: string, itemIndex: number, bulletIndex: number}>}
+ */
+function _collectResumeBullets(resume) {
+  const bullets = [];
+  if (!resume || typeof resume !== "object") return bullets;
+
+  for (const section of ["experience", "projects"]) {
+    const items = Array.isArray(resume[section]) ? resume[section] : [];
+    for (let itemIdx = 0; itemIdx < items.length; itemIdx++) {
+      const item = items[itemIdx];
+      const itemBullets = Array.isArray(item?.bullets) ? item.bullets : [];
+      for (let bulletIdx = 0; bulletIdx < itemBullets.length; bulletIdx++) {
+        const text = itemBullets[bulletIdx];
+        if (typeof text === "string" && text.trim()) {
+          bullets.push({ text: text.trim(), section, itemIndex: itemIdx, bulletIndex: bulletIdx });
+        }
+      }
+    }
+  }
+
+  return bullets;
+}
+
+// ─── Bullet annotation ──────────────────────────────────────────────────────
+
+/**
+ * Annotate a single resume bullet with strength, axis, and episode connections.
+ *
+ * Uses a multi-signal scoring approach:
+ *   1. Direct bullet match: if the bullet text matches an example/supporting bullet exactly
+ *   2. Token overlap: fraction of bullet tokens that appear in evidence descriptions
+ *   3. Transitive connection: if bullet matches a strength, inherit axes via strengthId→axisId
+ *
+ * @param {Object} bullet  { text, section, itemIndex, bulletIndex }
+ * @param {Object} index   Evidence index from _buildEvidenceIndex
+ * @returns {import("./resumeTypes.mjs").BulletThreadAnnotation|null}
+ */
+function _annotateBullet(bullet, index) {
+  const normalizedText = _normalizeBulletText(bullet.text);
+  const bulletTokens = _extractTokens(bullet.text);
+
+  if (bulletTokens.length === 0) return null;
+
+  // ── 1. Direct bullet text matching (highest confidence) ───────────────────
+  const directStrengthIds = new Set();
+  const directAxisIds = new Set();
+  const directEpisodeIds = new Set();
+
+  // Check strength example bullets
+  for (const [normalizedBullet, strIds] of index.strengthBulletMap) {
+    if (_textSimilarity(normalizedText, normalizedBullet) > 0.8) {
+      for (const id of strIds) directStrengthIds.add(id);
+    }
+  }
+
+  // Check axis supporting bullets
+  for (const [normalizedBullet, axisIds] of index.axisBulletMap) {
+    if (_textSimilarity(normalizedText, normalizedBullet) > 0.8) {
+      for (const id of axisIds) directAxisIds.add(id);
+    }
+  }
+
+  // Check episode bullets
+  for (const [normalizedBullet, epIds] of index.episodeBulletMap) {
+    if (_textSimilarity(normalizedText, normalizedBullet) > 0.8) {
+      for (const id of epIds) directEpisodeIds.add(id);
+    }
+  }
+
+  // ── 2. Token overlap scoring (medium confidence) ──────────────────────────
+  const tokenStrengthScores = new Map(); // strengthId → score
+  const tokenAxisScores = new Map(); // axisId → score
+  const tokenEpisodeScores = new Map(); // episodeId → score
+
+  for (const token of bulletTokens) {
+    // Strength token matches
+    const strIds = index.strengthTokenMap.get(token);
+    if (strIds) {
+      for (const id of strIds) {
+        tokenStrengthScores.set(id, (tokenStrengthScores.get(id) || 0) + 1);
+      }
+    }
+
+    // Axis token matches
+    const axisIds = index.axisTokenMap.get(token);
+    if (axisIds) {
+      for (const id of axisIds) {
+        tokenAxisScores.set(id, (tokenAxisScores.get(id) || 0) + 1);
+      }
+    }
+
+    // Episode token matches
+    const epIds = index.episodeTokenMap.get(token);
+    if (epIds) {
+      for (const id of epIds) {
+        tokenEpisodeScores.set(id, (tokenEpisodeScores.get(id) || 0) + 1);
+      }
+    }
+  }
+
+  // ── 3. Compute final strength matches ─────────────────────────────────────
+  const strengthMatches = new Map(); // strengthId → confidence
+
+  // Direct matches get high confidence
+  for (const id of directStrengthIds) {
+    strengthMatches.set(id, Math.max(strengthMatches.get(id) || 0, 0.95));
+  }
+
+  // Token overlap matches: score = overlapping tokens / min(bullet tokens, desc tokens)
+  for (const [id, count] of tokenStrengthScores) {
+    const descTokenCount = index.strengthDescTokens.get(id)?.size || 1;
+    const score = count / Math.min(bulletTokens.length, descTokenCount);
+    const clampedScore = Math.min(score, 0.85);
+    strengthMatches.set(id, Math.max(strengthMatches.get(id) || 0, clampedScore));
+  }
+
+  // Filter by confidence threshold
+  const filteredStrengthIds = [];
+  for (const [id, score] of strengthMatches) {
+    if (score >= THREAD_CONFIDENCE_THRESHOLD) filteredStrengthIds.push(id);
+  }
+
+  // ── 4. Compute final axis matches ─────────────────────────────────────────
+  const axisMatches = new Map(); // axisId → confidence
+
+  // Direct matches
+  for (const id of directAxisIds) {
+    axisMatches.set(id, Math.max(axisMatches.get(id) || 0, 0.95));
+  }
+
+  // Token overlap matches
+  for (const [id, count] of tokenAxisScores) {
+    const descTokenCount = index.axisDescTokens.get(id)?.size || 1;
+    const score = count / Math.min(bulletTokens.length, descTokenCount);
+    const clampedScore = Math.min(score, 0.85);
+    axisMatches.set(id, Math.max(axisMatches.get(id) || 0, clampedScore));
+  }
+
+  // Transitive: if bullet matches a strength, inherit the axes that reference it
+  for (const strId of filteredStrengthIds) {
+    const transitiveAxes = index.axisStrengthMap.get(strId);
+    if (transitiveAxes) {
+      for (const axisId of transitiveAxes) {
+        // Transitive gets slightly lower confidence than direct
+        const transitiveScore = (strengthMatches.get(strId) || 0) * 0.75;
+        axisMatches.set(axisId, Math.max(axisMatches.get(axisId) || 0, transitiveScore));
+      }
+    }
+  }
+
+  const filteredAxisIds = [];
+  for (const [id, score] of axisMatches) {
+    if (score >= THREAD_CONFIDENCE_THRESHOLD) filteredAxisIds.push(id);
+  }
+
+  // ── 5. Compute episode matches ────────────────────────────────────────────
+  const episodeMatches = new Map();
+
+  for (const id of directEpisodeIds) {
+    episodeMatches.set(id, Math.max(episodeMatches.get(id) || 0, 0.95));
+  }
+
+  for (const [id, count] of tokenEpisodeScores) {
+    const score = count / bulletTokens.length;
+    const clampedScore = Math.min(score, 0.85);
+    episodeMatches.set(id, Math.max(episodeMatches.get(id) || 0, clampedScore));
+  }
+
+  const filteredEpisodeIds = [];
+  for (const [id, score] of episodeMatches) {
+    if (score >= THREAD_CONFIDENCE_THRESHOLD) filteredEpisodeIds.push(id);
+  }
+
+  // ── 6. Skip if no connections found ───────────────────────────────────────
+  if (filteredStrengthIds.length === 0 && filteredAxisIds.length === 0 && filteredEpisodeIds.length === 0) {
+    return null;
+  }
+
+  // ── 7. Compute overall confidence ─────────────────────────────────────────
+  const allScores = [
+    ...([...strengthMatches.values()].filter((s) => s >= THREAD_CONFIDENCE_THRESHOLD)),
+    ...([...axisMatches.values()].filter((s) => s >= THREAD_CONFIDENCE_THRESHOLD)),
+    ...([...episodeMatches.values()].filter((s) => s >= THREAD_CONFIDENCE_THRESHOLD))
+  ];
+  const avgConfidence = allScores.length > 0
+    ? allScores.reduce((a, b) => a + b, 0) / allScores.length
+    : 0;
+
+  return {
+    bulletText: bullet.text,
+    section: bullet.section,
+    itemIndex: bullet.itemIndex,
+    bulletIndex: bullet.bulletIndex,
+    strengthIds: filteredStrengthIds,
+    axisIds: filteredAxisIds,
+    episodeIds: filteredEpisodeIds,
+    confidence: Math.round(avgConfidence * 100) / 100
+  };
+}
+
+// ─── Section summaries ──────────────────────────────────────────────────────
+
+/**
+ * Build per-section-item thread summaries showing dominant themes.
+ * @param {object} resume
+ * @param {import("./resumeTypes.mjs").BulletThreadAnnotation[]} annotations
+ * @returns {import("./resumeTypes.mjs").SectionThreadSummary[]}
+ */
+function _buildSectionSummaries(resume, annotations) {
+  if (!resume || typeof resume !== "object") return [];
+
+  const summaries = [];
+
+  for (const section of ["experience", "projects"]) {
+    const items = Array.isArray(resume[section]) ? resume[section] : [];
+    for (let itemIdx = 0; itemIdx < items.length; itemIdx++) {
+      const item = items[itemIdx];
+      const itemLabel = section === "experience"
+        ? (item.company || "(unknown)")
+        : (item.name || item.title || "(unknown)");
+
+      const totalBulletCount = Array.isArray(item?.bullets) ? item.bullets.length : 0;
+
+      // Filter annotations for this specific item
+      const itemAnnotations = annotations.filter(
+        (a) => a.section === section && a.itemIndex === itemIdx
+      );
+
+      if (totalBulletCount === 0) continue;
+
+      // Count strength and axis occurrences
+      const strengthCounts = new Map();
+      const axisCounts = new Map();
+
+      for (const ann of itemAnnotations) {
+        for (const sId of ann.strengthIds) {
+          strengthCounts.set(sId, (strengthCounts.get(sId) || 0) + 1);
+        }
+        for (const aId of ann.axisIds) {
+          axisCounts.set(aId, (axisCounts.get(aId) || 0) + 1);
+        }
+      }
+
+      // Sort by count descending, take top 3
+      const dominantStrengthIds = [...strengthCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([id]) => id);
+
+      const dominantAxisIds = [...axisCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 2)
+        .map(([id]) => id);
+
+      summaries.push({
+        section,
+        itemIndex: itemIdx,
+        itemLabel,
+        dominantStrengthIds,
+        dominantAxisIds,
+        threadedBulletCount: itemAnnotations.length,
+        totalBulletCount
+      });
+    }
+  }
+
+  return summaries;
+}
+
+// ─── Coverage computation ───────────────────────────────────────────────────
+
+/**
+ * Compute how well strengths are represented across resume bullets.
+ * @param {object[]} strengths
+ * @param {import("./resumeTypes.mjs").BulletThreadAnnotation[]} annotations
+ * @returns {Object}  Map of strengthId → { bulletCount, sections, axisIds }
+ */
+function _computeStrengthCoverage(strengths, annotations) {
+  const coverage = {};
+
+  for (const str of strengths) {
+    const matchingAnnotations = annotations.filter(
+      (a) => a.strengthIds.includes(str.id)
+    );
+
+    const sections = new Set(matchingAnnotations.map((a) => a.section));
+
+    // Find axes that also reference this strength
+    const relatedAxisIds = new Set();
+    for (const ann of matchingAnnotations) {
+      for (const axisId of ann.axisIds) relatedAxisIds.add(axisId);
+    }
+
+    coverage[str.id] = {
+      bulletCount: matchingAnnotations.length,
+      sections: [...sections],
+      axisIds: [...relatedAxisIds]
+    };
+  }
+
+  return coverage;
+}
+
+/**
+ * Compute how well narrative axes are represented across resume bullets.
+ * @param {object[]} axes
+ * @param {import("./resumeTypes.mjs").BulletThreadAnnotation[]} annotations
+ * @returns {Object}  Map of axisId → { bulletCount, sections, strengthIds }
+ */
+function _computeAxisCoverage(axes, annotations) {
+  const coverage = {};
+
+  for (const axis of axes) {
+    const matchingAnnotations = annotations.filter(
+      (a) => a.axisIds.includes(axis.id)
+    );
+
+    const sections = new Set(matchingAnnotations.map((a) => a.section));
+
+    // Find strengths that co-occur with this axis in annotations
+    const relatedStrengthIds = new Set();
+    for (const ann of matchingAnnotations) {
+      for (const strId of ann.strengthIds) relatedStrengthIds.add(strId);
+    }
+
+    coverage[axis.id] = {
+      bulletCount: matchingAnnotations.length,
+      sections: [...sections],
+      strengthIds: [...relatedStrengthIds]
+    };
+  }
+
+  return coverage;
+}
+
+// ─── Text matching utilities ────────────────────────────────────────────────
+
+/**
+ * Extract searchable tokens from text (lowercased, stripped of punctuation,
+ * min 2 chars to support Korean).
+ * @param {string} text
+ * @returns {string[]}  Deduplicated token array
+ */
+function _extractTokens(text) {
+  if (!text || typeof text !== "string") return [];
+
+  const normalized = text
+    .toLowerCase()
+    .replace(/[.,;:!?'"()\[\]{}<>\/\\|@#$%^&*+=~`]/g, " ")
+    .replace(/[-–—]/g, " ");
+
+  const tokens = normalized
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2);
+
+  return [...new Set(tokens)];
+}
+
+/**
+ * Normalize bullet text for comparison (lowercase, stripped, trimmed).
+ * @param {string} text
+ * @returns {string}
+ */
+function _normalizeBulletText(text) {
+  if (!text || typeof text !== "string") return "";
+  return text
+    .toLowerCase()
+    .replace(/[.,;:!?'"()\[\]{}<>\/\\|@#$%^&*+=~`•\-–—]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Compute text similarity between two normalized strings using token overlap.
+ * Returns a Jaccard-like score in [0, 1].
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function _textSimilarity(a, b) {
+  if (!a || !b) return 0;
+
+  const tokensA = new Set(a.split(/\s+/).filter(Boolean));
+  const tokensB = new Set(b.split(/\s+/).filter(Boolean));
+
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+
+  let intersection = 0;
+  for (const t of tokensA) {
+    if (tokensB.has(t)) intersection++;
+  }
+
+  const union = new Set([...tokensA, ...tokensB]).size;
+  return union > 0 ? intersection / union : 0;
+}
+
+// Exported for testing
+export {
+  _buildEvidenceIndex,
+  _collectResumeBullets,
+  _annotateBullet,
+  _buildSectionSummaries,
+  _computeStrengthCoverage,
+  _computeAxisCoverage,
+  _extractTokens,
+  _normalizeBulletText,
+  _textSimilarity,
+  THREAD_CONFIDENCE_THRESHOLD
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Section Bridge / Transition Text Generation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Section transition pairs — defines which resume sections can have bridge
+ * text between them, and in what order.
+ */
+const BRIDGE_SECTION_PAIRS = [
+  {
+    from: "summary", to: "experience", label: "summary → experience",
+    tone: "aspirational-to-concrete",
+    guidance: "Transition from the career vision in the summary to specific roles that embody it. Show how the person's stated direction manifests in actual work.",
+  },
+  {
+    from: "experience", to: "projects", label: "experience → projects",
+    tone: "professional-to-exploratory",
+    guidance: "Bridge from structured employment to self-directed or open-source work. Highlight what drove them beyond their day job — curiosity, skill gaps, or creative ambition.",
+  },
+  {
+    from: "projects", to: "education", label: "projects → education",
+    tone: "practical-to-foundational",
+    guidance: "Connect hands-on project work back to the knowledge base that enabled it. Reference how formal training shaped their approach or how they returned to study.",
+  },
+  {
+    from: "projects", to: "skills", label: "projects → skills",
+    tone: "narrative-to-catalog",
+    guidance: "Shift from project stories to the concrete toolbox. Reference patterns in tool choices across projects that reveal preferences or specialization.",
+  },
+  {
+    from: "education", to: "skills", label: "education → skills",
+    tone: "foundational-to-catalog",
+    guidance: "Move from formal learning to applied capabilities. Highlight how academic grounding connects to the specific tools and technologies listed.",
+  },
+];
+
+const BRIDGE_SYSTEM_PROMPT = `You are a resume narrative specialist. Your job is to write short, smooth transition sentences that connect adjacent resume sections into a cohesive story — so the entire resume reads as one continuous narrative rather than disconnected blocks.
+
+## Core Rules
+
+1. Each bridge is 1-2 sentences, concise and professional. Never exceed 2 sentences.
+2. Reference specific themes from the person's ACTUAL work — never write generic filler. Name a technology, a project, or a domain from the actual content.
+3. Use the narrative axes and strengths provided to find the connective thread between sections.
+4. If a bridge would feel forced or add no value, return an empty string for that pair.
+5. Write in the same language as the resume (match the summary/bullet language).
+6. The tone should be understated — guide the reader's eye, don't lecture.
+7. Avoid ALL clichés: "building on this foundation", "leveraging experience", "passion for", "driven by", "committed to excellence", etc.
+8. Include decision reasoning naturally: if the person chose a particular path, reference *why* briefly (e.g. "chose Rust for its safety guarantees" not just "uses Rust").
+
+## Narrative Continuity
+
+The bridges collectively form a story arc across the resume. Each bridge should feel like it follows naturally from the previous sections, creating momentum. Think of bridges as the connective tissue of an essay — they orient the reader for what comes next by grounding it in what came before.
+
+## Per-Pair Tone Guidance
+
+Each section pair has a specific tone shift to navigate. The PAIR_GUIDANCE field in the input tells you the emotional direction. Follow it.
+
+## Decision Reasoning Integration
+
+When session analysis reveals WHY the person made a choice (tool selection, architecture decision, project direction), weave that reasoning into the bridge naturally. Don't say "they decided X" — say "X emerged from their work on Y" or "after encountering Z, they moved toward X."
+
+## Quality Bar
+
+A good bridge makes the reader think "of course, that follows naturally." A bad bridge makes them think "this sounds like AI wrote it." Aim for the former. When in doubt, write nothing (return empty string) rather than something generic.
+
+Output JSON matching the provided schema exactly.`;
+
+const BRIDGE_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    bridges: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          from: { type: "string" },
+          to: { type: "string" },
+          text: { type: "string" }
+        },
+        required: ["from", "to", "text"],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ["bridges"],
+  additionalProperties: false
+};
+
+/**
+ * Generate smooth transition / bridge text between resume sections so the
+ * output reads as a cohesive story rather than disconnected blocks.
+ *
+ * Bridge text is generated via LLM, grounded in narrative axes and strengths.
+ * User-edited bridges are preserved across regeneration cycles.
+ *
+ * @param {Object} input
+ * @param {object}   input.resume           Current resume document
+ * @param {object[]} input.strengths        Identified strengths
+ * @param {object[]} input.axes             Narrative axes
+ * @param {object[]} [input.sectionSummaries=[]]  Section-level threading summaries
+ * @param {object[]} [input.existingBridges=[]]   Previously generated/edited bridges
+ * @param {Object}   [options={}]
+ * @param {Function} [options.llmFn]        Override LLM call for testing
+ * @returns {Promise<SectionBridgeResult>}
+ *
+ * @typedef {Object} SectionBridge
+ * @property {string} from       Source section key (e.g. "summary")
+ * @property {string} to         Target section key (e.g. "experience")
+ * @property {string} text       The transition text
+ * @property {string} _source    "system" | "user" — provenance tag
+ *
+ * @typedef {Object} SectionBridgeResult
+ * @property {SectionBridge[]} bridges       Generated bridge texts
+ * @property {number}          pairCount     Number of section pairs evaluated
+ * @property {number}          generatedCount Number of non-empty bridges
+ * @property {string}          generatedAt   ISO timestamp
+ */
+export async function generateSectionBridges(input, options = {}) {
+  const {
+    resume,
+    strengths = [],
+    axes = [],
+    sectionSummaries = [],
+    existingBridges = [],
+    sessionSummaries = [],
+    extractionResults = []
+  } = input || {};
+
+  if (!resume || typeof resume !== "object") {
+    return {
+      bridges: Array.isArray(existingBridges) ? existingBridges : [],
+      pairCount: 0,
+      generatedCount: 0,
+      coherenceScore: null,
+      generatedAt: new Date().toISOString()
+    };
+  }
+
+  // Determine which section pairs are actually present in the resume
+  const activePairs = _identifyActiveSectionPairs(resume);
+
+  if (activePairs.length === 0) {
+    return {
+      bridges: Array.isArray(existingBridges) ? existingBridges : [],
+      pairCount: 0,
+      generatedCount: 0,
+      coherenceScore: null,
+      generatedAt: new Date().toISOString()
+    };
+  }
+
+  // Preserve user-edited bridges — they are never overwritten
+  const userBridges = (Array.isArray(existingBridges) ? existingBridges : [])
+    .filter((b) => b && (b._source === "user" || b._source === "user_approved"));
+
+  // Identify which pairs need new system-generated bridges
+  const userBridgeKeys = new Set(userBridges.map((b) => `${b.from}→${b.to}`));
+  const pairsToGenerate = activePairs.filter(
+    (pair) => !userBridgeKeys.has(`${pair.from}→${pair.to}`)
+  );
+
+  if (pairsToGenerate.length === 0) {
+    // All active pairs already have user bridges
+    return {
+      bridges: userBridges,
+      pairCount: activePairs.length,
+      generatedCount: 0,
+      coherenceScore: null,
+      generatedAt: new Date().toISOString()
+    };
+  }
+
+  // Enrich pairs with per-pair tone and guidance from BRIDGE_SECTION_PAIRS
+  const enrichedPairs = pairsToGenerate.map((pair) => {
+    const template = BRIDGE_SECTION_PAIRS.find(
+      (bp) => bp.from === pair.from && bp.to === pair.to
+    );
+    return {
+      ...pair,
+      tone: template?.tone || null,
+      guidance: template?.guidance || null
+    };
+  });
+
+  // Build extra context for richer bridge generation
+  const extra = {
+    sessionSummaries: Array.isArray(sessionSummaries) ? sessionSummaries : [],
+    extractionResults: Array.isArray(extractionResults) ? extractionResults : []
+  };
+
+  // Call LLM to generate bridge text
+  const llmFn = options.llmFn || _callLlmForBridges;
+  let systemBridges;
+  try {
+    systemBridges = await llmFn(resume, strengths, axes, sectionSummaries, enrichedPairs, extra);
+  } catch (err) {
+    console.warn(
+      "[generateSectionBridges] LLM call failed (non-fatal), returning existing bridges:",
+      err.message || err
+    );
+    return {
+      bridges: Array.isArray(existingBridges) ? existingBridges : [],
+      pairCount: activePairs.length,
+      generatedCount: 0,
+      coherenceScore: null,
+      generatedAt: new Date().toISOString()
+    };
+  }
+
+  // Normalize and tag system bridges
+  const normalizedSystem = _normalizeBridges(systemBridges, pairsToGenerate);
+
+  // Validate bridge coherence — check that bridges reference actual content
+  const coherenceScore = _scoreBridgeCoherence(normalizedSystem, resume, strengths, axes);
+
+  // Merge: user bridges always win, system fills remaining
+  const merged = [...userBridges];
+  for (const bridge of normalizedSystem) {
+    const key = `${bridge.from}→${bridge.to}`;
+    if (!userBridgeKeys.has(key) && bridge.text.trim()) {
+      merged.push({ ...bridge, _source: "system" });
+    }
+  }
+
+  return {
+    bridges: merged,
+    pairCount: activePairs.length,
+    generatedCount: normalizedSystem.filter((b) => b.text.trim()).length,
+    coherenceScore,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Score bridge coherence: how well bridges reference actual resume content,
+ * strengths, and axes rather than using generic filler.
+ *
+ * Returns a score from 0 to 1 where:
+ *   1.0 = every bridge references specific content from the resume
+ *   0.0 = all bridges are generic filler
+ *
+ * @param {object[]} bridges    Generated bridges
+ * @param {object}   resume     Resume document
+ * @param {object[]} strengths  Identified strengths
+ * @param {object[]} axes       Narrative axes
+ * @returns {number|null}       Score 0-1, or null if no bridges to score
+ */
+function _scoreBridgeCoherence(bridges, resume, strengths, axes) {
+  const nonEmpty = (bridges || []).filter(b => b.text?.trim());
+  if (nonEmpty.length === 0) return null;
+
+  // Build a set of "content tokens" from the resume that a grounded bridge
+  // should reference — company names, project names, skill terms, strength
+  // labels, axis labels, technology names
+  const contentTokens = new Set();
+
+  // Company names
+  for (const exp of Array.isArray(resume.experience) ? resume.experience : []) {
+    if (exp.company) contentTokens.add(exp.company.toLowerCase());
+    if (exp.title) contentTokens.add(exp.title.toLowerCase());
+  }
+  // Project names
+  for (const proj of Array.isArray(resume.projects) ? resume.projects : []) {
+    const name = proj.name || proj.title;
+    if (name) contentTokens.add(name.toLowerCase());
+  }
+  // Skills
+  const skills = resume.skills || {};
+  for (const group of [skills.technical, skills.languages, skills.tools]) {
+    for (const s of Array.isArray(group) ? group : []) {
+      if (s) contentTokens.add(s.toLowerCase());
+    }
+  }
+  // Strength labels
+  for (const str of Array.isArray(strengths) ? strengths : []) {
+    if (str.label) contentTokens.add(str.label.toLowerCase());
+  }
+  // Axis labels
+  for (const axis of Array.isArray(axes) ? axes : []) {
+    if (axis.label) contentTokens.add(axis.label.toLowerCase());
+  }
+
+  // CLICHÉ detection — bridges containing these lose points
+  const cliches = [
+    "building on this foundation", "leveraging experience",
+    "passion for", "driven by", "committed to excellence",
+    "strong foundation", "diverse skill set", "well-rounded",
+    "proven track record", "results-driven"
+  ];
+
+  let totalScore = 0;
+  for (const bridge of nonEmpty) {
+    const textLower = bridge.text.toLowerCase();
+    let bridgeScore = 0;
+
+    // Check for content token references (up to 0.7 points)
+    let tokenHits = 0;
+    for (const token of contentTokens) {
+      if (token.length >= 3 && textLower.includes(token)) {
+        tokenHits++;
+      }
+    }
+    bridgeScore += Math.min(tokenHits / 2, 0.7); // 2 hits = max 0.7
+
+    // Penalize clichés (-0.3 per cliché found)
+    for (const cliche of cliches) {
+      if (textLower.includes(cliche)) {
+        bridgeScore -= 0.3;
+      }
+    }
+
+    // Bonus for conciseness: 1-2 sentences is ideal (0.3 points)
+    const sentenceCount = (bridge.text.match(/[.!?]+/g) || []).length;
+    if (sentenceCount >= 1 && sentenceCount <= 2) {
+      bridgeScore += 0.3;
+    } else if (sentenceCount > 2) {
+      bridgeScore += 0.1; // Too wordy, partial credit
+    }
+
+    totalScore += Math.max(0, Math.min(1, bridgeScore));
+  }
+
+  return Math.round((totalScore / nonEmpty.length) * 100) / 100;
+}
+
+/**
+ * Identify which section transition pairs are active (both sections
+ * have content in the current resume).
+ *
+ * @param {object} resume
+ * @returns {Array<{from: string, to: string, label: string}>}
+ */
+function _identifyActiveSectionPairs(resume) {
+  const hasContent = {
+    summary: Boolean(resume.summary),
+    experience: Array.isArray(resume.experience) && resume.experience.length > 0,
+    projects: Array.isArray(resume.projects) && resume.projects.length > 0,
+    education: Array.isArray(resume.education) && resume.education.length > 0,
+    skills: Boolean(
+      resume.skills &&
+      (resume.skills.technical?.length > 0 ||
+       resume.skills.languages?.length > 0 ||
+       resume.skills.tools?.length > 0)
+    )
+  };
+
+  return BRIDGE_SECTION_PAIRS.filter(
+    (pair) => hasContent[pair.from] && hasContent[pair.to]
+  );
+}
+
+/**
+ * LLM call to generate section bridge text.
+ *
+ * @param {object} resume          Full resume
+ * @param {object[]} strengths     Identified strengths
+ * @param {object[]} axes          Narrative axes
+ * @param {object[]} sectionSummaries  Section threading summaries
+ * @param {Array<{from: string, to: string, tone?: string, guidance?: string}>} pairs  Pairs needing bridges
+ * @param {object}   [extra={}]    Additional context (sessionSummaries, etc.)
+ * @returns {Promise<object[]>}  Raw bridge objects from LLM
+ */
+async function _callLlmForBridges(resume, strengths, axes, sectionSummaries, pairs, extra = {}) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not set — cannot generate section bridges");
+  }
+  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+    throw new Error("OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)");
+  }
+
+  const userMessage = _buildBridgesUserMessage(resume, strengths, axes, sectionSummaries, pairs, extra);
+
+  const payload = {
+    model: OPENAI_MODEL,
+    reasoning: { effort: "medium" },
+    text: {
+      format: {
+        type: "json_schema",
+        name: "section_bridges",
+        strict: true,
+        schema: BRIDGE_OUTPUT_SCHEMA
+      }
+    },
+    max_output_tokens: 2000,
+    input: [
+      {
+        role: "system",
+        content: [{ type: "input_text", text: BRIDGE_SYSTEM_PROMPT }]
+      },
+      {
+        role: "user",
+        content: [{ type: "input_text", text: userMessage }]
+      }
+    ]
+  };
+
+  const response = await fetch(OPENAI_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Section bridges LLM call failed: ${response.status} ${errorText.slice(0, 400)}`
+    );
+  }
+
+  const data = await response.json();
+  const rawText = data.output_text || extractOutputText(data);
+  if (!rawText) {
+    throw new Error("Section bridges LLM call returned empty output");
+  }
+
+  const parsed = JSON.parse(rawText);
+  return Array.isArray(parsed.bridges) ? parsed.bridges : [];
+}
+
+/**
+ * Build the user message for bridge generation LLM call.
+ *
+ * Enhanced to include:
+ *   - Per-pair tone guidance and section-specific context
+ *   - Decision reasoning from AI session summaries
+ *   - Thematic connections between sections (shared axes/strengths)
+ *   - Enough content from each section for the LLM to write grounded bridges
+ *
+ * @param {object}   resume           Full resume document
+ * @param {object[]} strengths        Identified strengths
+ * @param {object[]} axes             Narrative axes
+ * @param {object[]} sectionSummaries Section threading summaries
+ * @param {Array<{from: string, to: string, tone?: string, guidance?: string}>} pairs
+ * @param {object}   [extra={}]       Additional context (sessionSummaries, extractionResults)
+ * @returns {string}
+ */
+function _buildBridgesUserMessage(resume, strengths, axes, sectionSummaries, pairs, extra = {}) {
+  const parts = [];
+
+  // ── Summary content ────────────────────────────────────────────────────────
+  if (resume.summary) {
+    parts.push("=== RESUME SUMMARY ===");
+    parts.push(resume.summary);
+    parts.push("");
+  }
+
+  // ── Experience highlights ─────────────────────────────────────────────────
+  const experience = Array.isArray(resume.experience) ? resume.experience : [];
+  if (experience.length > 0) {
+    parts.push("=== EXPERIENCE (highlights) ===");
+    for (const exp of experience.slice(0, 5)) {
+      const title = [exp.title, exp.company].filter(Boolean).join(" @ ");
+      const dates = [exp.start_date, exp.end_date].filter(Boolean).join(" – ");
+      parts.push(`• ${title}${dates ? ` (${dates})` : ""}`);
+      const bullets = Array.isArray(exp.bullets) ? exp.bullets.slice(0, 3) : [];
+      for (const b of bullets) {
+        parts.push(`    – ${b}`);
+      }
+    }
+    parts.push("");
+  }
+
+  // ── Projects highlights ────────────────────────────────────────────────────
+  const projects = Array.isArray(resume.projects) ? resume.projects : [];
+  if (projects.length > 0) {
+    parts.push("=== PROJECTS (highlights) ===");
+    for (const proj of projects.slice(0, 5)) {
+      const name = proj.name || proj.title || "(untitled)";
+      parts.push(`• ${name}: ${proj.description || ""}`);
+      const bullets = Array.isArray(proj.bullets) ? proj.bullets.slice(0, 3) : [];
+      for (const b of bullets) {
+        parts.push(`    – ${b}`);
+      }
+    }
+    parts.push("");
+  }
+
+  // ── Education ──────────────────────────────────────────────────────────────
+  const education = Array.isArray(resume.education) ? resume.education : [];
+  if (education.length > 0) {
+    parts.push("=== EDUCATION ===");
+    for (const edu of education) {
+      const label = [edu.degree, edu.field, edu.institution].filter(Boolean).join(", ");
+      parts.push(`• ${label}`);
+    }
+    parts.push("");
+  }
+
+  // ── Skills ─────────────────────────────────────────────────────────────────
+  const skills = resume.skills || {};
+  const skillLines = [];
+  if (skills.technical?.length > 0) skillLines.push(`Technical: ${skills.technical.join(", ")}`);
+  if (skills.languages?.length > 0) skillLines.push(`Languages: ${skills.languages.join(", ")}`);
+  if (skills.tools?.length > 0) skillLines.push(`Tools: ${skills.tools.join(", ")}`);
+  if (skillLines.length > 0) {
+    parts.push("=== SKILLS ===");
+    for (const line of skillLines) parts.push(line);
+    parts.push("");
+  }
+
+  // ── Narrative axes ─────────────────────────────────────────────────────────
+  const validAxes = Array.isArray(axes) ? axes : [];
+  if (validAxes.length > 0) {
+    parts.push("=== NARRATIVE AXES (career themes) ===");
+    for (const axis of validAxes) {
+      parts.push(`• "${axis.label}": ${axis.description || ""}`);
+      // Include strength composition if available for richer bridging context
+      if (Array.isArray(axis.strengthComposition) && axis.strengthComposition.length > 0) {
+        const composedOf = axis.strengthComposition.map(s => s.label || s.id).join(", ");
+        parts.push(`    Composed of: ${composedOf}`);
+      }
+      // Include project links if available
+      if (Array.isArray(axis.projectIds) && axis.projectIds.length > 0) {
+        parts.push(`    Appears in: ${axis.projectIds.join(", ")}`);
+      }
+    }
+    parts.push("");
+  }
+
+  // ── Identified strengths ───────────────────────────────────────────────────
+  const validStrengths = Array.isArray(strengths) ? strengths : [];
+  if (validStrengths.length > 0) {
+    parts.push("=== IDENTIFIED STRENGTHS ===");
+    for (const str of validStrengths) {
+      parts.push(`• "${str.label}": ${str.description || ""}`);
+      // Include example bullets for grounded bridging
+      if (Array.isArray(str.exampleBullets) && str.exampleBullets.length > 0) {
+        parts.push(`    Evidence: "${str.exampleBullets[0]}"`);
+      }
+    }
+    parts.push("");
+  }
+
+  // ── Section-level threading summaries ──────────────────────────────────────
+  const validSummaries = Array.isArray(sectionSummaries) ? sectionSummaries : [];
+  if (validSummaries.length > 0) {
+    parts.push("=== SECTION THREADING (dominant themes per item) ===");
+    for (const s of validSummaries) {
+      // Resolve strength/axis IDs to labels for readability
+      const strengthLabels = (s.dominantStrengthIds || []).map(id => {
+        const found = validStrengths.find(str => str.id === id);
+        return found ? found.label : id;
+      });
+      const axisLabels = (s.dominantAxisIds || []).map(id => {
+        const found = validAxes.find(a => a.id === id);
+        return found ? found.label : id;
+      });
+      parts.push(`• [${s.section}] ${s.itemLabel}: strengths=[${strengthLabels.join(", ")}], axes=[${axisLabels.join(", ")}]`);
+    }
+    parts.push("");
+  }
+
+  // ── Decision reasoning from AI sessions ───────────────────────────────────
+  const sessionSummaries = Array.isArray(extra.sessionSummaries) ? extra.sessionSummaries : [];
+  if (sessionSummaries.length > 0) {
+    parts.push("=== DECISION REASONING (from work sessions) ===");
+    parts.push("These show WHY the person made certain choices. Weave relevant reasoning into bridges naturally.");
+    for (const session of sessionSummaries.slice(0, 10)) {
+      const prefix = session.repo ? `[${session.repo}]` : "";
+      if (session.reasoning) {
+        parts.push(`• ${prefix} ${session.reasoning}`);
+      }
+      if (Array.isArray(session.keyDecisions) && session.keyDecisions.length > 0) {
+        for (const decision of session.keyDecisions.slice(0, 2)) {
+          parts.push(`    Decision: ${decision}`);
+        }
+      }
+      if (session.tradeoffs) {
+        parts.push(`    Tradeoff: ${session.tradeoffs}`);
+      }
+    }
+    parts.push("");
+  }
+
+  // ── Thematic connections between sections ─────────────────────────────────
+  const crossSectionThemes = _identifyCrossSectionThemes(sectionSummaries, validStrengths, validAxes);
+  if (crossSectionThemes.length > 0) {
+    parts.push("=== CROSS-SECTION THEMATIC CONNECTIONS ===");
+    parts.push("These themes span multiple sections — ideal connective tissue for bridges.");
+    for (const theme of crossSectionThemes) {
+      parts.push(`• "${theme.label}" appears in both [${theme.sections.join("] and [")}]`);
+      if (theme.items.length > 0) {
+        parts.push(`    Connecting: ${theme.items.join(" ↔ ")}`);
+      }
+    }
+    parts.push("");
+  }
+
+  // ── Pairs to generate with per-pair guidance ──────────────────────────────
+  parts.push("=== SECTION PAIRS NEEDING BRIDGE TEXT ===");
+  parts.push("Generate a smooth 1-2 sentence transition for each pair.");
+  parts.push("If a bridge would feel forced, return an empty string for that pair.");
+  parts.push("Bridges are read in sequence — each should feel like a natural continuation of the document flow.");
+  parts.push("");
+  for (const pair of pairs) {
+    parts.push(`  { from: "${pair.from}", to: "${pair.to}" }`);
+    if (pair.tone) {
+      parts.push(`    TONE_SHIFT: ${pair.tone}`);
+    }
+    if (pair.guidance) {
+      parts.push(`    PAIR_GUIDANCE: ${pair.guidance}`);
+    }
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Identify themes (strengths/axes) that appear in multiple resume sections.
+ * These cross-section themes are the best candidates for bridge connective tissue.
+ *
+ * @param {object[]} sectionSummaries  Section threading summaries
+ * @param {object[]} strengths         Identified strengths
+ * @param {object[]} axes              Narrative axes
+ * @returns {Array<{type: string, id: string, label: string, sections: string[], items: string[]}>}
+ */
+function _identifyCrossSectionThemes(sectionSummaries, strengths, axes) {
+  if (!Array.isArray(sectionSummaries) || sectionSummaries.length === 0) return [];
+
+  const themeMap = new Map(); // id → { type, label, sections: Set, items: [] }
+
+  for (const summary of sectionSummaries) {
+    const section = summary.section;
+    const item = summary.itemLabel;
+
+    for (const sId of summary.dominantStrengthIds || []) {
+      if (!themeMap.has(sId)) {
+        const found = (strengths || []).find(s => s.id === sId);
+        themeMap.set(sId, {
+          type: "strength", id: sId, label: found?.label || sId,
+          sections: new Set(), items: []
+        });
+      }
+      const entry = themeMap.get(sId);
+      entry.sections.add(section);
+      entry.items.push(`${section}:${item}`);
+    }
+
+    for (const aId of summary.dominantAxisIds || []) {
+      if (!themeMap.has(aId)) {
+        const found = (axes || []).find(a => a.id === aId);
+        themeMap.set(aId, {
+          type: "axis", id: aId, label: found?.label || aId,
+          sections: new Set(), items: []
+        });
+      }
+      const entry = themeMap.get(aId);
+      entry.sections.add(section);
+      entry.items.push(`${section}:${item}`);
+    }
+  }
+
+  // Only return themes spanning ≥2 sections
+  return [...themeMap.values()]
+    .filter(t => t.sections.size >= 2)
+    .map(t => ({
+      type: t.type,
+      id: t.id,
+      label: t.label,
+      sections: [...t.sections],
+      items: t.items.slice(0, 4) // Cap for token budget
+    }));
+}
+
+/**
+ * Normalize raw LLM bridge output into the expected shape.
+ *
+ * @param {object[]} rawBridges  Raw LLM output
+ * @param {Array<{from: string, to: string}>} validPairs  Valid section pairs
+ * @returns {SectionBridge[]}
+ */
+function _normalizeBridges(rawBridges, validPairs) {
+  const validPairKeys = new Set(validPairs.map((p) => `${p.from}→${p.to}`));
+  const result = [];
+
+  for (const bridge of Array.isArray(rawBridges) ? rawBridges : []) {
+    if (!bridge || typeof bridge !== "object") continue;
+    const from = typeof bridge.from === "string" ? bridge.from.trim() : "";
+    const to = typeof bridge.to === "string" ? bridge.to.trim() : "";
+    const text = typeof bridge.text === "string" ? bridge.text.trim() : "";
+
+    const key = `${from}→${to}`;
+    if (validPairKeys.has(key)) {
+      result.push({ from, to, text, _source: "system" });
+    }
+  }
+
+  return result;
+}
+
+// Exported for testing
+export {
+  _identifyActiveSectionPairs,
+  _normalizeBridges,
+  _buildBridgesUserMessage,
+  _identifyCrossSectionThemes,
+  _scoreBridgeCoherence,
+  BRIDGE_SECTION_PAIRS
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Full Narrative Threading Pipeline Orchestration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Run the full narrative threading pipeline: evidence episodes → identified
+ * strengths → narrative axes → bullet threading annotations.
+ *
+ * This is the top-level orchestrator that ties together:
+ *   1. Core project extraction (episodes from each repo's work logs)
+ *   2. Cross-repo strength identification (repeated behavioral patterns)
+ *   3. Narrative axis generation (career themes weaving projects + strengths)
+ *   4. Bullet-level threading (annotations linking resume content to evidence)
+ *   5. Evidence grounding validation (flag ungrounded claims)
+ *
+ * User-edited items (strengths, axes) are always preserved unchanged.
+ *
+ * The pipeline gracefully degrades at each stage: if extraction produces no
+ * episodes, strengths will be empty but the pipeline completes. If strengths
+ * produce no axes, threading still runs with available data.
+ *
+ * @param {Object} input
+ * @param {object}   input.resume           The current resume document
+ * @param {object[]} input.workLogEntries   Daily work-log entries (from gatherWorkLogBullets)
+ * @param {object[]} [input.existingStrengths=[]]  Previously identified strengths
+ * @param {object[]} [input.existingAxes=[]]       Previously generated narrative axes
+ * @param {Object}   [options={}]
+ * @param {Function} [options.episodeLlmFn]   Override LLM for episode grouping
+ * @param {Function} [options.projectLlmFn]   Override LLM for project synthesis
+ * @param {Function} [options.strengthLlmFn]  Override LLM for strength identification
+ * @param {Function} [options.axesLlmFn]      Override LLM for narrative axes generation
+ * @returns {Promise<NarrativeThreadingPipelineResult>}
+ *
+ * @typedef {Object} NarrativeThreadingPipelineResult
+ * @property {import("./resumeTypes.mjs").CoreProjectExtractionResult[]} extractionResults
+ *   Per-repo core project extraction results with episodes
+ * @property {import("./resumeTypes.mjs").IdentifiedStrength[]} strengths
+ *   Cross-repo identified strengths (3-5, unified set)
+ * @property {import("./resumeTypes.mjs").NarrativeAxis[]} axes
+ *   Narrative axes (2-3 career themes)
+ * @property {import("./resumeTypes.mjs").NarrativeThreadingResult} threading
+ *   Bullet-level annotations and coverage/grounding metrics
+ * @property {Object} groundingReport
+ *   Evidence grounding validation report
+ * @property {string} pipelineCompletedAt
+ *   ISO 8601 datetime of pipeline completion
+ */
+export async function runNarrativeThreadingPipeline(input, options = {}) {
+  const {
+    resume,
+    workLogEntries = [],
+    existingStrengths = [],
+    existingAxes = []
+  } = input;
+
+  const entries = Array.isArray(workLogEntries) ? workLogEntries : [];
+
+  // ── Step 1: Extract core projects from each repo ──────────────────────────
+  // Discover all repos from work-log entries
+  const repoSet = new Set();
+  for (const entry of entries) {
+    const projects = Array.isArray(entry.projects) ? entry.projects : [];
+    for (const p of projects) {
+      if (typeof p?.repo === "string" && p.repo.trim()) {
+        repoSet.add(p.repo.trim());
+      }
+    }
+  }
+
+  const extractionResults = [];
+  for (const repo of repoSet) {
+    try {
+      const result = await extractCoreProjects(
+        { repo, dailyEntries: entries },
+        {
+          llmFn: options.episodeLlmFn,
+          projectLlmFn: options.projectLlmFn
+        }
+      );
+      if (result.projects.length > 0) {
+        extractionResults.push(result);
+      }
+    } catch (err) {
+      console.warn(
+        `[narrative-pipeline] Core project extraction failed for ${repo} (non-fatal):`,
+        err.message || err
+      );
+      // Continue with other repos — graceful degradation
+    }
+  }
+
+  // ── Step 2: Identify cross-repo strengths ─────────────────────────────────
+  let strengthsResult;
+  try {
+    strengthsResult = await identifyStrengths(
+      {
+        extractionResults,
+        existingStrengths: Array.isArray(existingStrengths)
+          ? existingStrengths
+          : []
+      },
+      { llmFn: options.strengthLlmFn }
+    );
+  } catch (err) {
+    console.warn(
+      "[narrative-pipeline] Strength identification failed (non-fatal):",
+      err.message || err
+    );
+    strengthsResult = {
+      strengths: Array.isArray(existingStrengths) ? existingStrengths : [],
+      totalEpisodes: 0,
+      totalProjects: 0,
+      identifiedAt: new Date().toISOString()
+    };
+  }
+
+  if (!Array.isArray(strengthsResult.strengths) || strengthsResult.strengths.length === 0) {
+    const fallbackStrengths = _deriveFallbackStrengthsFromWorkLogs(
+      entries,
+      Array.isArray(existingStrengths) ? existingStrengths : []
+    );
+    if (fallbackStrengths.length > 0) {
+      strengthsResult = {
+        strengths: fallbackStrengths,
+        totalEpisodes: strengthsResult.totalEpisodes || 0,
+        totalProjects: strengthsResult.totalProjects || 0,
+        identifiedAt: new Date().toISOString()
+      };
+    }
+  }
+
+  // ── Step 3: Generate narrative axes ───────────────────────────────────────
+  // Collect session summaries from work-log entries for decision context
+  const sessionSummaries = _collectSessionSummaries(entries);
+
+  let axesResult;
+  try {
+    axesResult = await generateNarrativeAxes(
+      {
+        extractionResults,
+        strengths: strengthsResult.strengths,
+        existingAxes: Array.isArray(existingAxes) ? existingAxes : [],
+        sessionSummaries
+      },
+      { llmFn: options.axesLlmFn }
+    );
+  } catch (err) {
+    console.warn(
+      "[narrative-pipeline] Narrative axes generation failed (non-fatal):",
+      err.message || err
+    );
+    axesResult = {
+      axes: Array.isArray(existingAxes) ? existingAxes : [],
+      totalProjects: 0,
+      totalStrengths: 0,
+      coverage: { projectCoverage: 0, strengthCoverage: 0, overallCoverage: 0 },
+      complementarity: { maxOverlap: 0, isComplementary: true },
+      generatedAt: new Date().toISOString()
+    };
+  }
+
+  // ── Step 4: Weave narrative threads through resume bullets ────────────────
+  const threading = weaveNarrativeThreads({
+    resume,
+    strengths: strengthsResult.strengths,
+    axes: axesResult.axes,
+    extractionResults
+  });
+
+  // ── Step 5: Validate evidence grounding ───────────────────────────────────
+  const groundingReport = _validateEvidenceGrounding(
+    strengthsResult.strengths,
+    axesResult.axes,
+    threading
+  );
+
+  // ── Step 6: Generate section bridge text ─────────────────────────────────
+  let bridgeResult;
+  try {
+    bridgeResult = await generateSectionBridges(
+      {
+        resume,
+        strengths: strengthsResult.strengths,
+        axes: axesResult.axes,
+        sectionSummaries: threading.sectionSummaries || [],
+        existingBridges: options.existingBridges || [],
+        sessionSummaries,
+        extractionResults
+      },
+      { llmFn: options.bridgeLlmFn }
+    );
+  } catch (err) {
+    console.warn(
+      "[narrative-pipeline] Section bridge generation failed (non-fatal):",
+      err.message || err
+    );
+    bridgeResult = {
+      bridges: options.existingBridges || [],
+      pairCount: 0,
+      generatedCount: 0,
+      generatedAt: new Date().toISOString()
+    };
+  }
+
+  // ── Step 7: Coherence validation pass ──────────────────────────────────────
+  // Scores structural flow, redundancy, and tonal consistency of the final
+  // assembled output.  Auto-fixes are applied to a normalized copy of the
+  // resume; user-edited content is never mutated.
+  let coherenceReport;
+  try {
+    coherenceReport = validateResumeCoherence(resume, {
+      strengths: strengthsResult.strengths,
+      axes: axesResult.axes,
+      sectionBridges: bridgeResult.bridges,
+    });
+
+    if (coherenceReport.autoFixes.length > 0) {
+      console.info(
+        `[narrative-pipeline] Coherence validation applied ${coherenceReport.autoFixes.length} auto-fix(es) — ` +
+        `score: ${coherenceReport.overallScore} (${coherenceReport.grade})`
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[narrative-pipeline] Coherence validation failed (non-fatal):",
+      err.message || err
+    );
+    coherenceReport = null;
+  }
+
+  return {
+    extractionResults,
+    strengths: strengthsResult.strengths,
+    axes: axesResult.axes,
+    threading,
+    groundingReport,
+    sectionBridges: bridgeResult.bridges,
+    coherenceReport: coherenceReport ? {
+      overallScore: coherenceReport.overallScore,
+      grade: coherenceReport.grade,
+      structuralFlow: coherenceReport.structuralFlow,
+      redundancy: coherenceReport.redundancy,
+      tonalConsistency: coherenceReport.tonalConsistency,
+      issueCount: coherenceReport.issues.length,
+      autoFixCount: coherenceReport.autoFixes.length,
+      issues: coherenceReport.issues,
+      autoFixes: coherenceReport.autoFixes,
+    } : null,
+    normalizedResume: coherenceReport?.normalized ?? null,
+    pipelineCompletedAt: new Date().toISOString()
+  };
+}
+
+function _deriveFallbackStrengthsFromWorkLogs(entries, existingStrengths = []) {
+  const corpus = [];
+  const repoSet = new Set();
+  const projectIds = [];
+  const evidenceIds = [];
+
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    evidenceIds.push(`fallback-${entry.date}`);
+    const highlights = entry.highlights || {};
+    corpus.push(
+      ...(highlights.keyChanges || []),
+      ...(highlights.businessOutcomes || []),
+      ...(highlights.aiReview || []),
+      ...(highlights.workingStyleSignals || [])
+    );
+
+    for (const project of Array.isArray(entry.projects) ? entry.projects : []) {
+      if (project?.repo) repoSet.add(project.repo);
+      if (project?.repo) projectIds.push(`${project.repo}-${entry.date}`);
+      for (const commit of Array.isArray(project.commits) ? project.commits : []) {
+        if (commit?.subject) corpus.push(commit.subject);
+      }
+    }
+  }
+
+  const joined = corpus.join(" ");
+  const templates = [
+    {
+      label: "Reliability-First Engineering",
+      test: /(안정|예외|오류|retry|guard|sentry|filter|offline|품질)/i,
+      description: "예외 상황과 운영 리스크를 먼저 줄이는 선택이 반복적으로 드러납니다."
+    },
+    {
+      label: "Systems Framing",
+      test: /(구조|흐름|파이프라인|재정비|재구성|로드맵|설문|정합성|workflow)/i,
+      description: "개별 수정 대신 전체 흐름과 구조를 함께 정리하는 방식이 일관되게 보입니다."
+    },
+    {
+      label: "Product Judgment",
+      test: /(사용자|운영|가시성|브랜드|기대치|UX|UI|온보딩|커뮤니케이션)/i,
+      description: "사용자 경험과 운영 맥락을 함께 고려하는 제품 판단이 반복됩니다."
+    },
+    {
+      label: "Workflow Automation",
+      test: /(자동화|도구|MCP|스크립트|설치|가이드|CLI|Codex|Claude)/i,
+      description: "반복 작업과 온보딩 흐름을 도구와 문서로 구조화하려는 경향이 보입니다."
+    }
+  ];
+
+  const fresh = templates
+    .filter((template) => template.test.test(joined))
+    .slice(0, 3)
+    .map((template, index) => ({
+      id: `fallback-str-${index}`,
+      label: template.label,
+      description: template.description,
+      reasoning: `${repoSet.size || 1}개 저장소와 최근 작업 로그 전반에서 같은 패턴이 반복되었습니다. LLM 강점 추출이 비어 있을 때도 resume-facing 요약이 가능하도록 유지하는 최소 fallback입니다.`,
+      frequency: Math.max(1, evidenceIds.length),
+      behaviorCluster: [],
+      evidenceIds: evidenceIds.slice(0, 6),
+      projectIds: projectIds.slice(0, 6),
+      repos: [...repoSet].sort(),
+      exampleBullets: [],
+      _source: "system"
+    }));
+
+  if (fresh.length === 0) return Array.isArray(existingStrengths) ? existingStrengths : [];
+  return _mergeStrengths(Array.isArray(existingStrengths) ? existingStrengths : [], fresh);
+}
+
+/**
+ * Collect AI session summaries from daily work-log entries for decision
+ * reasoning context in narrative axes generation.
+ *
+ * @param {object[]} entries  Daily work-log entries
+ * @returns {object[]}  Session summaries with repo, summary, reasoning fields
+ */
+function _collectSessionSummaries(entries) {
+  const summaries = [];
+
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!entry || typeof entry !== "object") continue;
+    const date = entry.date;
+    const aiSessions = entry.aiSessions;
+    if (!aiSessions) continue;
+
+    const allSessions = [
+      ...(Array.isArray(aiSessions.codex) ? aiSessions.codex : []),
+      ...(Array.isArray(aiSessions.claude) ? aiSessions.claude : [])
+    ];
+
+    for (const session of allSessions) {
+      if (!session) continue;
+      const summary = session.summary || "";
+      const reasoning = session.reasoning || "";
+      const keyDecisions = Array.isArray(session.keyDecisions)
+        ? session.keyDecisions
+        : [];
+
+      if (summary || reasoning || keyDecisions.length > 0) {
+        summaries.push({
+          date,
+          tool: session.tool || "AI",
+          repo: session.cwd
+            ? _extractRepoFromCwd(session.cwd)
+            : null,
+          summary,
+          reasoning,
+          keyDecisions,
+          tradeoffs: session.tradeoffs || null
+        });
+      }
+    }
+  }
+
+  return summaries.slice(0, 20); // Cap to stay within token budget
+}
+
+/**
+ * Extract repo name from a session cwd path.
+ * @param {string} cwd
+ * @returns {string|null}
+ */
+function _extractRepoFromCwd(cwd) {
+  if (!cwd || typeof cwd !== "string") return null;
+  // Extract last path segment as repo name
+  const segments = cwd.replace(/\/$/, "").split("/");
+  const last = segments[segments.length - 1];
+  return last && last.trim() ? last.trim() : null;
+}
+
+/**
+ * Validate evidence grounding: ensure all strengths and axes are backed
+ * by actual resume bullet annotations.
+ *
+ * Produces a grounding report that identifies:
+ *   - Well-grounded: strengths/axes with ≥2 bullet annotations
+ *   - Weakly grounded: strengths/axes with 1 bullet annotation
+ *   - Ungrounded: strengths/axes with 0 bullet annotations (evidence gap)
+ *
+ * @param {object[]} strengths   Identified strengths
+ * @param {object[]} axes        Narrative axes
+ * @param {import("./resumeTypes.mjs").NarrativeThreadingResult} threading
+ * @returns {Object}  Grounding report
+ */
+function _validateEvidenceGrounding(strengths, axes, threading) {
+  const validStrengths = Array.isArray(strengths) ? strengths : [];
+  const validAxes = Array.isArray(axes) ? axes : [];
+
+  const strengthGrounding = {};
+  const axisGrounding = {};
+
+  // Compute per-strength grounding
+  for (const str of validStrengths) {
+    const coverage = threading.strengthCoverage?.[str.id];
+    const bulletCount = coverage?.bulletCount || 0;
+    const status = bulletCount >= 2 ? "well-grounded"
+      : bulletCount === 1 ? "weakly-grounded"
+      : "ungrounded";
+
+    strengthGrounding[str.id] = {
+      label: str.label,
+      bulletCount,
+      status,
+      sections: coverage?.sections || [],
+      connectedAxisIds: coverage?.axisIds || []
+    };
+  }
+
+  // Compute per-axis grounding
+  for (const axis of validAxes) {
+    const coverage = threading.axisCoverage?.[axis.id];
+    const bulletCount = coverage?.bulletCount || 0;
+    const status = bulletCount >= 2 ? "well-grounded"
+      : bulletCount === 1 ? "weakly-grounded"
+      : "ungrounded";
+
+    axisGrounding[axis.id] = {
+      label: axis.label,
+      bulletCount,
+      status,
+      sections: coverage?.sections || [],
+      connectedStrengthIds: coverage?.strengthIds || []
+    };
+  }
+
+  // Summary metrics
+  const totalItems = validStrengths.length + validAxes.length;
+  const wellGroundedCount = [
+    ...Object.values(strengthGrounding),
+    ...Object.values(axisGrounding)
+  ].filter((g) => g.status === "well-grounded").length;
+
+  const weaklyGroundedCount = [
+    ...Object.values(strengthGrounding),
+    ...Object.values(axisGrounding)
+  ].filter((g) => g.status === "weakly-grounded").length;
+
+  const ungroundedCount = [
+    ...Object.values(strengthGrounding),
+    ...Object.values(axisGrounding)
+  ].filter((g) => g.status === "ungrounded").length;
+
+  return {
+    strengthGrounding,
+    axisGrounding,
+    summary: {
+      totalItems,
+      wellGroundedCount,
+      weaklyGroundedCount,
+      ungroundedCount,
+      groundedRatio: totalItems > 0
+        ? Math.round(((wellGroundedCount + weaklyGroundedCount) / totalItems) * 100) / 100
+        : 1
+    }
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Coherence Validation Pass
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Scores and thresholds for the coherence validation pass.
+ *
+ * Each dimension is scored 0-1 independently, then combined into a weighted
+ * overall score with letter grade.  The narrative coherence sub-dimension is
+ * folded into structural flow (it checks that strengths/axes actually connect
+ * to resume content rather than floating as disconnected claims).
+ *
+ * @type {Object}
+ */
+const COHERENCE_WEIGHTS = {
+  structuralFlow:   0.30,
+  redundancy:       0.35,
+  tonalConsistency: 0.35,
+};
+
+/**
+ * Similarity threshold above which two bullets are considered redundant.
+ * Uses tokenJaccardSimilarity (word-overlap based).
+ */
+const REDUNDANCY_SIMILARITY_THRESHOLD = 0.55;
+
+/**
+ * Maximum acceptable redundant pair ratio before the score is penalized hard.
+ * For example, if 4 out of 20 pairs are redundant → ratio = 0.2 → moderate penalty.
+ */
+const REDUNDANCY_RATIO_HARD_PENALTY = 0.15;
+
+/**
+ * Minimum bullets per experience entry to avoid fragmentation flag.
+ */
+const MIN_BULLETS_PER_ROLE = 2;
+
+/**
+ * Minimum bullets per project to avoid fragmentation flag.
+ */
+const MIN_BULLETS_PER_PROJECT = 2;
+
+// ─── Public: full coherence validation ──────────────────────────────────────
+
+/**
+ * Run a coherence validation pass on the final assembled resume output.
+ *
+ * Scores three dimensions:
+ *   1. **Structural flow** — logical ordering, section completeness,
+ *      anti-fragmentation (thin entries), chronological ordering
+ *   2. **Redundancy** — duplicate/near-duplicate bullets across and within
+ *      sections, repeated summary-bullet overlap
+ *   3. **Tonal consistency** — voice compliance via resumeVoice, cross-section
+ *      tense/perspective uniformity
+ *
+ * Returns a scored report with per-issue details and an auto-fixed version
+ * of the resume (only system-sourced content is mutated; user edits are
+ * never touched).
+ *
+ * @param {Object} resume  The final assembled resume document
+ * @param {Object} [context={}]  Optional context for richer validation
+ * @param {object[]} [context.strengths]    Identified strengths for grounding checks
+ * @param {object[]} [context.axes]         Narrative axes for theme coherence
+ * @param {object[]} [context.sectionBridges]  Section bridge text
+ * @returns {CoherenceValidationResult}
+ *
+ * @typedef {Object} CoherenceValidationResult
+ * @property {number}   overallScore     Combined score (0-1)
+ * @property {string}   grade            Letter grade: A (≥0.9), B (≥0.75), C (≥0.6), D (<0.6)
+ * @property {CoherenceDimensionScore} structuralFlow
+ * @property {CoherenceDimensionScore} redundancy
+ * @property {CoherenceDimensionScore} tonalConsistency
+ * @property {CoherenceIssue[]}  issues        All detected issues (sorted by severity)
+ * @property {CoherenceAutoFix[]} autoFixes    Auto-fixes that were applied to the normalized resume
+ * @property {object}            normalized    The auto-fixed resume (user edits untouched)
+ * @property {string}            validatedAt   ISO 8601 timestamp
+ *
+ * @typedef {Object} CoherenceDimensionScore
+ * @property {number}   score     0-1 score for this dimension
+ * @property {string[]} issues    Issues found in this dimension
+ *
+ * @typedef {Object} CoherenceIssue
+ * @property {string} dimension    "structural" | "redundancy" | "tonal"
+ * @property {string} severity     "error" | "warning" | "info"
+ * @property {string} path         JSONPath-like location (e.g. "experience[0].bullets[1]")
+ * @property {string} message      Human-readable description
+ * @property {boolean} autoFixable Whether this issue was auto-fixed
+ *
+ * @typedef {Object} CoherenceAutoFix
+ * @property {string} path         Location that was fixed
+ * @property {string} action       What was done (e.g. "removed_duplicate", "normalized_voice")
+ * @property {string} before       Original text (truncated)
+ * @property {string} after        Fixed text (truncated)
+ */
+export function validateResumeCoherence(resume, context = {}) {
+  if (!resume || typeof resume !== "object") {
+    return {
+      overallScore: 0,
+      grade: "D",
+      structuralFlow: { score: 0, issues: ["Invalid resume object"] },
+      redundancy: { score: 0, issues: ["Invalid resume object"] },
+      tonalConsistency: { score: 0, issues: ["Invalid resume object"] },
+      issues: [{
+        dimension: "structural",
+        severity: "error",
+        path: "",
+        message: "Invalid resume object — cannot validate",
+        autoFixable: false,
+      }],
+      autoFixes: [],
+      normalized: resume,
+      validatedAt: new Date().toISOString(),
+    };
+  }
+
+  // Deep clone for auto-fixing (only system content gets mutated)
+  const normalized = JSON.parse(JSON.stringify(resume));
+  const allIssues = [];
+  const autoFixes = [];
+
+  // ── Dimension 1: Structural Flow ────────────────────────────────────────
+  const structuralResult = _scoreStructuralFlow(normalized, allIssues, autoFixes, context);
+
+  // ── Dimension 2: Redundancy ─────────────────────────────────────────────
+  const redundancyResult = _scoreRedundancy(normalized, allIssues, autoFixes, context);
+
+  // ── Dimension 3: Tonal Consistency ──────────────────────────────────────
+  const tonalResult = _scoreTonalConsistency(normalized, allIssues, autoFixes, context);
+
+  // ── Combined score ──────────────────────────────────────────────────────
+  const overallScore = Math.round(
+    (structuralResult.score * COHERENCE_WEIGHTS.structuralFlow +
+     redundancyResult.score * COHERENCE_WEIGHTS.redundancy +
+     tonalResult.score * COHERENCE_WEIGHTS.tonalConsistency) * 100
+  ) / 100;
+
+  const grade = overallScore >= 0.9
+    ? "A"
+    : overallScore >= 0.75
+      ? "B"
+      : overallScore >= 0.6
+        ? "C"
+        : "D";
+
+  // Sort issues by severity (error > warning > info)
+  const severityOrder = { error: 0, warning: 1, info: 2 };
+  allIssues.sort((a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3));
+
+  return {
+    overallScore,
+    grade,
+    structuralFlow: structuralResult,
+    redundancy: redundancyResult,
+    tonalConsistency: tonalResult,
+    issues: allIssues,
+    autoFixes,
+    normalized,
+    validatedAt: new Date().toISOString(),
+  };
+}
+
+// ─── Structural Flow Scoring ────────────────────────────────────────────────
+
+/**
+ * Score structural flow: section completeness, chronological ordering,
+ * anti-fragmentation (thin entries), summary presence, and skills coverage.
+ *
+ * @param {object} resume      Mutable resume (auto-fixes applied in place)
+ * @param {CoherenceIssue[]} issues   Accumulated issues array
+ * @param {CoherenceAutoFix[]} fixes  Accumulated fixes array
+ * @param {Object} [context={}]  Narrative context (strengths, axes, bridges)
+ * @returns {{ score: number, issues: string[] }}
+ */
+function _scoreStructuralFlow(resume, issues, fixes, context = {}) {
+  const dimensionIssues = [];
+  let penalties = 0;
+
+  // ── 1. Required sections present ──────────────────────────────────────────
+  const requiredSections = ["summary", "experience", "skills"];
+  for (const section of requiredSections) {
+    const val = resume[section];
+    const isEmpty =
+      val === undefined ||
+      val === null ||
+      val === "" ||
+      (Array.isArray(val) && val.length === 0) ||
+      (typeof val === "object" && !Array.isArray(val) && Object.keys(val).length === 0);
+
+    if (isEmpty) {
+      const msg = `Missing or empty required section: ${section}`;
+      dimensionIssues.push(msg);
+      issues.push({
+        dimension: "structural",
+        severity: "error",
+        path: section,
+        message: msg,
+        autoFixable: false,
+      });
+      penalties += 0.2;
+    }
+  }
+
+  // ── 2. Summary quality check ──────────────────────────────────────────────
+  if (resume.summary && typeof resume.summary === "string") {
+    const sentenceCount = (resume.summary.match(/[.!?]+/g) || []).length;
+    if (sentenceCount < 2) {
+      const msg = `Summary too short: ${sentenceCount} sentence(s) — should be 2-4`;
+      dimensionIssues.push(msg);
+      issues.push({
+        dimension: "structural",
+        severity: "warning",
+        path: "summary",
+        message: msg,
+        autoFixable: false,
+      });
+      penalties += 0.05;
+    } else if (sentenceCount > 5) {
+      const msg = `Summary too long: ${sentenceCount} sentences — should be 2-4`;
+      dimensionIssues.push(msg);
+      issues.push({
+        dimension: "structural",
+        severity: "warning",
+        path: "summary",
+        message: msg,
+        autoFixable: false,
+      });
+      penalties += 0.05;
+    }
+  }
+
+  // ── 3. Anti-fragmentation: thin experience entries ────────────────────────
+  if (Array.isArray(resume.experience)) {
+    for (let i = 0; i < resume.experience.length; i++) {
+      const entry = resume.experience[i];
+      const bulletCount = Array.isArray(entry.bullets) ? entry.bullets.length : 0;
+      if (bulletCount < MIN_BULLETS_PER_ROLE) {
+        const label = entry.company || entry.title || `entry ${i}`;
+        const msg = `Experience "${label}" has only ${bulletCount} bullet(s) — minimum ${MIN_BULLETS_PER_ROLE} recommended`;
+        dimensionIssues.push(msg);
+        issues.push({
+          dimension: "structural",
+          severity: bulletCount === 0 ? "error" : "warning",
+          path: `experience[${i}]`,
+          message: msg,
+          autoFixable: false,
+        });
+        penalties += bulletCount === 0 ? 0.15 : 0.05;
+      }
+    }
+
+    // ── 4. Chronological ordering check ─────────────────────────────────────
+    const dates = resume.experience
+      .map((e, i) => ({
+        idx: i,
+        end: e.end_date || "9999-12-31",
+        start: e.start_date || "0000-01-01",
+      }))
+      .filter((d) => d.end !== "9999-12-31" || d.start !== "0000-01-01");
+
+    let outOfOrder = false;
+    for (let i = 1; i < dates.length; i++) {
+      // Expected: reverse chronological (most recent first)
+      if (dates[i].end > dates[i - 1].end) {
+        outOfOrder = true;
+        break;
+      }
+    }
+    if (outOfOrder && dates.length > 1) {
+      const msg = "Experience entries are not in reverse-chronological order";
+      dimensionIssues.push(msg);
+      issues.push({
+        dimension: "structural",
+        severity: "warning",
+        path: "experience",
+        message: msg,
+        autoFixable: true,
+      });
+      penalties += 0.1;
+
+      // Auto-fix: re-sort by end_date descending (only if no user entries are present)
+      const hasUserEntries = resume.experience.some(
+        (e) => e._source === "user" || e._source === "user_approved"
+      );
+      if (!hasUserEntries) {
+        resume.experience.sort((a, b) => {
+          const endA = a.end_date || "9999-12-31";
+          const endB = b.end_date || "9999-12-31";
+          return endB.localeCompare(endA);
+        });
+        fixes.push({
+          path: "experience",
+          action: "reordered_chronologically",
+          before: "out-of-order experience entries",
+          after: "reverse-chronological order",
+        });
+      }
+    }
+  }
+
+  // ── 5. Anti-fragmentation: thin projects ──────────────────────────────────
+  if (Array.isArray(resume.projects)) {
+    for (let i = 0; i < resume.projects.length; i++) {
+      const proj = resume.projects[i];
+      const bulletCount = Array.isArray(proj.bullets) ? proj.bullets.length : 0;
+      const hasDesc = proj.description && proj.description.trim().length > 10;
+      if (bulletCount < MIN_BULLETS_PER_PROJECT && !hasDesc) {
+        const name = proj.name || proj.title || `project ${i}`;
+        const msg = `Project "${name}" has only ${bulletCount} bullet(s) and no description — may be too thin`;
+        dimensionIssues.push(msg);
+        issues.push({
+          dimension: "structural",
+          severity: bulletCount === 0 ? "error" : "warning",
+          path: `projects[${i}]`,
+          message: msg,
+          autoFixable: false,
+        });
+        penalties += bulletCount === 0 ? 0.1 : 0.03;
+      }
+    }
+  }
+
+  // ── 6. Skills section quality ─────────────────────────────────────────────
+  if (resume.skills && typeof resume.skills === "object") {
+    const tech = Array.isArray(resume.skills.technical) ? resume.skills.technical : [];
+    if (tech.length === 0) {
+      const msg = "Skills section has no technical skills listed";
+      dimensionIssues.push(msg);
+      issues.push({
+        dimension: "structural",
+        severity: "warning",
+        path: "skills.technical",
+        message: msg,
+        autoFixable: false,
+      });
+      penalties += 0.05;
+    }
+  }
+
+  // ── 7. Narrative coherence — strengths grounded in resume content ────────
+  const ctxStrengths = Array.isArray(context.strengths) ? context.strengths : [];
+  const ctxAxes = Array.isArray(context.axes) ? context.axes : [];
+  const ctxBridges = Array.isArray(context.sectionBridges) ? context.sectionBridges : [];
+
+  if (ctxStrengths.length > 0 || ctxAxes.length > 0) {
+    // Collect all resume bullet text for cross-reference
+    const allBulletTexts = _collectAllBulletTexts(resume);
+    const allBulletLower = allBulletTexts.map((b) => b.toLowerCase());
+
+    // 7a. Check each strength has at least one bullet that mentions its label
+    //     or behavior cluster keywords (light heuristic — not requiring exact match)
+    for (const str of ctxStrengths) {
+      if (str._source === "user" || str._source === "user_approved") continue;
+      const labelWords = (str.label || "")
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 3);
+      const clusterWords = (Array.isArray(str.behaviorCluster) ? str.behaviorCluster : [])
+        .flatMap((b) => b.toLowerCase().split(/\s+/).filter((w) => w.length > 3));
+
+      const searchTerms = [...new Set([...labelWords, ...clusterWords])];
+      if (searchTerms.length === 0) continue;
+
+      const hasMatch = allBulletLower.some((bullet) =>
+        searchTerms.some((term) => bullet.includes(term))
+      );
+      if (!hasMatch) {
+        const msg = `Strength "${str.label}" has no matching bullet in the resume — may appear ungrounded`;
+        dimensionIssues.push(msg);
+        issues.push({
+          dimension: "structural",
+          severity: "warning",
+          path: `strengths[${str.id}]`,
+          message: msg,
+          autoFixable: false,
+        });
+        penalties += 0.03;
+      }
+    }
+
+    // 7b. Check each narrative axis references at least one project or experience
+    for (const axis of ctxAxes) {
+      if (axis._source === "user" || axis._source === "user_approved") continue;
+      const axisProjectIds = Array.isArray(axis.projectIds) ? axis.projectIds : [];
+      const axisStrengthIds = Array.isArray(axis.strengthIds) ? axis.strengthIds : [];
+
+      // An axis with no connected strengths or projects is structurally orphaned
+      if (axisStrengthIds.length === 0 && axisProjectIds.length === 0) {
+        const msg = `Narrative axis "${axis.label}" has no connected strengths or projects — structurally orphaned`;
+        dimensionIssues.push(msg);
+        issues.push({
+          dimension: "structural",
+          severity: "warning",
+          path: `axes[${axis.id}]`,
+          message: msg,
+          autoFixable: false,
+        });
+        penalties += 0.03;
+      }
+    }
+
+    // 7c. Overall narrative coverage: at least half of strengths should be
+    //     connected to resume content
+    if (ctxStrengths.length >= 2) {
+      const connectedCount = ctxStrengths.filter((str) => {
+        const labelWords = (str.label || "")
+          .toLowerCase()
+          .split(/\s+/)
+          .filter((w) => w.length > 3);
+        return allBulletLower.some((bullet) =>
+          labelWords.some((term) => bullet.includes(term))
+        );
+      }).length;
+
+      const coverageRatio = connectedCount / ctxStrengths.length;
+      if (coverageRatio < 0.5) {
+        const msg = `Low narrative coverage: only ${connectedCount}/${ctxStrengths.length} strengths have matching resume content`;
+        dimensionIssues.push(msg);
+        issues.push({
+          dimension: "structural",
+          severity: "warning",
+          path: "strengths",
+          message: msg,
+          autoFixable: false,
+        });
+        penalties += 0.05;
+      }
+    }
+  }
+
+  // ── 8. Section bridge completeness ──────────────────────────────────────────
+  if (ctxBridges.length > 0) {
+    const emptyBridges = ctxBridges.filter(
+      (b) => !b.text || b.text.trim().length < 10
+    );
+    if (emptyBridges.length > 0) {
+      const msg = `${emptyBridges.length} section bridge(s) have empty or trivial text`;
+      dimensionIssues.push(msg);
+      issues.push({
+        dimension: "structural",
+        severity: "info",
+        path: "sectionBridges",
+        message: msg,
+        autoFixable: false,
+      });
+      penalties += 0.02;
+    }
+  }
+
+  const score = Math.max(0, Math.min(1, 1 - penalties));
+  return { score: Math.round(score * 100) / 100, issues: dimensionIssues };
+}
+
+/**
+ * Collect all bullet texts from experience and projects into a flat array.
+ * @param {object} resume
+ * @returns {string[]}
+ */
+function _collectAllBulletTexts(resume) {
+  const texts = [];
+  if (Array.isArray(resume.experience)) {
+    for (const entry of resume.experience) {
+      if (Array.isArray(entry.bullets)) {
+        for (const b of entry.bullets) {
+          if (typeof b === "string" && b.trim()) texts.push(b);
+        }
+      }
+    }
+  }
+  if (Array.isArray(resume.projects)) {
+    for (const proj of resume.projects) {
+      if (Array.isArray(proj.bullets)) {
+        for (const b of proj.bullets) {
+          if (typeof b === "string" && b.trim()) texts.push(b);
+        }
+      }
+    }
+  }
+  return texts;
+}
+
+// ─── Redundancy Scoring ─────────────────────────────────────────────────────
+
+/**
+ * Score redundancy: detect duplicate/near-duplicate bullets within and across
+ * sections, summary-bullet overlap, and repeated project descriptions.
+ *
+ * Near-duplicates are detected using tokenJaccardSimilarity. Auto-fix removes
+ * the shorter duplicate from system-sourced content only.
+ *
+ * @param {object} resume      Mutable resume (auto-fixes applied in place)
+ * @param {CoherenceIssue[]} issues   Accumulated issues array
+ * @param {CoherenceAutoFix[]} fixes  Accumulated fixes array
+ * @param {Object} [context={}]  Narrative context (strengths, axes)
+ * @returns {{ score: number, issues: string[] }}
+ */
+function _scoreRedundancy(resume, issues, fixes, context = {}) {
+  const dimensionIssues = [];
+
+  // Collect all bullets with their paths and source info
+  const bulletEntries = [];
+
+  if (Array.isArray(resume.experience)) {
+    for (let i = 0; i < resume.experience.length; i++) {
+      const entry = resume.experience[i];
+      if (!Array.isArray(entry.bullets)) continue;
+      for (let j = 0; j < entry.bullets.length; j++) {
+        if (entry.bullets[j] && typeof entry.bullets[j] === "string") {
+          bulletEntries.push({
+            text: entry.bullets[j],
+            path: `experience[${i}].bullets[${j}]`,
+            section: "experience",
+            sectionIdx: i,
+            bulletIdx: j,
+            source: entry._source || "system",
+            ref: { arr: entry.bullets, idx: j },
+          });
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(resume.projects)) {
+    for (let i = 0; i < resume.projects.length; i++) {
+      const proj = resume.projects[i];
+      if (!Array.isArray(proj.bullets)) continue;
+      for (let j = 0; j < proj.bullets.length; j++) {
+        if (proj.bullets[j] && typeof proj.bullets[j] === "string") {
+          bulletEntries.push({
+            text: proj.bullets[j],
+            path: `projects[${i}].bullets[${j}]`,
+            section: "projects",
+            sectionIdx: i,
+            bulletIdx: j,
+            source: proj._source || "system",
+            ref: { arr: proj.bullets, idx: j },
+          });
+        }
+      }
+    }
+  }
+
+  // ── Pairwise redundancy check ─────────────────────────────────────────────
+  const redundantPairs = [];
+  const indicesToRemove = new Set();
+
+  for (let i = 0; i < bulletEntries.length; i++) {
+    for (let j = i + 1; j < bulletEntries.length; j++) {
+      const sim = tokenJaccardSimilarity(bulletEntries[i].text, bulletEntries[j].text);
+      if (sim >= REDUNDANCY_SIMILARITY_THRESHOLD) {
+        redundantPairs.push({ a: i, b: j, similarity: sim });
+
+        const entryA = bulletEntries[i];
+        const entryB = bulletEntries[j];
+        const crossSection = entryA.section !== entryB.section ||
+                             entryA.sectionIdx !== entryB.sectionIdx;
+
+        const msg = crossSection
+          ? `Near-duplicate bullets across sections: "${entryA.text.slice(0, 50)}…" ↔ "${entryB.text.slice(0, 50)}…" (${Math.round(sim * 100)}% overlap)`
+          : `Near-duplicate bullets within ${entryA.section}[${entryA.sectionIdx}]: "${entryA.text.slice(0, 50)}…" ↔ "${entryB.text.slice(0, 50)}…" (${Math.round(sim * 100)}% overlap)`;
+
+        dimensionIssues.push(msg);
+        issues.push({
+          dimension: "redundancy",
+          severity: sim >= 0.85 ? "error" : "warning",
+          path: `${entryA.path} ↔ ${entryB.path}`,
+          message: msg,
+          autoFixable: true,
+        });
+
+        // Mark the shorter/weaker bullet for removal (only if system-sourced)
+        const removeIdx = entryA.text.length <= entryB.text.length ? i : j;
+        const removeEntry = bulletEntries[removeIdx];
+        if (removeEntry.source !== "user" && removeEntry.source !== "user_approved") {
+          indicesToRemove.add(removeIdx);
+        }
+      }
+    }
+  }
+
+  // Apply auto-fix: remove marked duplicates (iterate in reverse to preserve indices)
+  if (indicesToRemove.size > 0) {
+    // Group removals by their containing array to handle index shifts
+    const removalsByArray = new Map();
+    for (const idx of indicesToRemove) {
+      const entry = bulletEntries[idx];
+      const key = `${entry.section}[${entry.sectionIdx}]`;
+      if (!removalsByArray.has(key)) {
+        removalsByArray.set(key, []);
+      }
+      removalsByArray.get(key).push(entry);
+    }
+
+    for (const entries of removalsByArray.values()) {
+      // Sort by bulletIdx descending so splicing doesn't shift later indices
+      entries.sort((a, b) => b.bulletIdx - a.bulletIdx);
+      for (const entry of entries) {
+        const removed = entry.ref.arr.splice(entry.bulletIdx, 1);
+        fixes.push({
+          path: entry.path,
+          action: "removed_duplicate",
+          before: (removed[0] || "").slice(0, 100),
+          after: "(removed — near-duplicate of another bullet)",
+        });
+      }
+    }
+  }
+
+  // ── Summary-bullet overlap check ──────────────────────────────────────────
+  if (resume.summary && typeof resume.summary === "string") {
+    const summaryLower = resume.summary.toLowerCase();
+    for (const entry of bulletEntries) {
+      if (indicesToRemove.has(bulletEntries.indexOf(entry))) continue;
+      // Check if any bullet text appears nearly verbatim in the summary
+      const bulletLower = entry.text.toLowerCase().trim();
+      if (bulletLower.length > 30 && summaryLower.includes(bulletLower)) {
+        const msg = `Summary contains verbatim bullet text: "${entry.text.slice(0, 60)}…"`;
+        dimensionIssues.push(msg);
+        issues.push({
+          dimension: "redundancy",
+          severity: "warning",
+          path: `summary ↔ ${entry.path}`,
+          message: msg,
+          autoFixable: false,
+        });
+      }
+    }
+  }
+
+  // ── Strength/axis supporting bullet overlap ─────────────────────────────────
+  // Check if strength exampleBullets or axis supportingBullets are verbatim
+  // copies of resume bullets (they should be references, not duplicates).
+  const ctxStrengths = Array.isArray(context.strengths) ? context.strengths : [];
+  const ctxAxes = Array.isArray(context.axes) ? context.axes : [];
+
+  const resumeBulletSet = new Set(
+    bulletEntries.filter((e) => !indicesToRemove.has(bulletEntries.indexOf(e)))
+      .map((e) => e.text.toLowerCase().trim())
+  );
+
+  let metadataOverlapCount = 0;
+
+  for (const str of ctxStrengths) {
+    const examples = Array.isArray(str.exampleBullets) ? str.exampleBullets : [];
+    for (const ex of examples) {
+      if (!ex || typeof ex !== "string") continue;
+      // Find near-verbatim matches in resume bullets
+      for (const entry of bulletEntries) {
+        if (indicesToRemove.has(bulletEntries.indexOf(entry))) continue;
+        const sim = tokenJaccardSimilarity(ex, entry.text);
+        if (sim >= 0.85) {
+          metadataOverlapCount++;
+          const msg = `Strength "${str.label}" exampleBullet is near-identical to ${entry.path} (${Math.round(sim * 100)}% overlap) — consider differentiating`;
+          dimensionIssues.push(msg);
+          issues.push({
+            dimension: "redundancy",
+            severity: "info",
+            path: `strengths[${str.id}].exampleBullets ↔ ${entry.path}`,
+            message: msg,
+            autoFixable: false,
+          });
+          break; // One flag per example bullet is enough
+        }
+      }
+    }
+  }
+
+  for (const axis of ctxAxes) {
+    const supporting = Array.isArray(axis.supportingBullets) ? axis.supportingBullets : [];
+    for (const sb of supporting) {
+      if (!sb || typeof sb !== "string") continue;
+      for (const entry of bulletEntries) {
+        if (indicesToRemove.has(bulletEntries.indexOf(entry))) continue;
+        const sim = tokenJaccardSimilarity(sb, entry.text);
+        if (sim >= 0.85) {
+          metadataOverlapCount++;
+          const msg = `Axis "${axis.label}" supportingBullet is near-identical to ${entry.path} (${Math.round(sim * 100)}% overlap)`;
+          dimensionIssues.push(msg);
+          issues.push({
+            dimension: "redundancy",
+            severity: "info",
+            path: `axes[${axis.id}].supportingBullets ↔ ${entry.path}`,
+            message: msg,
+            autoFixable: false,
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  // ── Score calculation ─────────────────────────────────────────────────────
+  const totalBullets = bulletEntries.length;
+  const redundantCount = redundantPairs.length;
+
+  let score;
+  if (totalBullets <= 1) {
+    score = 1; // Not enough bullets to have redundancy
+  } else {
+    // Max possible pairs = n*(n-1)/2
+    const maxPairs = (totalBullets * (totalBullets - 1)) / 2;
+    const redundantRatio = maxPairs > 0 ? redundantCount / maxPairs : 0;
+
+    if (redundantRatio === 0) {
+      score = 1;
+    } else if (redundantRatio >= REDUNDANCY_RATIO_HARD_PENALTY) {
+      // Heavy penalty for many redundancies
+      score = Math.max(0, 0.5 - redundantRatio * 2);
+    } else {
+      // Linear penalty
+      score = 1 - (redundantRatio / REDUNDANCY_RATIO_HARD_PENALTY) * 0.5;
+    }
+  }
+
+  return { score: Math.round(Math.max(0, Math.min(1, score)) * 100) / 100, issues: dimensionIssues };
+}
+
+// ─── Tonal Consistency Scoring ──────────────────────────────────────────────
+
+/**
+ * Score tonal consistency using the existing resumeVoice engine for voice
+ * compliance and cross-section uniformity.
+ *
+ * Auto-fixes voice issues on system-sourced content via harmonizeResumeVoice.
+ *
+ * @param {object} resume      Mutable resume (auto-fixes applied in place)
+ * @param {CoherenceIssue[]} issues   Accumulated issues array
+ * @param {CoherenceAutoFix[]} fixes  Accumulated fixes array
+ * @param {Object} [context={}]  Narrative context (for decision-reasoning checks)
+ * @returns {{ score: number, issues: string[] }}
+ */
+function _scoreTonalConsistency(resume, issues, fixes, context = {}) {
+  const dimensionIssues = [];
+
+  // Delegate to the voice engine for full harmonization
+  const { normalized, report } = harmonizeResumeVoice(resume);
+
+  // Track what was auto-fixed by comparing pre/post harmonization
+  _trackVoiceAutoFixes(resume, normalized, report, fixes);
+
+  // Apply the normalized version back (voice fixes)
+  Object.assign(resume, normalized);
+
+  // Convert voice report issues to coherence issues
+  for (const issue of report.issues || []) {
+    const isCrossSection = issue.startsWith("[cross-section]");
+    dimensionIssues.push(issue);
+    issues.push({
+      dimension: "tonal",
+      severity: isCrossSection ? "warning" : "info",
+      path: _extractPathFromVoiceIssue(issue),
+      message: issue,
+      autoFixable: !isCrossSection, // Per-section issues were auto-fixed by harmonize
+    });
+  }
+
+  // ── Decision-reasoning language check ──────────────────────────────────────
+  // Flag bullets that contain metadata-style decision reasoning rather than
+  // naturally embedded language.  Phrases like "Decision:" or "Tradeoff:" or
+  // "Reasoning:" indicate the LLM exposed internal reasoning as raw text
+  // instead of weaving it naturally into the achievement statement.
+  const metadataPatterns = [
+    /\bDecision:\s/i,
+    /\bReasoning:\s/i,
+    /\bTradeoff:\s/i,
+    /\bTrade-off:\s/i,
+    /\bRationale:\s/i,
+    /\bContext:\s/i,
+    /\bNote:\s/i,
+    /\bKey decision:\s/i,
+    /\bchoosing\s+to\s+use\s+\w+\s+because\b/i,
+    /\bwe decided\b/i,
+    /\bthe decision was\b/i,
+    /\bthis was chosen\b/i,
+  ];
+
+  let metadataViolations = 0;
+  const checkSections = [
+    { items: Array.isArray(resume.experience) ? resume.experience : [], section: "experience" },
+    { items: Array.isArray(resume.projects) ? resume.projects : [], section: "projects" },
+  ];
+
+  for (const { items, section } of checkSections) {
+    for (let i = 0; i < items.length; i++) {
+      const entry = items[i];
+      if (!Array.isArray(entry.bullets)) continue;
+      for (let j = 0; j < entry.bullets.length; j++) {
+        const bullet = entry.bullets[j];
+        if (typeof bullet !== "string") continue;
+
+        for (const pattern of metadataPatterns) {
+          if (pattern.test(bullet)) {
+            const isUserContent = entry._source === "user" || entry._source === "user_approved";
+            const msg = `Bullet contains metadata-style reasoning language: "${bullet.slice(0, 60)}…"`;
+            dimensionIssues.push(msg);
+            issues.push({
+              dimension: "tonal",
+              severity: "warning",
+              path: `${section}[${i}].bullets[${j}]`,
+              message: msg,
+              autoFixable: !isUserContent,
+            });
+            metadataViolations++;
+
+            // Auto-fix: strip the metadata prefix for system-sourced content
+            if (!isUserContent) {
+              const match = bullet.match(/^(Decision|Reasoning|Tradeoff|Trade-off|Rationale|Context|Note|Key decision):\s*/i);
+              if (match) {
+                const before = bullet;
+                const after = bullet.slice(match[0].length);
+                // Capitalize first letter after stripping
+                entry.bullets[j] = after.charAt(0).toUpperCase() + after.slice(1);
+                fixes.push({
+                  path: `${section}[${i}].bullets[${j}]`,
+                  action: "stripped_metadata_prefix",
+                  before: before.slice(0, 100),
+                  after: entry.bullets[j].slice(0, 100),
+                });
+              }
+            }
+            break; // One pattern match per bullet is enough
+          }
+        }
+      }
+    }
+  }
+
+  // Also check summary for metadata-style language
+  if (resume.summary && typeof resume.summary === "string") {
+    for (const pattern of metadataPatterns) {
+      if (pattern.test(resume.summary)) {
+        const msg = `Summary contains metadata-style reasoning language`;
+        dimensionIssues.push(msg);
+        issues.push({
+          dimension: "tonal",
+          severity: "warning",
+          path: "summary",
+          message: msg,
+          autoFixable: false, // Summary is too important to auto-fix blindly
+        });
+        metadataViolations++;
+        break;
+      }
+    }
+  }
+
+  // Use the voice consistency score, with a small penalty for metadata violations
+  const voiceScore = scoreResumeVoiceConsistency(resume);
+  const metadataPenalty = Math.min(0.15, metadataViolations * 0.03);
+  const adjustedScore = Math.max(0, voiceScore.score - metadataPenalty);
+
+  return {
+    score: Math.round(adjustedScore * 100) / 100,
+    issues: dimensionIssues,
+  };
+}
+
+/**
+ * Track what the voice harmonization changed so we can report auto-fixes.
+ */
+function _trackVoiceAutoFixes(original, normalized, report, fixes) {
+  // Track summary changes
+  if (original.summary !== normalized.summary &&
+      original._sources?.summary !== "user") {
+    fixes.push({
+      path: "summary",
+      action: "normalized_voice",
+      before: (original.summary || "").slice(0, 100),
+      after: (normalized.summary || "").slice(0, 100),
+    });
+  }
+
+  // Track experience bullet changes
+  if (Array.isArray(original.experience) && Array.isArray(normalized.experience)) {
+    for (let i = 0; i < original.experience.length && i < normalized.experience.length; i++) {
+      const origBullets = original.experience[i].bullets || [];
+      const normBullets = normalized.experience[i].bullets || [];
+      for (let j = 0; j < origBullets.length && j < normBullets.length; j++) {
+        if (origBullets[j] !== normBullets[j]) {
+          fixes.push({
+            path: `experience[${i}].bullets[${j}]`,
+            action: "normalized_voice",
+            before: origBullets[j].slice(0, 100),
+            after: normBullets[j].slice(0, 100),
+          });
+        }
+      }
+    }
+  }
+
+  // Track project bullet changes
+  if (Array.isArray(original.projects) && Array.isArray(normalized.projects)) {
+    for (let i = 0; i < original.projects.length && i < normalized.projects.length; i++) {
+      const origBullets = original.projects[i].bullets || [];
+      const normBullets = normalized.projects[i].bullets || [];
+      for (let j = 0; j < origBullets.length && j < normBullets.length; j++) {
+        if (origBullets[j] !== normBullets[j]) {
+          fixes.push({
+            path: `projects[${i}].bullets[${j}]`,
+            action: "normalized_voice",
+            before: origBullets[j].slice(0, 100),
+            after: normBullets[j].slice(0, 100),
+          });
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Extract a JSONPath-like location from a voice issue string.
+ * Voice issues look like "[summary] too long" or "[experience[0].bullets[1]] passive voice".
+ */
+function _extractPathFromVoiceIssue(issue) {
+  const match = issue.match(/^\[([^\]]+)\]/);
+  return match ? match[1] : "unknown";
+}
+
+// Exported for testing
+export {
+  COHERENCE_WEIGHTS,
+  REDUNDANCY_SIMILARITY_THRESHOLD,
+  _scoreStructuralFlow,
+  _scoreRedundancy,
+  _scoreTonalConsistency,
+  _collectAllBulletTexts,
+};
+
 
 // ---------------------------------------------------------------------------
 // Response extraction helper

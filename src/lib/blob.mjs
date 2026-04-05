@@ -18,7 +18,7 @@
  *   BLOB_READ_WRITE_TOKEN — provisioned by Vercel Blob integration
  */
 
-import { list, put, del } from "@vercel/blob";
+import { list, put, del, get } from "@vercel/blob";
 import { migrateResumeDocument } from "./resumeMigration.mjs";
 
 /** Pathname for the living-resume JSON document inside Vercel Blob. */
@@ -103,6 +103,23 @@ export const DISPLAY_AXES_PATHNAME = "resume/display-axes.json";
 export const STRENGTH_KEYWORDS_PATHNAME = "resume/strength-keywords.json";
 
 /**
+ * Blob pathname for the bullet quality tracking document.
+ *
+ * Stores longitudinal records of how users edit system-generated bullets.
+ * Each record captures the generated text, final (user-edited) text,
+ * similarity score, and bucket classification.  Used to measure the
+ * "70%+ bullets usable with ≤50% semantic modification" quality target.
+ *
+ * Document shape (QualityTrackingDocument):
+ *   {
+ *     schemaVersion: 1,
+ *     updatedAt: ISO string,
+ *     records: QualityTrackingRecord[]
+ *   }
+ */
+export const QUALITY_TRACKING_PATHNAME = "resume/quality-tracking.json";
+
+/**
  * Blob pathname for the LinkedIn import data document.
  * Stores the structured ProfileData (experience, education, skills, certifications)
  * parsed from a LinkedIn PDF profile export or data export ZIP.
@@ -179,7 +196,7 @@ export async function saveResumeData(data) {
   const json = JSON.stringify(data, null, 2);
 
   const result = await put(RESUME_DATA_PATHNAME, json, {
-    access: "public",
+    access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -197,14 +214,8 @@ export async function saveResumeData(data) {
  * @returns {Promise<object|null>}
  */
 export async function readResumeData() {
-  const status = await checkResumeExists();
-  if (!status.exists) return null;
-
-  const response = await fetch(status.url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch resume data: ${response.status}`);
-  }
-  const raw = await response.json();
+  const raw = await readPrivateJsonBlob(RESUME_DATA_PATHNAME);
+  if (!raw) return null;
   // Ensure all items carry a valid _source provenance tag.
   // migrateResumeDocument is idempotent and returns the same reference when
   // no migration is needed, so this adds zero overhead on modern documents.
@@ -231,7 +242,7 @@ export async function saveSuggestionsData(data) {
   const json = JSON.stringify(data, null, 2);
 
   const result = await put(SUGGESTIONS_PATHNAME, json, {
-    access: "public",
+    access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -249,24 +260,11 @@ export async function saveSuggestionsData(data) {
  * @returns {Promise<{ schemaVersion: number, updatedAt: string, suggestions: object[] }>}
  */
 export async function readSuggestionsData() {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-
-  const { blobs } = await list({
-    prefix: SUGGESTIONS_PATHNAME,
-    limit: 1,
-    ...(token ? { token } : {})
-  });
-
-  const match = blobs.find((b) => b.pathname === SUGGESTIONS_PATHNAME);
-  if (!match) {
+  const data = await readPrivateJsonBlob(SUGGESTIONS_PATHNAME);
+  if (!data) {
     return { schemaVersion: 1, updatedAt: new Date().toISOString(), suggestions: [] };
   }
-
-  const response = await fetch(match.url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch suggestions data: ${response.status}`);
-  }
-  return response.json();
+  return data;
 }
 
 // ─── Daily bullets cache storage ───────────────────────────────────────────────
@@ -317,7 +315,7 @@ export async function saveDailyBullets(date, data) {
   const json = JSON.stringify(data, null, 2);
 
   const result = await put(pathname, json, {
-    access: "public",
+    access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -336,23 +334,8 @@ export async function saveDailyBullets(date, data) {
  * @returns {Promise<object|null>}  DailyBulletsDocument or null
  */
 export async function readDailyBullets(date) {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
   const pathname = bulletsPathnameForDate(date);
-
-  const { blobs } = await list({
-    prefix: pathname,
-    limit: 1,
-    ...(token ? { token } : {})
-  });
-
-  const match = blobs.find((b) => b.pathname === pathname);
-  if (!match) return null;
-
-  const response = await fetch(match.url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch daily bullets for ${date}: ${response.status}`);
-  }
-  return response.json();
+  return readPrivateJsonBlob(pathname);
 }
 
 /**
@@ -469,7 +452,7 @@ export async function invalidateDailyBullets(date, reason = "explicit") {
 
   try {
     await put(pathname, JSON.stringify(invalidated, null, 2), {
-      access: "public",
+      access: "private",
       contentType: "application/json; charset=utf-8",
       addRandomSuffix: false,
       allowOverwrite: true,
@@ -500,7 +483,7 @@ export async function savePdfText(text) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   const result = await put(PDF_TEXT_PATHNAME, text, {
-    access: "public",
+    access: "private",
     contentType: "text/plain; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -518,22 +501,7 @@ export async function savePdfText(text) {
  * @returns {Promise<string|null>}
  */
 export async function readPdfText() {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-
-  const { blobs } = await list({
-    prefix: PDF_TEXT_PATHNAME,
-    limit: 1,
-    ...(token ? { token } : {})
-  });
-
-  const match = blobs.find((b) => b.pathname === PDF_TEXT_PATHNAME);
-  if (!match) return null;
-
-  const response = await fetch(match.url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch PDF text: ${response.status}`);
-  }
-  return response.text();
+  return readPrivateTextBlob(PDF_TEXT_PATHNAME);
 }
 
 // ─── Raw PDF binary storage ────────────────────────────────────────────────────
@@ -551,7 +519,7 @@ export async function savePdfRaw(buffer) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   const result = await put(PDF_RAW_PATHNAME, buffer, {
-    access: "public",
+    access: "private",
     contentType: "application/pdf",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -607,7 +575,7 @@ export async function saveKeywordClusterAxes(axesDoc) {
   const json = JSON.stringify(axesDoc, null, 2);
 
   const result = await put(KEYWORD_CLUSTER_AXES_PATHNAME, json, {
-    access: "public",
+    access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -625,22 +593,7 @@ export async function saveKeywordClusterAxes(axesDoc) {
  * @returns {Promise<object|null>}  Keyword cluster axes document or null
  */
 export async function readKeywordClusterAxes() {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-
-  const { blobs } = await list({
-    prefix: KEYWORD_CLUSTER_AXES_PATHNAME,
-    limit: 1,
-    ...(token ? { token } : {})
-  });
-
-  const match = blobs.find((b) => b.pathname === KEYWORD_CLUSTER_AXES_PATHNAME);
-  if (!match) return null;
-
-  const response = await fetch(match.url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch keyword cluster axes: ${response.status}`);
-  }
-  return response.json();
+  return readPrivateJsonBlob(KEYWORD_CLUSTER_AXES_PATHNAME);
 }
 
 // ─── Display axes storage ─────────────────────────────────────────────────────
@@ -668,7 +621,7 @@ export async function saveDisplayAxes(axesDoc) {
   const json = JSON.stringify(axesDoc, null, 2);
 
   const result = await put(DISPLAY_AXES_PATHNAME, json, {
-    access: "public",
+    access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -688,22 +641,7 @@ export async function saveDisplayAxes(axesDoc) {
  * @returns {Promise<object|null>}  DisplayAxesDocument or null
  */
 export async function readDisplayAxes() {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-
-  const { blobs } = await list({
-    prefix: DISPLAY_AXES_PATHNAME,
-    limit: 1,
-    ...(token ? { token } : {})
-  });
-
-  const match = blobs.find((b) => b.pathname === DISPLAY_AXES_PATHNAME);
-  if (!match) return null;
-
-  const response = await fetch(match.url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch display axes: ${response.status}`);
-  }
-  return response.json();
+  return readPrivateJsonBlob(DISPLAY_AXES_PATHNAME);
 }
 
 // ─── Reconstruction marker ──────────────────────────────────────────────────────
@@ -725,7 +663,7 @@ export async function markResumeForReconstruction(reason = "explicit") {
   });
 
   await put(RECONSTRUCTION_MARKER_PATHNAME, marker, {
-    access: "public",
+    access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -851,7 +789,7 @@ export async function saveSnapshot(resumeDoc, meta = {}) {
   };
 
   const result = await put(pathname, JSON.stringify(envelope, null, 2), {
-    access: "public",
+    access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: false,
@@ -903,22 +841,7 @@ export async function listSnapshots() {
  * @returns {Promise<object|null>}  Snapshot envelope or null
  */
 export async function readSnapshotByKey(snapshotKey) {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-
-  const { blobs } = await list({
-    prefix: snapshotKey,
-    limit: 1,
-    ...(token ? { token } : {})
-  });
-
-  const match = blobs.find((b) => b.pathname === snapshotKey);
-  if (!match) return null;
-
-  const response = await fetch(match.url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch snapshot (${snapshotKey}): ${response.status}`);
-  }
-  return response.json();
+  return readPrivateJsonBlob(snapshotKey);
 }
 
 // ─── LinkedIn import storage ─────────────────────────────────────────────────
@@ -948,7 +871,7 @@ export async function saveLinkedInImport(profileData, source) {
   };
 
   const result = await put(LINKEDIN_IMPORT_PATHNAME, JSON.stringify(envelope, null, 2), {
-    access: "public",
+    access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -966,22 +889,7 @@ export async function saveLinkedInImport(profileData, source) {
  * @returns {Promise<{ schemaVersion: number, importedAt: string, source: string, data: object }|null>}
  */
 export async function readLinkedInImport() {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-
-  const { blobs } = await list({
-    prefix: LINKEDIN_IMPORT_PATHNAME,
-    limit: 1,
-    ...(token ? { token } : {})
-  });
-
-  const match = blobs.find((b) => b.pathname === LINKEDIN_IMPORT_PATHNAME);
-  if (!match) return null;
-
-  const response = await fetch(match.url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch LinkedIn import data: ${response.status}`);
-  }
-  return response.json();
+  return readPrivateJsonBlob(LINKEDIN_IMPORT_PATHNAME);
 }
 
 /**
@@ -1036,7 +944,7 @@ export async function saveStrengthKeywords(doc) {
   const json = JSON.stringify(doc, null, 2);
 
   const result = await put(STRENGTH_KEYWORDS_PATHNAME, json, {
-    access: "public",
+    access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
@@ -1060,16 +968,8 @@ export async function saveStrengthKeywords(doc) {
  * @returns {Promise<import("./resumeTypes.mjs").StrengthKeywordsDocument>}
  */
 export async function readStrengthKeywords() {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-
-  const { blobs } = await list({
-    prefix: STRENGTH_KEYWORDS_PATHNAME,
-    limit: 1,
-    ...(token ? { token } : {})
-  });
-
-  const match = blobs.find((b) => b.pathname === STRENGTH_KEYWORDS_PATHNAME);
-  if (!match) {
+  const data = await readPrivateJsonBlob(STRENGTH_KEYWORDS_PATHNAME);
+  if (!data) {
     // Return initialized empty document — no storage yet (pre-bootstrap state).
     return {
       schemaVersion: 1,
@@ -1078,10 +978,305 @@ export async function readStrengthKeywords() {
       keywords: []
     };
   }
+  return data;
+}
 
-  const response = await fetch(match.url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch strength keywords: ${response.status}`);
+async function readPrivateJsonBlob(pathname) {
+  const response = await getPrivateBlob(pathname);
+  if (!response) return null;
+  return new Response(response.stream).json();
+}
+
+async function readPrivateTextBlob(pathname) {
+  const response = await getPrivateBlob(pathname);
+  if (!response) return null;
+  return new Response(response.stream).text();
+}
+
+async function getPrivateBlob(pathname) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  return get(pathname, {
+    access: "private",
+    ...(token ? { token } : {})
+  });
+}
+
+// ─── Quality Tracking Blob ──────────────────────────────────────────────────
+
+/**
+ * Save the quality tracking document to Vercel Blob.
+ *
+ * @param {object} doc — QualityTrackingDocument (see resumeBulletSimilarity.mjs)
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveQualityTracking(doc) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const json = JSON.stringify(doc, null, 2);
+
+  const result = await put(QUALITY_TRACKING_PATHNAME, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Read the quality tracking document from Vercel Blob.
+ *
+ * Returns a default empty document when no tracking data exists yet,
+ * making this safe to call unconditionally.
+ *
+ * @returns {Promise<object>} — QualityTrackingDocument
+ */
+export async function readQualityTracking() {
+  const data = await readPrivateJsonBlob(QUALITY_TRACKING_PATHNAME);
+  if (!data) {
+    return {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      records: []
+    };
   }
-  return response.json();
+  return data;
+}
+
+// ─── Identified Strengths Blob ──────────────────────────────────────────────
+
+const IDENTIFIED_STRENGTHS_PATHNAME = "resume/identified-strengths.json";
+
+/**
+ * Save the identified strengths document to Vercel Blob.
+ *
+ * @param {object} doc — StrengthsDocument (see resumeStrengths.mjs)
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveIdentifiedStrengths(doc) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const json = JSON.stringify(doc, null, 2);
+
+  const result = await put(IDENTIFIED_STRENGTHS_PATHNAME, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Download and parse the identified strengths document from Vercel Blob.
+ *
+ * Returns null when no file has been saved yet.
+ *
+ * @returns {Promise<object|null>}
+ */
+export async function readIdentifiedStrengths() {
+  return readPrivateJsonBlob(IDENTIFIED_STRENGTHS_PATHNAME);
+}
+
+// ─── Narrative Axes Blob ────────────────────────────────────────────────────
+
+const NARRATIVE_AXES_PATHNAME = "resume/narrative-axes.json";
+
+/**
+ * Save the narrative axes document to Vercel Blob.
+ *
+ * @param {object} doc — NarrativeAxesResult (see resumeTypes.mjs)
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveNarrativeAxes(doc) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const json = JSON.stringify(doc, null, 2);
+
+  const result = await put(NARRATIVE_AXES_PATHNAME, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Download and parse the narrative axes document from Vercel Blob.
+ *
+ * Returns null when no file has been saved yet.
+ *
+ * @returns {Promise<object|null>}
+ */
+export async function readNarrativeAxes() {
+  return readPrivateJsonBlob(NARRATIVE_AXES_PATHNAME);
+}
+
+// ─── Narrative Threading Blob ───────────────────────────────────────────────
+
+const NARRATIVE_THREADING_PATHNAME = "resume/narrative-threading.json";
+
+/**
+ * Save the narrative threading result to Vercel Blob.
+ *
+ * @param {object} doc — NarrativeThreadingResult (see resumeTypes.mjs)
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveNarrativeThreading(doc) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const json = JSON.stringify(doc, null, 2);
+
+  const result = await put(NARRATIVE_THREADING_PATHNAME, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Download and parse the narrative threading result from Vercel Blob.
+ *
+ * Returns null when no threading has been computed yet.
+ *
+ * @returns {Promise<object|null>}
+ */
+export async function readNarrativeThreading() {
+  return readPrivateJsonBlob(NARRATIVE_THREADING_PATHNAME);
+}
+
+// ─── Chat draft (chat-based resume refinement bootstrap) ────────────────────
+
+/**
+ * Blob pathname for the chat-based resume draft document.
+ *
+ * Generated by POST /api/resume/chat/generate-draft.
+ * Stores aggregated strength candidates + experience summaries used as
+ * the starting context for the chat-based resume refinement session.
+ */
+export const CHAT_DRAFT_PATHNAME = "resume/chat-draft.json";
+
+/**
+ * Save the chat-based resume draft to Vercel Blob.
+ *
+ * @param {object} draft  ResumeDraft document
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveChatDraft(draft) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const json = JSON.stringify(draft, null, 2);
+
+  const result = await put(CHAT_DRAFT_PATHNAME, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Read the chat-based resume draft from Vercel Blob.
+ *
+ * Returns null when no draft has been generated yet.
+ *
+ * @returns {Promise<object|null>}
+ */
+export async function readChatDraft() {
+  return readPrivateJsonBlob(CHAT_DRAFT_PATHNAME);
+}
+
+// ─── Chat draft context (full context with evidence pool) ───────────────────
+
+/**
+ * Blob pathname for the full chat draft context (draft + evidence pool + source breakdown).
+ *
+ * Generated by the daily batch hook (Sub-AC 2-2) and the
+ * POST /api/resume/chat/generate-draft endpoint.
+ * Contains the draft alongside evidence items from all data sources
+ * (commits, Slack, session memory) for use by the chat-based resume refinement UI.
+ */
+export const CHAT_DRAFT_CONTEXT_PATHNAME = "resume/chat-draft-context.json";
+
+/**
+ * Save the full chat draft context to Vercel Blob.
+ *
+ * The context document includes:
+ *   - draft:           ResumeDraft — strength candidates, experience summaries
+ *   - evidencePool:    EvidenceItem[] — per-source evidence items
+ *   - sourceBreakdown: { commits, slack, sessions, totalDates }
+ *   - dataGaps:        string[] — areas needing more user input
+ *
+ * @param {object} context  DraftContext document (schemaVersion: 1)
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveChatDraftContext(context) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const json = JSON.stringify(context, null, 2);
+
+  const result = await put(CHAT_DRAFT_CONTEXT_PATHNAME, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Read the full chat draft context from Vercel Blob.
+ *
+ * Returns null when no draft context has been generated yet.
+ *
+ * @returns {Promise<object|null>}
+ */
+export async function readChatDraftContext() {
+  return readPrivateJsonBlob(CHAT_DRAFT_CONTEXT_PATHNAME);
+}
+
+// ─── Section bridges (transition text between resume sections) ──────────────
+
+const SECTION_BRIDGES_PATHNAME = "resume/section-bridges.json";
+
+/**
+ * Save section bridge text to Vercel Blob.
+ *
+ * @param {object} doc  Section bridges document
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveSectionBridges(doc) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const json = JSON.stringify(doc, null, 2);
+
+  const result = await put(SECTION_BRIDGES_PATHNAME, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Read section bridge text from Vercel Blob.
+ *
+ * Returns null when no bridges have been generated yet.
+ *
+ * @returns {Promise<object|null>}
+ */
+export async function readSectionBridges() {
+  return readPrivateJsonBlob(SECTION_BRIDGES_PATHNAME);
 }

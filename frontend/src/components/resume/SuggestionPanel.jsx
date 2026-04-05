@@ -1,103 +1,52 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useMemo } from 'preact/hooks';
 import { CandidateCard, CANDIDATE_CARD_CSS } from './CandidateCard.jsx';
 
 /**
  * SuggestionPanel — 이력서 갱신 제안 패널 (B형)
  *
- * /api/resume/suggestions 에서 pending 상태의 제안을 불러와
- * CandidateCard 리스트로 표시한다.
- *
- * 카드별 상태(pending/approved/discarded)와 API 호출은 각 CandidateCard가
- * 자체적으로 관리한다(낙관적 UI). 패널은 목록 조회·새로고침만 담당한다.
- *
  * props:
+ *   suggestions         — 부모가 보유한 제안 목록
+ *   loading             — 제안 목록 로딩 여부
+ *   fetchError          — 제안 목록 로딩 오류
+ *   onRefreshSuggestions — 제안 목록 새로고침
+ *   onSuggestionResolved — 승인/제외 후 공통 suggestion 상태 갱신
  *   onResumePatched      — (하위 호환) approve 응답 resume 객체를 직접 수신할 때 사용
  *   onResumeUpdated      — 승인으로 이력서가 변경됐을 때 재조회 요청 (부모에 위임)
- *   onPendingCountChange — pending 후보 수가 바뀔 때마다 호출 (숫자 배지용)
  */
-export function SuggestionPanel({ onResumePatched, onResumeUpdated, onPendingCountChange }) {
-  const [suggestions, setSuggestions] = useState(/** @type {SuggestionItem[]|null} */ (null));
-  const [fetchError, setFetchError] = useState('');
-  const [loading, setLoading] = useState(true);
-
-  /**
-   * IDs of cards removed from the list after a successful approve/discard.
-   * Cards call onApproved / onDiscarded when the server confirms the action,
-   * at which point the panel removes them from the visible list.
-   * @type {[Set<string>, function]}
-   */
-  const [removedIds, setRemovedIds] = useState(() => new Set());
-
-  // Guard against state updates after unmount
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  // ── Fetch suggestions list ────────────────────────────────────────────────
-  async function fetchSuggestions() {
-    setLoading(true);
-    setFetchError('');
-    try {
-      const res = await fetch('/api/resume/suggestions', { credentials: 'include' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      if (mountedRef.current) {
-        setSuggestions(data.suggestions ?? []);
-        setRemovedIds(new Set()); // reset after a full reload
-        setFetchError('');
-      }
-    } catch (err) {
-      if (mountedRef.current) {
-        setFetchError(err.message);
-        setSuggestions([]);
-      }
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    fetchSuggestions();
-  }, []);
+export function SuggestionPanel({
+  suggestions = [],
+  loading = false,
+  fetchError = '',
+  onRefreshSuggestions,
+  onSuggestionResolved,
+  onResumePatched,
+  onResumeUpdated,
+}) {
 
   // ── Callbacks from CandidateCard ──────────────────────────────────────────
 
   /** Called by CandidateCard when the approve API call succeeds. */
   function handleCardApproved(id) {
-    if (!mountedRef.current) return;
-    setRemovedIds((prev) => new Set([...prev, id]));
-    // NOTE: resume body refresh is handled by CandidateCard via onResumePatched
-    // (direct state inject) or onResumeUpdated (full refetch fallback).
-    // The panel itself only needs to remove the card from the visible list.
+    onSuggestionResolved?.(id, 'approved');
   }
 
   /** Called by CandidateCard when the discard API call succeeds. */
   function handleCardDiscarded(id) {
-    if (!mountedRef.current) return;
-    setRemovedIds((prev) => new Set([...prev, id]));
+    onSuggestionResolved?.(id, 'rejected');
   }
 
   // Visible = pending work-log suggestions not yet acted on locally.
   // LinkedIn-sourced suggestions are shown separately in LinkedInSupplementPanel,
   // so we exclude them here to avoid duplication.
-  const visible = suggestions
-    ? suggestions.filter(
-        (s) => s.status === 'pending' && !removedIds.has(s.id) && s.source !== 'linkedin',
-      )
-    : [];
+  const visible = useMemo(
+    () =>
+      suggestions.filter(
+        (s) => s.status === 'pending' && s.source !== 'linkedin',
+      ),
+    [suggestions]
+  );
 
-  // Notify parent whenever the pending count changes (for header badge)
   const pendingCount = visible.length;
-  useEffect(() => {
-    onPendingCountChange?.(pendingCount);
-  }, [pendingCount]);
 
   return (
     <div class="sp-root">
@@ -114,7 +63,7 @@ export function SuggestionPanel({ onResumePatched, onResumeUpdated, onPendingCou
         {!loading && (
           <button
             class="sp-refresh-btn"
-            onClick={fetchSuggestions}
+            onClick={onRefreshSuggestions}
             aria-label="제안 목록 새로고침"
             title="새로고침"
           >
@@ -134,7 +83,7 @@ export function SuggestionPanel({ onResumePatched, onResumeUpdated, onPendingCou
       {!loading && fetchError && (
         <div class="sp-state sp-state--error">
           <p class="sp-error-msg">{fetchError}</p>
-          <button class="sp-retry-btn" onClick={fetchSuggestions}>
+          <button class="sp-retry-btn" onClick={onRefreshSuggestions}>
             다시 시도
           </button>
         </div>

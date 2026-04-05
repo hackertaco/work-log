@@ -3,13 +3,22 @@ import { Hono } from "hono";
 const COOKIE_NAME = "resume_token";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
 
+function isLocalDevelopmentHost(host = "") {
+  const normalized = host.trim().toLowerCase();
+  return (
+    normalized.startsWith("localhost") ||
+    normalized.startsWith("127.") ||
+    normalized === "::1" ||
+    normalized.startsWith("[::1]")
+  );
+}
+
 /**
  * Build a Set-Cookie header value.
  * Uses Secure only when not on localhost (detected via request host).
  */
 function buildSetCookieHeader(value, maxAge, host) {
-  const isLocalhost =
-    host?.startsWith("localhost") || host?.startsWith("127.");
+  const isLocalhost = isLocalDevelopmentHost(host);
   const secure = isLocalhost ? "" : "; Secure";
   return `${COOKIE_NAME}=${value}; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
 }
@@ -18,8 +27,7 @@ function buildSetCookieHeader(value, maxAge, host) {
  * Build a cookie-clearing Set-Cookie header.
  */
 function buildClearCookieHeader(host) {
-  const isLocalhost =
-    host?.startsWith("localhost") || host?.startsWith("127.");
+  const isLocalhost = isLocalDevelopmentHost(host);
   const secure = isLocalhost ? "" : "; Secure";
   return `${COOKIE_NAME}=; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=0`;
 }

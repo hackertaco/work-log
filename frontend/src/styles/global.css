@@ -1,15 +1,24 @@
+@import "./design-system.css";
+
 :root {
   --bg: #f5f7fb;
   --surface: #f9fafb;
   --panel: rgba(255, 255, 255, 0.94);
   --panel-2: rgba(248, 250, 253, 0.88);
-  --ink: #111827;
-  --muted: #667085;
-  --line: rgba(17, 24, 39, 0.08);
-  --line-strong: rgba(17, 24, 39, 0.16);
-  --accent: #111827;
+  --ink: #1e293b;
+  --ink-strong: #0f172a;
+  --muted: #64748b;
+  --line: rgba(15, 23, 42, 0.08);
+  --line-strong: rgba(15, 23, 42, 0.14);
+  --accent: #1e40af;
+  --accent-subtle: #6366f1;
+  --accent-muted: rgba(99, 102, 241, 0.1);
   --shadow: 0 16px 36px rgba(15, 23, 42, 0.08);
   --shadow-sm: 0 4px 12px rgba(15, 23, 42, 0.06);
+
+  /* ─── Alias tokens (used in ResumeShell, ResumeAnalysisPage) ─── */
+  --text-strong: #0f172a;   /* same as --ink-strong */
+  --line-soft: rgba(15, 23, 42, 0.06); /* lighter than --line */
 
   --space-1: 4px;
   --space-2: 8px;
@@ -23,6 +32,8 @@
   --radius-md: 12px;
   --radius-lg: 20px;
   --radius-xl: 24px;
+
+  --font-display: "Pretendard", "SUIT Variable", "Noto Sans KR", sans-serif;
 }
 
 * {
@@ -35,9 +46,9 @@ body {
   font-family: "Pretendard", "SUIT Variable", "Noto Sans KR", -apple-system,
     BlinkMacSystemFont, sans-serif;
   background:
-    linear-gradient(rgba(17, 24, 39, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(17, 24, 39, 0.03) 1px, transparent 1px),
-    linear-gradient(180deg, #f8fafc 0%, #eef2f8 100%);
+    linear-gradient(rgba(30, 41, 59, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 41, 59, 0.025) 1px, transparent 1px),
+    linear-gradient(180deg, #faf8f5 0%, #f5f0eb 100%);
   background-size: 24px 24px, 24px 24px, auto;
   min-height: 100vh;
 }

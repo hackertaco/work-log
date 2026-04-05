@@ -94,6 +94,7 @@ mock.module("../lib/blob.mjs", {
     savePdfText:                  async () => ({ url: "https://blob/resume/pdf-text.txt" }),
     readPdfText:                  async () => null,
     savePdfRaw:                   async () => ({ url: "https://blob/resume/resume.pdf" }),
+    checkPdfRawExists:            async () => ({ exists: true, url: "https://blob/resume/resume.pdf" }),
     PDF_RAW_PATHNAME:             "resume/resume.pdf",
     markResumeForReconstruction:  async () => {},
     clearReconstructionMarker:    async () => {},
@@ -104,7 +105,21 @@ mock.module("../lib/blob.mjs", {
     readSnapshotByKey:            async () => null,
     readStrengthKeywords:         async () => ({ schemaVersion: 1, updatedAt: new Date().toISOString(), source: "system", keywords: [] }),
     saveStrengthKeywords:         async () => ({ url: "https://blob/resume/strength-keywords.json" }),
-    STRENGTH_KEYWORDS_PATHNAME:   "resume/strength-keywords.json"
+    STRENGTH_KEYWORDS_PATHNAME:   "resume/strength-keywords.json",
+    saveIdentifiedStrengths:      async () => ({ url: "https://blob/resume/identified-strengths.json" }),
+    readIdentifiedStrengths:      async () => null,
+    saveNarrativeAxes:            async () => ({ url: "https://blob/resume/narrative-axes.json" }),
+    readNarrativeAxes:            async () => null,
+    saveNarrativeThreading:       async () => ({ url: "https://blob/resume/narrative-threading.json" }),
+    readNarrativeThreading:       async () => null,
+    saveSectionBridges:           async () => ({ url: "https://blob/resume/section-bridges.json" }),
+    readSectionBridges:           async () => null,
+    readQualityTracking:          async () => ({ schemaVersion: 1, updatedAt: new Date().toISOString(), records: [] }),
+    saveQualityTracking:          async () => ({ url: "https://blob/resume/quality-tracking.json" }),
+    saveChatDraft:                 async () => ({ url: "https://blob/resume/chat-draft.json" }),
+    readChatDraft:                 async () => null,
+    saveChatDraftContext:          async () => ({ url: "https://blob/resume/chat-draft-context.json" }),
+    readChatDraftContext:          async () => null,
   }
 });
 
@@ -148,6 +163,9 @@ mock.module("../lib/resumeReconstruction.mjs", {
   namedExports: {
     gatherWorkLogBullets:         async () => [],
     fullReconstructExtractCache:  async () => ({ total: 0, processed: 0, failed: 0, skipped: 0, dates: [] }),
+    generateSectionBridges:       async () => [],
+    validateResumeCoherence:      async () => ({ overallScore: 1, grade: "A", structuralFlow: 1, redundancy: 1, tonalConsistency: 1, issues: [], autoFixes: [] }),
+    runNarrativeThreadingPipeline: async () => ({ strengths: [], axes: [], sectionBridges: [], extractionResults: [], threading: { totalAnnotations: 0, groundedRatio: 0, strengthCoverage: {}, axisCoverage: {} }, groundingReport: {} }),
     reconstructResumeFromSources: async () => ({ contact: { name: "Test" } }),
     mergeWithUserEdits:           (r) => r,
     isResumeStale:                () => false

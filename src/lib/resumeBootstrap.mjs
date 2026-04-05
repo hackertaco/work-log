@@ -19,6 +19,12 @@
  *   meta · contact · summary · experience · education · skills · projects · certifications
  */
 
+import {
+  buildFullVoiceBlock,
+  normalizeVoice,
+  normalizeBullets,
+} from "./resumeVoice.mjs";
+
 const OPENAI_URL =
   process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
 const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
@@ -215,11 +221,6 @@ text (and optionally LinkedIn profile data) and produce three things in one resp
 2. A list of strength keywords (strength_keywords)
 3. A set of display axes — distinct career narrative lenses (display_axes)
 
-━━━ LANGUAGE RULE ━━━
-Detect the primary language of the PDF text (ISO 639-1 code, e.g. "ko", "en", "ja").
-Write ALL generated text — summary sentences, bullet points, display axis taglines — \
-in that SAME language. Do not mix languages unless the source itself does.
-
 ━━━ RESUME STRUCTURE RULES ━━━
 • contact: Extract name, email, phone, location, website, linkedin URL. Use null for \
   any field not found.
@@ -230,9 +231,8 @@ in that SAME language. Do not mix languages unless the source itself does.
 • experience: List in reverse-chronological order. For each role:
     - start_date / end_date: YYYY-MM format when determinable; "present" for current \
       roles; null if not found.
-    - bullets: 2–5 achievement-oriented bullets per role. Active voice. Start each \
-      with a strong verb. Quantify results whenever the source provides numbers. \
-      Keep under 120 characters per bullet.
+    - bullets: 2–5 achievement-oriented bullets per role. Quantify results whenever \
+      the source provides numbers.
 • education: List in reverse-chronological order. gpa: include only if explicitly \
   stated; otherwise null.
 • skills:
@@ -259,7 +259,9 @@ in that SAME language. Do not mix languages unless the source itself does.
     - tagline: One sentence describing what makes this person compelling from this \
       angle. Same language as the source.
     - highlight_skills: 3–6 skills from the resume that are most relevant to this axis.
-• Axes should be meaningfully different — not just synonym labels.`;
+• Axes should be meaningfully different — not just synonym labels.
+
+${buildFullVoiceBlock(["bullet", "summary", "keyword", "displayAxisLabel", "displayAxisTagline"])}`;
 
 // ---------------------------------------------------------------------------
 // JSON Schema for structured output
@@ -475,7 +477,7 @@ export function normalizeBootstrapResult(parsed, input) {
       skills: "system"
     },
     contact: normalizeContact(rawResume.contact),
-    summary: typeof rawResume.summary === "string" ? rawResume.summary.trim() : "",
+    summary: normalizeVoice(typeof rawResume.summary === "string" ? rawResume.summary : "", "summary"),
     experience: normalizeExperience(rawResume.experience),
     education: normalizeEducation(rawResume.education),
     skills: normalizeSkills(rawResume.skills),
@@ -537,7 +539,7 @@ export function normalizeExperience(arr) {
       start_date: nullableString(item.start_date),
       end_date: nullableString(item.end_date),
       location: nullableString(item.location),
-      bullets: normalizeStringArray(item.bullets, 160, 8)
+      bullets: normalizeBullets(normalizeStringArray(item.bullets, 160, 8))
     }));
 }
 
@@ -576,7 +578,7 @@ export function normalizeProjects(arr) {
       name: String(item.name || "").trim(),
       description: nullableString(item.description),
       url: nullableString(item.url),
-      bullets: normalizeStringArray(item.bullets, 160, 6)
+      bullets: normalizeBullets(normalizeStringArray(item.bullets, 160, 6))
     }));
 }
 
@@ -598,8 +600,8 @@ export function normalizeDisplayAxes(arr) {
     .filter((item) => item && typeof item === "object" && item.label && item.tagline)
     .slice(0, 4)
     .map((item) => ({
-      label: String(item.label || "").trim(),
-      tagline: String(item.tagline || "").trim(),
+      label: normalizeVoice(String(item.label || ""), "displayAxisLabel"),
+      tagline: normalizeVoice(String(item.tagline || ""), "displayAxisTagline"),
       highlight_skills: normalizeStringArray(item.highlight_skills, 60, 6)
     }));
 }

@@ -24,7 +24,14 @@ import {
   gatherWorkLogBullets,
   isResumeStale,
   mergeWithUserEdits,
-  fullReconstructExtractCache
+  fullReconstructExtractCache,
+  _normalizeNarrativeAxes,
+  _mergeNarrativeAxes,
+  _computeCoverage,
+  _computeComplementarity,
+  generateNarrativeAxes,
+  TARGET_AXES_MIN,
+  TARGET_AXES_MAX
 } from "./resumeReconstruction.mjs";
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────────
@@ -130,6 +137,13 @@ describe("gatherWorkLogBullets", () => {
     try {
       const entry = {
         date: "2024-06-15",
+        projects: [{ repo: "sample-repo", commits: [{ subject: "feat: sample change" }] }],
+        projectGroups: { company: [{ repo: "sample-repo", commits: [{ subject: "feat: sample change" }] }] },
+        aiSessions: {
+          codex: [{ cwd: "/tmp/sample-repo", summary: "sample-repo session summary", snippets: ["reasoning snippet"] }],
+          claude: []
+        },
+        highlights: { businessOutcomes: ["sample outcome"] },
         resume: {
           candidates: ["Shipped new authentication module"],
           companyCandidates: ["Deployed to Kubernetes"],
@@ -145,6 +159,10 @@ describe("gatherWorkLogBullets", () => {
       assert.deepEqual(result[0].candidates, ["Shipped new authentication module"]);
       assert.deepEqual(result[0].companyCandidates, ["Deployed to Kubernetes"]);
       assert.deepEqual(result[0].openSourceCandidates, ["Published npm package v2.0"]);
+      assert.equal(result[0].projects[0].repo, "sample-repo");
+      assert.equal(result[0].projectGroups.company[0].repo, "sample-repo");
+      assert.equal(result[0].aiSessions.codex[0].summary, "sample-repo session summary");
+      assert.deepEqual(result[0].highlights.businessOutcomes, ["sample outcome"]);
     } finally {
       await cleanup();
     }
@@ -854,5 +872,259 @@ describe("fullReconstructExtractCache", () => {
     });
 
     assert.deepEqual(capturedExtract, expectedExtract, "writeCacheFn must receive the exact extract");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Narrative Axes — strengthComposition & higher-level narrative positioning
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const MOCK_PROJECTS = [
+  { id: "proj-repo-0", repo: "work-log", title: "Resume Pipeline", description: "Build resume from logs", techTags: ["Node.js"], bullets: ["Built pipeline"], dateRange: "Mar 2026", _source: "system" },
+  { id: "proj-repo-1", repo: "driving-teacher", title: "GPS Tracker", description: "Real-time GPS tracking", techTags: ["React"], bullets: ["Built GPS"], dateRange: "Feb 2026", _source: "system" },
+];
+
+const MOCK_STRENGTHS = [
+  { id: "str-0", label: "Reliability-First Engineering", description: "Builds error boundaries and retry logic", frequency: 4, evidenceIds: ["ep-0"], projectIds: ["proj-repo-0"], repos: ["work-log"], exampleBullets: ["Added retry logic"], _source: "system" },
+  { id: "str-1", label: "Systematic Debugging", description: "Traces root causes across distributed systems", frequency: 3, evidenceIds: ["ep-1"], projectIds: ["proj-repo-1"], repos: ["driving-teacher"], exampleBullets: ["Debugged GPS drift"], _source: "system" },
+  { id: "str-2", label: "Developer Experience Focus", description: "Prioritizes tooling and dev workflow", frequency: 2, evidenceIds: ["ep-2"], projectIds: ["proj-repo-0"], repos: ["work-log"], exampleBullets: ["Improved CI"], _source: "system" },
+];
+
+describe("_normalizeNarrativeAxes — strengthComposition", () => {
+  test("builds strengthComposition from strengthIds and strengthRoles", () => {
+    const rawAxes = [{
+      label: "Engineer who turns chaos into order",
+      description: "Builds reliable systems from complex operations",
+      strengthIds: ["str-0", "str-1"],
+      strengthRoles: {
+        "str-0": "Drives the proactive error boundary design",
+        "str-1": "Provides root-cause analysis framework"
+      },
+      projectIds: ["proj-repo-0", "proj-repo-1"],
+      supportingBullets: ["Built pipeline"]
+    }];
+
+    const result = _normalizeNarrativeAxes(rawAxes, MOCK_PROJECTS, MOCK_STRENGTHS);
+    assert.equal(result.length, 1);
+
+    const axis = result[0];
+    assert.ok(Array.isArray(axis.strengthComposition), "must have strengthComposition array");
+    assert.equal(axis.strengthComposition.length, 2, "must have 2 composition entries");
+
+    const first = axis.strengthComposition[0];
+    assert.equal(first.strengthId, "str-0");
+    assert.equal(first.label, "Reliability-First Engineering");
+    assert.equal(first.role, "Drives the proactive error boundary design");
+
+    const second = axis.strengthComposition[1];
+    assert.equal(second.strengthId, "str-1");
+    assert.equal(second.label, "Systematic Debugging");
+    assert.equal(second.role, "Provides root-cause analysis framework");
+  });
+
+  test("strengthComposition gracefully handles missing strengthRoles", () => {
+    const rawAxes = [{
+      label: "Builder of tools",
+      description: "Focus on tooling",
+      strengthIds: ["str-0", "str-2"],
+      // no strengthRoles
+      projectIds: ["proj-repo-0"],
+      supportingBullets: []
+    }];
+
+    const result = _normalizeNarrativeAxes(rawAxes, MOCK_PROJECTS, MOCK_STRENGTHS);
+    assert.equal(result.length, 1);
+
+    const axis = result[0];
+    assert.equal(axis.strengthComposition.length, 2);
+    assert.equal(axis.strengthComposition[0].strengthId, "str-0");
+    assert.equal(axis.strengthComposition[0].label, "Reliability-First Engineering");
+    assert.equal(axis.strengthComposition[0].role, undefined, "role should be undefined when no strengthRoles provided");
+  });
+
+  test("filters out invalid strength IDs from composition", () => {
+    const rawAxes = [{
+      label: "Test axis",
+      description: "Testing",
+      strengthIds: ["str-0", "str-invalid", "str-1"],
+      strengthRoles: { "str-0": "Valid role", "str-invalid": "Should be dropped" },
+      projectIds: ["proj-repo-0"],
+      supportingBullets: []
+    }];
+
+    const result = _normalizeNarrativeAxes(rawAxes, MOCK_PROJECTS, MOCK_STRENGTHS);
+    const axis = result[0];
+    assert.equal(axis.strengthIds.length, 2, "invalid ID should be filtered");
+    assert.equal(axis.strengthComposition.length, 2);
+    assert.deepEqual(
+      axis.strengthComposition.map(c => c.strengthId),
+      ["str-0", "str-1"]
+    );
+  });
+
+  test("axis with <2 strengths still normalizes (graceful degradation)", () => {
+    const rawAxes = [{
+      label: "Narrow axis",
+      description: "Only one strength",
+      strengthIds: ["str-0"],
+      projectIds: ["proj-repo-0"],
+      supportingBullets: []
+    }];
+
+    // Should not throw — graceful degradation
+    const result = _normalizeNarrativeAxes(rawAxes, MOCK_PROJECTS, MOCK_STRENGTHS);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].strengthIds.length, 1);
+    assert.equal(result[0].strengthComposition.length, 1);
+  });
+
+  test("repos are computed from both projects and strengths", () => {
+    const rawAxes = [{
+      label: "Cross-repo axis",
+      description: "Spans multiple repos",
+      strengthIds: ["str-0", "str-1"],
+      projectIds: ["proj-repo-0"],
+      supportingBullets: []
+    }];
+
+    const result = _normalizeNarrativeAxes(rawAxes, MOCK_PROJECTS, MOCK_STRENGTHS);
+    const repos = result[0].repos;
+    assert.ok(repos.includes("work-log"), "should include repo from project");
+    assert.ok(repos.includes("driving-teacher"), "should include repo from strength");
+  });
+});
+
+describe("generateNarrativeAxes — axes compose multiple strengths", () => {
+  test("generates axes with strengthComposition from mock LLM", async () => {
+    const mockLlmFn = async () => [{
+      label: "Reliability engineer",
+      description: "Builds systems that dont break",
+      strengthIds: ["str-0", "str-1"],
+      strengthRoles: {
+        "str-0": "Error boundary expertise",
+        "str-1": "Debug methodology"
+      },
+      projectIds: ["proj-repo-0", "proj-repo-1"],
+      supportingBullets: ["Built pipeline"]
+    }, {
+      label: "DX-focused builder",
+      description: "Makes dev life better",
+      strengthIds: ["str-2", "str-0"],
+      strengthRoles: {
+        "str-2": "Tooling design sense",
+        "str-0": "Reliability in dev tools"
+      },
+      projectIds: ["proj-repo-0"],
+      supportingBullets: ["Improved CI"]
+    }];
+
+    const result = await generateNarrativeAxes({
+      extractionResults: [{ repo: "work-log", projects: MOCK_PROJECTS, episodeCount: 5, extractedAt: new Date().toISOString() }],
+      strengths: MOCK_STRENGTHS,
+      existingAxes: [],
+      sessionSummaries: []
+    }, { llmFn: mockLlmFn, skipRetry: true });
+
+    assert.ok(result.axes.length >= 2, "should produce at least 2 axes");
+
+    for (const axis of result.axes) {
+      assert.ok(Array.isArray(axis.strengthComposition), "each axis must have strengthComposition");
+      assert.ok(axis.strengthComposition.length >= 1, "each axis should compose strengths");
+      for (const entry of axis.strengthComposition) {
+        assert.ok(entry.strengthId, "entry must have strengthId");
+        assert.ok(entry.label, "entry must have label");
+      }
+    }
+  });
+
+  test("user-edited axes are preserved with existing strengthComposition", async () => {
+    const userAxis = {
+      id: "naxis-user-0",
+      label: "My custom axis",
+      description: "User defined narrative",
+      strengthIds: ["str-0", "str-1"],
+      projectIds: ["proj-repo-0"],
+      repos: ["work-log"],
+      supportingBullets: ["Custom bullet"],
+      strengthComposition: [
+        { strengthId: "str-0", label: "Reliability-First Engineering", description: "Builds error boundaries", role: "Custom user role" },
+        { strengthId: "str-1", label: "Systematic Debugging", description: "Traces root causes", role: "Custom debug role" }
+      ],
+      _source: "user"
+    };
+
+    const mockLlmFn = async () => [{
+      label: "System generated axis",
+      description: "Auto generated",
+      strengthIds: ["str-0", "str-2"],
+      strengthRoles: { "str-0": "Auto role", "str-2": "Auto role 2" },
+      projectIds: ["proj-repo-0"],
+      supportingBullets: []
+    }];
+
+    const result = await generateNarrativeAxes({
+      extractionResults: [{ repo: "work-log", projects: MOCK_PROJECTS, episodeCount: 3, extractedAt: new Date().toISOString() }],
+      strengths: MOCK_STRENGTHS,
+      existingAxes: [userAxis],
+      sessionSummaries: []
+    }, { llmFn: mockLlmFn, skipRetry: true });
+
+    const preserved = result.axes.find(a => a.label === "My custom axis");
+    assert.ok(preserved, "user axis must be preserved");
+    assert.equal(preserved._source, "user");
+    assert.equal(preserved.strengthComposition[0].role, "Custom user role", "user strength roles must be preserved");
+  });
+});
+
+describe("_computeCoverage — strength coverage tracking", () => {
+  test("reports uncovered strengths", () => {
+    const axes = [{
+      id: "naxis-0",
+      strengthIds: ["str-0"],
+      projectIds: ["proj-repo-0", "proj-repo-1"]
+    }];
+
+    const coverage = _computeCoverage(axes, MOCK_PROJECTS, MOCK_STRENGTHS);
+    assert.equal(coverage.projectCoverage, 1, "all projects covered");
+    assert.ok(coverage.strengthCoverage < 1, "not all strengths covered");
+    assert.ok(coverage.uncoveredStrengthIds.includes("str-1"), "str-1 should be uncovered");
+    assert.ok(coverage.uncoveredStrengthIds.includes("str-2"), "str-2 should be uncovered");
+  });
+
+  test("full coverage when axes compose all strengths", () => {
+    const axes = [{
+      id: "naxis-0",
+      strengthIds: ["str-0", "str-1", "str-2"],
+      projectIds: ["proj-repo-0", "proj-repo-1"]
+    }];
+
+    const coverage = _computeCoverage(axes, MOCK_PROJECTS, MOCK_STRENGTHS);
+    assert.equal(coverage.strengthCoverage, 1, "all strengths covered");
+    assert.equal(coverage.overallCoverage, 1, "full coverage");
+    assert.equal(coverage.uncoveredStrengthIds.length, 0);
+  });
+});
+
+describe("_computeComplementarity — axis overlap detection", () => {
+  test("overlapping axes detected", () => {
+    const axes = [
+      { id: "naxis-0", strengthIds: ["str-0", "str-1"], projectIds: ["proj-repo-0"] },
+      { id: "naxis-1", strengthIds: ["str-0", "str-1"], projectIds: ["proj-repo-0"] }
+    ];
+
+    const result = _computeComplementarity(axes);
+    assert.equal(result.maxOverlap, 1, "identical axes should have max overlap");
+    assert.equal(result.isComplementary, false, "identical axes should not be complementary");
+  });
+
+  test("complementary axes pass", () => {
+    const axes = [
+      { id: "naxis-0", strengthIds: ["str-0"], projectIds: ["proj-repo-0"] },
+      { id: "naxis-1", strengthIds: ["str-1"], projectIds: ["proj-repo-1"] }
+    ];
+
+    const result = _computeComplementarity(axes);
+    assert.equal(result.maxOverlap, 0, "non-overlapping axes should have 0 overlap");
+    assert.equal(result.isComplementary, true);
   });
 });

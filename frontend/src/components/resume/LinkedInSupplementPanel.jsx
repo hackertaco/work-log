@@ -1,102 +1,46 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useMemo } from 'preact/hooks';
 import { CandidateCard, CANDIDATE_CARD_CSS, SECTION_LABELS } from './CandidateCard.jsx';
 
 /**
  * LinkedInSupplementPanel — LinkedIn 기반 보충/검증 제안 패널
  *
- * /api/resume/suggestions 에서 source='linkedin' 인 pending 제안을 불러와
- * 섹션별 그룹으로 표시한다. (Sub-AC 4-3)
- *
- * 각 제안은 CandidateCard 로 렌더링되며:
- *   - 승인(approve): 이력서에 즉시 반영
- *   - 편집(edit): 내용 수정 후 승인
- *   - 제외(discard): 해당 제안 무시
- *
  * props:
+ *   suggestions          — 부모가 보유한 제안 목록
+ *   loading              — 제안 목록 로딩 여부
+ *   fetchError           — 제안 목록 로딩 오류
+ *   onRefreshSuggestions — 제안 목록 새로고침
+ *   onSuggestionResolved — 승인/제외 후 공통 suggestion 상태 갱신
  *   onResumePatched      — 승인 응답 resume 객체를 직접 수신해 GET 없이 갱신 (낙관적 업데이트)
  *   onResumeUpdated      — 승인으로 이력서가 변경됐을 때 재조회 요청 (onResumePatched 폴백)
- *   onPendingCountChange — pending 후보 수가 바뀔 때마다 호출 (숫자 배지용)
  */
-export function LinkedInSupplementPanel({ onResumePatched, onResumeUpdated, onPendingCountChange }) {
-  /** @type {[object[]|null, Function]} */
-  const [suggestions, setSuggestions] = useState(null);
-  const [fetchError, setFetchError] = useState('');
-  const [loading, setLoading] = useState(true);
-
-  /**
-   * IDs of cards removed from the list after a successful approve/discard.
-   * @type {[Set<string>, Function]}
-   */
-  const [removedIds, setRemovedIds] = useState(() => new Set());
-
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  // ── Fetch LinkedIn suggestions ────────────────────────────────────────────
-  async function fetchSuggestions() {
-    setLoading(true);
-    setFetchError('');
-    try {
-      const res = await fetch('/api/resume/suggestions', { credentials: 'include' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      if (mountedRef.current) {
-        // Filter for LinkedIn source only
-        const linkedinItems = (data.suggestions ?? []).filter(
-          (s) => s.source === 'linkedin',
-        );
-        setSuggestions(linkedinItems);
-        setRemovedIds(new Set()); // reset on full reload
-        setFetchError('');
-      }
-    } catch (err) {
-      if (mountedRef.current) {
-        setFetchError(err.message);
-        setSuggestions([]);
-      }
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    fetchSuggestions();
-  }, []);
+export function LinkedInSupplementPanel({
+  suggestions = [],
+  loading = false,
+  fetchError = '',
+  onRefreshSuggestions,
+  onSuggestionResolved,
+  onResumePatched,
+  onResumeUpdated,
+}) {
 
   // ── Callbacks from CandidateCard ──────────────────────────────────────────
 
   /** Called when a CandidateCard approve API call succeeds. */
   function handleCardApproved(id) {
-    if (!mountedRef.current) return;
-    setRemovedIds((prev) => new Set([...prev, id]));
-    // NOTE: resume body refresh is handled by CandidateCard via onResumePatched
-    // (direct state inject) or onResumeUpdated (full refetch fallback).
+    onSuggestionResolved?.(id, 'approved');
   }
 
   /** Called when a CandidateCard discard API call succeeds. */
   function handleCardDiscarded(id) {
-    if (!mountedRef.current) return;
-    setRemovedIds((prev) => new Set([...prev, id]));
+    onSuggestionResolved?.(id, 'rejected');
   }
 
-  // Visible = pending LinkedIn suggestions not yet acted on locally
-  const visible = suggestions
-    ? suggestions.filter((s) => s.status === 'pending' && !removedIds.has(s.id))
-    : [];
+  const visible = useMemo(
+    () => suggestions.filter((s) => s.source === 'linkedin' && s.status === 'pending'),
+    [suggestions]
+  );
 
-  // Notify parent when the pending count changes (for header badge, etc.)
   const pendingCount = visible.length;
-  useEffect(() => {
-    onPendingCountChange?.(pendingCount);
-  }, [pendingCount]);
 
   // Group visible suggestions by section for structured display
   const grouped = groupBySection(visible);
@@ -129,7 +73,7 @@ export function LinkedInSupplementPanel({ onResumePatched, onResumeUpdated, onPe
         {!loading && (
           <button
             class="lisp-refresh-btn"
-            onClick={fetchSuggestions}
+            onClick={onRefreshSuggestions}
             aria-label="LinkedIn 보충 제안 새로고침"
             title="새로고침"
           >
@@ -149,7 +93,7 @@ export function LinkedInSupplementPanel({ onResumePatched, onResumeUpdated, onPe
       {!loading && fetchError && (
         <div class="lisp-state lisp-state--error">
           <p class="lisp-error-msg">{fetchError}</p>
-          <button class="lisp-retry-btn" onClick={fetchSuggestions}>
+          <button class="lisp-retry-btn" onClick={onRefreshSuggestions}>
             다시 시도
           </button>
         </div>

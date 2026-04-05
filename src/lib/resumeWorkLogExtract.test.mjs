@@ -293,6 +293,29 @@ describe("buildWorkLogDiff", () => {
       "accomplishments should be capped at 8");
   });
 
+  test("clusters related micro-changes into broader resume-worthy candidates", () => {
+    const resume = makeResume({ experience: [], projects: [] });
+    const workLog = makeWorkLog({
+      highlights: {
+        businessOutcomes: [],
+        keyChanges: [
+          "Android 15 대응으로 하단 SafeArea를 적용해 edge-to-edge 충돌을 보완했습니다.",
+          "Flutter WebView Dart 타입 에러를 Sentry 필터에 추가해 집계 노이즈를 줄였습니다.",
+          "버전 1.15.21+180으로 릴리스 준비를 마무리했습니다.",
+        ],
+        accomplishments: [],
+        commitHighlights: []
+      },
+      resume: { candidates: [], companyCandidates: [], openSourceCandidates: [] }
+    });
+
+    const diff = buildWorkLogDiff(workLog, resume);
+
+    assert.equal(diff.rawCandidates.length, 1, "related mobile stability items should collapse into one candidate cluster");
+    assert.match(diff.rawCandidates[0], /Resume theme:/);
+    assert.match(diff.rawCandidates[0], /mobile stability/i);
+  });
+
   test("experience entries with no company are excluded from existingCompanies", () => {
     const resume = makeResume({
       experience: [

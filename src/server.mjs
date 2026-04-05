@@ -7,6 +7,15 @@ import { Hono } from "hono";
 
 import { runDailyBatch } from "./lib/batch.mjs";
 import { loadConfig } from "./lib/config.mjs";
+import {
+  registerResumeBatchHook,
+  registerGranularTriggers,
+  emitWorkLogSaved,
+  emitCommitCollected,
+  emitSlackCollected,
+  emitSessionCollected,
+  WORK_LOG_EVENTS
+} from "./lib/workLogEventBus.mjs";
 import { cookieAuth } from "./middleware/auth.mjs";
 import { buildProfileSummary, readProfileSummary } from "./lib/profile.mjs";
 import { fileExists } from "./lib/utils.mjs";
@@ -58,13 +67,76 @@ export function createApp() {
   });
 
   app.get("/api/profile", async (c) => {
-    return c.json(await readOrBuildProfile());
+    const rawWindow = c.req.query("window");
+    const windowDays = rawWindow === "all" || !rawWindow
+      ? null
+      : Number(rawWindow);
+    return c.json(await readOrBuildProfile(windowDays));
   });
 
   app.post("/api/run-batch", async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const result = await runDailyBatch(body?.date);
     return c.json(result);
+  });
+
+  // ── Work-log event trigger (Sub-AC 2-1) ───────────────────────────────────
+  //
+  // POST /api/work-log/event
+  //
+  // Accepts an external work-log update event and triggers the registered hooks
+  // (resumeBatchHook by default) without running the full batch pipeline.
+  //
+  // Use this endpoint when individual data sources are updated outside the
+  // daily batch run — e.g., a git post-commit hook, a CI webhook, or a
+  // manual trigger from the frontend.
+  //
+  // Request body:
+  //   {
+  //     "type":    "work_log_saved" | "commit_collected" | "slack_collected" | "session_collected"
+  //     "date":    "YYYY-MM-DD"         (optional; defaults to today)
+  //     "workLog": { ... }              (required for "work_log_saved")
+  //   }
+  //
+  // Response:
+  //   200 { triggered: true, event: <type>, date: <date>, hookResult: <CandidateHookResult> }
+  //   400 { error: "..." } — missing required fields
+  //
+  // Authentication: protected by the /api/resume cookie-auth guard above.
+  // (No separate guard needed — this endpoint sits under /api and has the
+  //  same auth boundary as the rest of the authenticated API surface.)
+  app.post("/api/work-log/event", cookieAuth(), async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const eventType = body?.type ?? WORK_LOG_EVENTS.WORK_LOG_SAVED;
+    const date = body?.date ?? new Date().toISOString().slice(0, 10);
+
+    if (eventType === WORK_LOG_EVENTS.WORK_LOG_SAVED) {
+      if (!body?.workLog) {
+        return c.json({ error: "workLog is required for work_log_saved events" }, 400);
+      }
+      const hookResult = await emitWorkLogSaved(date, body.workLog);
+      return c.json({ triggered: true, event: eventType, date, hookResult });
+    }
+
+    // For granular events (commit/slack/session), emit via the event bus so
+    // that registered granular triggers can schedule a debounced background
+    // batch run.  The granular triggers (registered at startup) coalesce
+    // multiple events for the same date into a single batch run that builds
+    // the full workLog summary and triggers resumeBatchHook.
+    if (eventType === WORK_LOG_EVENTS.COMMIT_COLLECTED) {
+      emitCommitCollected(date, body?.commits ?? []);
+      return c.json({ triggered: true, event: eventType, date, backgroundBatchScheduled: true });
+    }
+    if (eventType === WORK_LOG_EVENTS.SLACK_COLLECTED) {
+      emitSlackCollected(date, body?.contexts ?? []);
+      return c.json({ triggered: true, event: eventType, date, backgroundBatchScheduled: true });
+    }
+    if (eventType === WORK_LOG_EVENTS.SESSION_COLLECTED) {
+      emitSessionCollected(date, body?.sessions ?? []);
+      return c.json({ triggered: true, event: eventType, date, backgroundBatchScheduled: true });
+    }
+
+    return c.json({ error: `Unknown event type: ${eventType}` }, 400);
   });
 
   // ---------- GET /login — Login page route ----------
@@ -94,9 +166,20 @@ export function createApp() {
   return app;
 }
 
-export async function startServer(port = 4310, host = "127.0.0.1") {
+export async function startServer(port = 4310, host = "localhost") {
   // Ensure env is loaded before creating the app.
   await loadConfig();
+
+  // Register the resume batch hook so that emitWorkLogSaved() (called from
+  // batch.mjs and POST /api/work-log/event) triggers runResumeCandidateHook.
+  // Idempotent — safe to call multiple times (Sub-AC 2-1).
+  await registerResumeBatchHook();
+
+  // Register granular event triggers so that external data-source updates
+  // (commit/slack/session collected via POST /api/work-log/event) schedule a
+  // debounced background batch run → which builds the full workLog summary
+  // and triggers resumeBatchHook via emitWorkLogSaved.
+  registerGranularTriggers(runDailyBatch);
 
   const app = createApp();
   const server = serve({ fetch: app.fetch, port, hostname: host });
@@ -126,8 +209,11 @@ async function readDailySummary(date) {
   return JSON.parse(await fs.readFile(filePath, "utf8"));
 }
 
-async function readOrBuildProfile() {
+async function readOrBuildProfile(windowDays = null) {
   const config = await loadConfig();
+  if (windowDays) {
+    return readProfileSummary(config, { windowDays });
+  }
   const profile = await readProfileSummary(config);
   if (profile.updatedAt) return profile;
   return (await buildProfileSummary(config)).profile;
@@ -138,6 +224,13 @@ async function serveStatic(pathname, c) {
   const filePath = path.join(publicDir, target);
 
   if (!(await fileExists(filePath))) {
+    // Unknown API paths must never fall back to the SPA shell.
+    // Returning HTML here causes fetch(...).json() callers to fail with
+    // opaque "Unexpected token '<'" errors.
+    if (target.startsWith("/api/")) {
+      return c.text("Not found", 404);
+    }
+
     // For extension-less paths (SPA routes like /login, /resume, /projects)
     // fall back to index.html so the Preact router handles navigation.
     // Asset requests (.js, .css, .png …) get a proper 404.

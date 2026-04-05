@@ -1,9 +1,14 @@
 import { startServer } from "./server.mjs";
 import { runDailyBatch } from "./lib/batch.mjs";
+import { registerResumeBatchHook } from "./lib/workLogEventBus.mjs";
 
 const [, , command = "serve", ...rest] = process.argv;
 
 if (command === "batch") {
+  // Register the resume candidate hook so that emitWorkLogSaved() triggers it
+  // when the daily summary is written (Sub-AC 2-1).
+  await registerResumeBatchHook();
+
   const date = readFlag(rest, "--date");
   const result = await runDailyBatch(date);
   console.log(JSON.stringify({
@@ -16,8 +21,9 @@ if (command === "batch") {
 
 if (command === "serve") {
   const port = Number(readFlag(rest, "--port") || 4310);
-  await startServer(port);
-  console.log(`Work Log server listening on http://127.0.0.1:${port}`);
+  const host = readFlag(rest, "--host") || "localhost";
+  await startServer(port, host);
+  console.log(`Work Log server listening on http://${host}:${port}`);
   process.exitCode = 0;
 } else {
   console.error(`Unknown command: ${command}`);

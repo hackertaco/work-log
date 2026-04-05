@@ -166,11 +166,11 @@ export function ResumeEditor({ resume, onSaved, onCancel }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ resume: draft }),
       });
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
         throw new Error(body.error || `서버 오류: HTTP ${res.status}`);
       }
-      onSaved?.();
+      onSaved?.(body.resume);
     } catch (err) {
       setSaveError(err.message);
     } finally {

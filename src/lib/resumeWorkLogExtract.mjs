@@ -44,6 +44,8 @@
  */
 
 import { computePipelineWeight } from "./resumePrBranchParser.mjs";
+import { clusterResumeCandidateStrings } from "./resumeSuggestionClustering.mjs";
+import { buildVoiceDirective, buildLanguageDirective } from "./resumeVoice.mjs";
 
 const OPENAI_URL =
   process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
@@ -65,8 +67,8 @@ const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
 /**
  * @typedef {Object} WorkLogDiff
  * @property {string[]} rawCandidates
- *   Candidate strings from the work log that are NOT already present in the resume
- *   (after rule-based deduplication against all existing bullets).
+ *   Resume-worthy candidate clusters from the work log that are NOT already
+ *   present in the resume (after deduplication, filtering, and clustering).
  * @property {{ company: string, title: string|null, isCurrentRole: boolean }[]} existingCompanies
  *   All experience entries from the existing resume, name-only, for LLM assignment.
  * @property {{ repo: string, signal: string }[]} priorityProjects
@@ -185,8 +187,10 @@ export function buildWorkLogDiff(workLog, existingResume) {
           : "branch activity"
     }));
 
+  const clusteredCandidates = clusterResumeCandidateStrings(genuinelyNew);
+
   return {
-    rawCandidates: genuinelyNew,
+    rawCandidates: clusteredCandidates.map((cluster) => cluster.prompt),
     existingCompanies,
     priorityProjects,
     date: typeof wl.date === "string" ? wl.date : null
@@ -323,10 +327,10 @@ function buildDiffExtractionPayload(workLogDiff, lang) {
  * Build the system prompt for diff-context extraction.
  *
  * In this mode the LLM does NOT receive the full resume.  Instead it receives
- * a compact diff: the raw candidate strings that have already been confirmed
+ * a compact diff: grouped candidate clusters that have already been confirmed
  * as genuinely new (not in the resume) plus the list of existing company names
  * it can assign bullets to.  The LLM's only jobs are:
- *   1. Assign each raw candidate to the right experience entry.
+ *   1. Assign each candidate cluster to the right experience entry.
  *   2. Rewrite it in achievement-oriented active voice.
  *   3. Extract any newly demonstrated skills.
  *   4. Optionally propose a summary update for major career shifts.
@@ -338,47 +342,48 @@ function buildDiffSystemPrompt(lang) {
   return `\
 You assign and refine proposed resume update candidates from a developer's work log.
 
-━━━ LANGUAGE RULE ━━━
-Write ALL generated text in "${lang}" (the same language as the existing resume).
-Do NOT mix languages.
-
 ━━━ CONTEXT ━━━
 You are given:
-1. Raw candidate strings that have already been verified as NOT present in the
+1. Resume-worthy candidate clusters that have already been verified as NOT present in the
    existing resume (pre-screened by a rule-based diff step).
 2. The available experience entries in the resume — company names only — so you
    can assign each candidate to the right role.
 3. Priority projects (from commit/PR activity) for additional assignment context.
 
 ━━━ TASK ━━━
-Assign and refine the raw candidates into a minimal resume patch.
+Assign and refine the candidate clusters into a minimal resume patch.
 
 Return three things:
 
 1. experience_updates — refined bullets assigned to experience entries.
-   • Assign each raw candidate to the most relevant experience entry by company name.
+   • Assign each candidate cluster to the most relevant experience entry by company name.
    • Use the EXACT company name as listed under "Available Experience Entries".
-   • Rewrite each bullet in achievement-oriented active voice. Start with a strong verb.
-   • Each bullet: 1–2 sentences, ≤ 130 chars.
-   • Omit any bullet that is vague, not achievement-worthy, or cannot be confidently assigned.
-   • Return an empty array when no raw candidates are assignable.
+   • Prefer one durable bullet per candidate cluster.
+   • Synthesize related implementation details into a broader achievement-oriented bullet.
+   • Omit any bullet that is vague, too implementation-specific, or cannot be confidently assigned.
+   • Return an empty array when no candidate clusters are assignable.
 
-2. new_skills — skills/tools/languages inferred from the raw candidates.
-   • Extract only skills clearly demonstrated in the raw candidates.
+2. new_skills — skills/tools/languages inferred from the candidate clusters.
+   • Extract only skills clearly demonstrated in the candidate clusters.
    • Be conservative — if in doubt, omit.
    • Return empty arrays when nothing new is evident.
 
 3. summary_update — a revised professional summary, or empty string for no change.
-   • Set to a non-empty string ONLY when the raw candidates contain a major
+   • Set to a non-empty string ONLY when the candidate clusters contain a major
      achievement that materially shifts the candidate's professional narrative
      (e.g., first work in a new domain, significant leadership milestone).
    • If in doubt, return "".
    • When set, the new summary must be 2–4 sentences, written in "${lang}".
 
 ━━━ RULES ━━━
-• Do NOT invent information not present in the raw candidates.
+• Do NOT invent information not present in the candidate clusters.
 • Do NOT remove any existing resume content.
-• Prefer adding nothing over adding low-quality content.`;
+• Prefer adding nothing over adding low-quality content.
+• Do NOT emit bullets for isolated version bumps, one-off fixes, or narrow implementation trivia unless the cluster clearly indicates broader product, delivery, or reliability impact.
+
+${buildVoiceDirective(["bullet", "summary"])}
+
+${buildLanguageDirective(lang)}`;
 }
 
 // ─── User message builder (diff-context mode) ─────────────────────────────────
@@ -387,7 +392,7 @@ Return three things:
  * Build the user message from the work log diff.
  *
  * Sends ONLY:
- *   1. Genuinely-new raw candidate strings (pre-screened against existing resume)
+ *   1. Genuinely-new candidate clusters (pre-screened against existing resume)
  *   2. Existing experience company names (for bullet assignment)
  *   3. Priority projects context (from PR/branch signals)
  *
@@ -410,9 +415,9 @@ function buildDiffUserMessage(diff, lang) {
     parts.push("");
   }
 
-  // ── Raw candidates (the diff — pre-screened, genuinely new) ───────────────
+  // ── Candidate clusters (the diff — pre-screened, genuinely new) ───────────
   parts.push(
-    `=== RAW CANDIDATES (${diff.rawCandidates.length} new strings — not yet in resume) ===`
+    `=== RESUME-WORTHY CANDIDATE CLUSTERS (${diff.rawCandidates.length} items — not yet in resume) ===`
   );
   parts.push("");
   if (diff.rawCandidates.length === 0) {

@@ -69,6 +69,23 @@ test("POST /auth/login - valid token on non-localhost adds Secure flag", async (
   assert.match(setCookie, /Secure/i);
 });
 
+test("POST /auth/login - valid token on IPv6 loopback does not add Secure flag", async () => {
+  const app = buildApp("secret-token");
+
+  const res = await app.fetch(
+    new Request("http://[::1]/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", host: "[::1]:4310" },
+      body: JSON.stringify({ token: "secret-token" }),
+    })
+  );
+
+  assert.equal(res.status, 200);
+  const setCookie = res.headers.get("Set-Cookie");
+  assert.ok(setCookie, "Set-Cookie header must be present");
+  assert.ok(!setCookie.includes("Secure"), "IPv6 loopback should not have Secure flag");
+});
+
 test("POST /auth/login - invalid token returns 401", async () => {
   const app = buildApp("correct-token");
 
@@ -200,4 +217,20 @@ test("POST /auth/logout - non-localhost sets Secure flag on cleared cookie", asy
   assert.equal(res.status, 200);
   const setCookie = res.headers.get("Set-Cookie");
   assert.match(setCookie, /Secure/i);
+});
+
+test("POST /auth/logout - IPv6 loopback does not set Secure flag on cleared cookie", async () => {
+  const app = buildApp("secret-token");
+
+  const res = await app.fetch(
+    new Request("http://[::1]/auth/logout", {
+      method: "POST",
+      headers: { host: "[::1]:4310" },
+    })
+  );
+
+  assert.equal(res.status, 200);
+  const setCookie = res.headers.get("Set-Cookie");
+  assert.ok(setCookie, "Set-Cookie header must be present on logout");
+  assert.ok(!setCookie.includes("Secure"), "IPv6 loopback should not have Secure flag");
 });

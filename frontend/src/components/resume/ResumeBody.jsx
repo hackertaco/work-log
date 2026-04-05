@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { BulletProposalChip, BULLET_PROPOSAL_CSS } from './BulletProposalChip.jsx';
+import { BulletSimilarityBadge } from './BulletSimilarityBadge.jsx';
 
 /**
  * ResumeBody
@@ -39,6 +40,18 @@ import { BulletProposalChip, BULLET_PROPOSAL_CSS } from './BulletProposalChip.js
  *   onProposalApproved  — (선택) 제안 승인 완료 콜백 (id: string) => void
  *   onProposalRejected  — (선택) 제안 제외 완료 콜백 (id: string) => void
  *   onResumeUpdated     — (선택) 제안 승인으로 이력서 변경 시 재조회 요청 콜백
+ *   threadingData       — (선택) narrative threading 결과
+ *                         { bulletAnnotations, sectionSummaries, strengthCoverage, axisCoverage,
+ *                           ungroundedStrengthIds, ungroundedAxisIds, groundedRatio }
+ *   strengths           — (선택) identified strengths array (for label lookup)
+ *   narrativeAxes       — (선택) narrative axes array (for label lookup)
+ *   sectionBridges      — (선택) section bridge/transition text array
+ *                         [{ from, to, text, _source }]
+ *   onBridgeEdit        — (선택) bridge text 수정 핸들러 (from, to, text) => Promise<void>
+ *   onBridgeDismiss     — (선택) bridge 제거 핸들러 (from, to) => Promise<void>
+ *   coherenceReport     — (선택) coherence validation result from POST /api/resume/coherence-validation
+ *                         { overallScore, grade, structuralFlow, redundancy, tonalConsistency,
+ *                           issueCount, issues, autoFixCount, autoFixes }
  */
 export function ResumeBody({
   resume,
@@ -51,6 +64,13 @@ export function ResumeBody({
   onProposalApproved,
   onProposalRejected,
   onResumeUpdated,
+  threadingData = null,
+  strengths = [],
+  narrativeAxes = [],
+  sectionBridges = [],
+  onBridgeEdit,
+  onBridgeDismiss,
+  coherenceReport = null,
 }) {
   // ─── Loading skeleton ─────────────────────────────────────────────────────
   if (loading) {
@@ -116,6 +136,15 @@ export function ResumeBody({
         </ResumeSection>
       )}
 
+      {/* ─── bridge: summary → experience ─── */}
+      <SectionBridgeBlock
+        bridges={sectionBridges}
+        from="summary"
+        to="experience"
+        onEdit={onBridgeEdit}
+        onDismiss={onBridgeDismiss}
+      />
+
       {/* ─── 경력 (experience) ─── */}
       {experience.length > 0 && (
         <ResumeSection title="경력" kicker="EXPERIENCE" sectionType="experience">
@@ -148,11 +177,24 @@ export function ResumeBody({
                 onProposalApproved={onProposalApproved}
                 onProposalRejected={onProposalRejected}
                 onResumeUpdated={onResumeUpdated}
+                sectionSummary={_findSectionSummary(threadingData, 'experience', i)}
+                bulletAnnotations={_findBulletAnnotations(threadingData, 'experience', i)}
+                strengths={strengths}
+                narrativeAxes={narrativeAxes}
               />
             ))}
           </div>
         </ResumeSection>
       )}
+
+      {/* ─── bridge: experience → projects ─── */}
+      <SectionBridgeBlock
+        bridges={sectionBridges}
+        from="experience"
+        to="projects"
+        onEdit={onBridgeEdit}
+        onDismiss={onBridgeDismiss}
+      />
 
       {/* ─── 프로젝트 (projects) ─── */}
       {projects.length > 0 && (
@@ -189,11 +231,24 @@ export function ResumeBody({
                 onProposalApproved={onProposalApproved}
                 onProposalRejected={onProposalRejected}
                 onResumeUpdated={onResumeUpdated}
+                sectionSummary={_findSectionSummary(threadingData, 'projects', i)}
+                bulletAnnotations={_findBulletAnnotations(threadingData, 'projects', i)}
+                strengths={strengths}
+                narrativeAxes={narrativeAxes}
               />
             ))}
           </div>
         </ResumeSection>
       )}
+
+      {/* ─── bridge: projects → education ─── */}
+      <SectionBridgeBlock
+        bridges={sectionBridges}
+        from="projects"
+        to="education"
+        onEdit={onBridgeEdit}
+        onDismiss={onBridgeDismiss}
+      />
 
       {/* ─── 학력 (education) ─── */}
       {education.length > 0 && (
@@ -205,6 +260,22 @@ export function ResumeBody({
           </div>
         </ResumeSection>
       )}
+
+      {/* ─── bridge: education → skills or projects → skills ─── */}
+      <SectionBridgeBlock
+        bridges={sectionBridges}
+        from="education"
+        to="skills"
+        onEdit={onBridgeEdit}
+        onDismiss={onBridgeDismiss}
+      />
+      <SectionBridgeBlock
+        bridges={sectionBridges}
+        from="projects"
+        to="skills"
+        onEdit={onBridgeEdit}
+        onDismiss={onBridgeDismiss}
+      />
 
       {/* ─── 기술 (skills) ─── */}
       {hasSkills && (
@@ -227,6 +298,11 @@ export function ResumeBody({
       {/* ─── 강점 키워드 (strength_keywords) — 비정형 누적 목록, 인쇄 제외 ─── */}
       <StrengthKeywordsSection initialKeywords={strength_keywords} />
 
+      {/* ─── Coherence validation badge ─── */}
+      {coherenceReport && (
+        <CoherenceScoreBadge report={coherenceReport} />
+      )}
+
       {/* ─── 소스 메타 ─── */}
       {(meta.source || meta.generatedAt) && (
         <p class="rb-source-note">
@@ -237,7 +313,7 @@ export function ResumeBody({
         </p>
       )}
 
-      <style>{RB_CSS + BULLET_PROPOSAL_CSS}</style>
+      <style>{RB_CSS + BULLET_PROPOSAL_CSS + COHERENCE_CSS}</style>
     </article>
   );
 }
@@ -271,6 +347,133 @@ function ContactHeader({ contact }) {
 }
 
 /**
+ * SectionBridgeBlock — renders a transition/bridge sentence between two
+ * resume sections, making the document read as a cohesive narrative.
+ *
+ * Only renders if a matching bridge exists in the bridges array.
+ * Supports inline editing and dismissal.
+ * Hidden in print to keep the PDF compact.
+ */
+/**
+ * Section label lookup for bridge flow indicator.
+ * @type {Record<string, string>}
+ */
+const BRIDGE_SECTION_LABELS = {
+  summary: 'Summary',
+  experience: 'Experience',
+  projects: 'Projects',
+  education: 'Education',
+  skills: 'Skills'
+};
+
+function SectionBridgeBlock({ bridges = [], from, to, onEdit, onDismiss }) {
+  const bridge = (Array.isArray(bridges) ? bridges : []).find(
+    (b) => b && b.from === from && b.to === to && b.text?.trim()
+  );
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const inputRef = useRef(null);
+
+  if (!bridge) return null;
+
+  const isUser = bridge._source === 'user' || bridge._source === 'user_approved';
+  const fromLabel = BRIDGE_SECTION_LABELS[from] || from;
+  const toLabel = BRIDGE_SECTION_LABELS[to] || to;
+
+  const handleStartEdit = () => {
+    setDraft(bridge.text);
+    setEditing(true);
+    // Focus after render
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const handleSave = async () => {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === bridge.text) {
+      setEditing(false);
+      return;
+    }
+    if (onEdit) {
+      try {
+        await onEdit(from, to, trimmed);
+      } catch (err) {
+        console.error('[SectionBridgeBlock] edit failed:', err);
+      }
+    }
+    setEditing(false);
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === 'Escape') {
+      setEditing(false);
+    }
+  };
+
+  const handleDismiss = async () => {
+    if (onDismiss) {
+      try {
+        await onDismiss(from, to);
+      } catch (err) {
+        console.error('[SectionBridgeBlock] dismiss failed:', err);
+      }
+    }
+  };
+
+  return (
+    <div class="rb-bridge" data-from={from} data-to={to}>
+      <span class="rb-bridge-flow" title={`${fromLabel} → ${toLabel}`} aria-hidden="true">
+        &#8615;
+      </span>
+      {editing ? (
+        <div class="rb-bridge-edit">
+          <textarea
+            ref={inputRef}
+            class="rb-bridge-input"
+            value={draft}
+            rows={2}
+            onInput={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onBlur={handleSave}
+            aria-label={`${fromLabel}에서 ${toLabel} 연결 문구 수정`}
+          />
+        </div>
+      ) : (
+        <p class="rb-bridge-text">
+          {bridge.text}
+          {isUser && <span class="rb-bridge-badge rb-bridge-badge--user" title="직접 수정">user</span>}
+        </p>
+      )}
+      <div class="rb-bridge-actions">
+        {!editing && (
+          <>
+            <button
+              class="rb-bridge-btn"
+              onClick={handleStartEdit}
+              title="수정"
+              aria-label={`${fromLabel}→${toLabel} 연결 문구 수정`}
+            >
+              &#9998;
+            </button>
+            <button
+              class="rb-bridge-btn rb-bridge-btn--dismiss"
+              onClick={handleDismiss}
+              title="제거"
+              aria-label={`${fromLabel}→${toLabel} 연결 문구 제거`}
+            >
+              &times;
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
  * 섹션 공통 래퍼 (kicker + 제목 + 선택적 sourceTag 배지 + 본문)
  *
  * sectionType — 인쇄 시 page-break 제어를 위한 CSS 수식자 클래스용 값.
@@ -291,6 +494,111 @@ function ResumeSection({ title, kicker, children, sourceTag, sectionType }) {
       {children}
     </section>
   );
+}
+
+function DisplayAxesSection({ axes, experience = [], projects = [] }) {
+  return (
+    <div class="rb-axes-grid">
+      {axes.map((axis, index) => {
+        const evidence = deriveAxisEvidence(axis, experience, projects);
+        const composition = axis.strengthComposition || [];
+        const bullets = axis.supportingBullets || [];
+        return (
+          <section key={`${axis.label}-${index}`} class="rb-axis-card">
+            <h3 class="rb-axis-title">{axis.label}</h3>
+            {/* Narrative description (preferred) or legacy tagline */}
+            {axis.description && <p class="rb-axis-description">{axis.description}</p>}
+            {!axis.description && axis.tagline && <p class="rb-axis-tagline">{axis.tagline}</p>}
+
+            {/* Strength composition — shows what strengths compose this axis */}
+            {composition.length > 0 && (
+              <div class="rb-axis-strengths">
+                {composition.map((entry) => (
+                  <span key={entry.strengthId} class="rb-axis-strength-tag" title={entry.role || entry.description}>
+                    {entry.label}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Supporting bullets from the axis */}
+            {bullets.length > 0 && (
+              <ul class="rb-axis-evidence-list">
+                {bullets.map((b, bIdx) => (
+                  <li key={`${axis.label}-bullet-${bIdx}`} class="rb-axis-evidence-item">{b}</li>
+                ))}
+              </ul>
+            )}
+
+            {/* Fallback: evidence derived from keyword matching (legacy) */}
+            {bullets.length === 0 && evidence.length > 0 && (
+              <div class="rb-axis-evidence">
+                <p class="rb-axis-evidence-label">Key experience</p>
+                <ul class="rb-axis-evidence-list">
+                  {evidence.map((item) => (
+                    <li key={`${axis.label}-${item.label}`} class="rb-axis-evidence-item">{item.label}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function deriveAxisEvidence(axis, experience, projects) {
+  const items = [];
+  const signals = [
+    axis.label,
+    axis.tagline,
+    ...(Array.isArray(axis.highlight_skills) ? axis.highlight_skills : []),
+  ]
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  for (const exp of Array.isArray(experience) ? experience : []) {
+    const label = [exp.company, exp.title].filter(Boolean).join(' · ');
+    const corpus = [
+      exp.company,
+      exp.title,
+      exp.location,
+      ...(Array.isArray(exp.bullets) ? exp.bullets : []),
+    ].join(' ').toLowerCase();
+    const score = scoreAxisEvidence(signals, corpus);
+    if (score > 0) items.push({ label, score });
+  }
+
+  for (const proj of Array.isArray(projects) ? projects : []) {
+    const name = proj.title || proj.name || '';
+    const label = `Project · ${name}`;
+    const corpus = [
+      name,
+      proj.description,
+      ...(Array.isArray(proj.tech_stack) ? proj.tech_stack : []),
+      ...(Array.isArray(proj.bullets) ? proj.bullets : []),
+    ].join(' ').toLowerCase();
+    const score = scoreAxisEvidence(signals, corpus);
+    if (score > 0) items.push({ label, score });
+  }
+
+  return items
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 2);
+}
+
+function scoreAxisEvidence(signals, corpus) {
+  let score = 0;
+
+  for (const signal of signals) {
+    if (!signal || signal.length < 2) continue;
+    if (corpus.includes(signal)) {
+      score += signal.length > 6 ? 3 : 2;
+    }
+  }
+
+  return score;
 }
 
 /**
@@ -318,11 +626,11 @@ function SourceBadge({ source }) {
     label = '승인됨';
     title = '사용자가 시스템 제안을 승인하여 반영된 항목입니다.';
   } else {
-    // 'system' 또는 기타 — 자동 생성, 미반영 상태
+    // 'system' 또는 기타 — 자동 생성, 아직 사용자 확인 전 상태
     modifier = 'system';
     icon = '●';
-    label = '미반영';
-    title = '시스템이 자동 생성한 항목입니다. 직접 편집하면 사용자 항목으로 전환됩니다.';
+    label = '검토 필요';
+    title = '시스템이 자동 생성한 초안입니다. 확인 후 편집하면 확정된 항목으로 전환됩니다.';
   }
 
   return (
@@ -364,6 +672,10 @@ function ExperienceItem({
   onProposalApproved,
   onProposalRejected,
   onResumeUpdated,
+  sectionSummary = null,
+  bulletAnnotations = [],
+  strengths = [],
+  narrativeAxes = [],
 }) {
   const {
     company = '',
@@ -430,17 +742,25 @@ function ExperienceItem({
     <div class={`rb-exp-item${_source === 'system' ? ' rb-item--unconfirmed' : ''}`}>
       <div class="rb-item-meta">
         <div class="rb-title-row">
-          {title && <p class="rb-item-title">{title}</p>}
+          {company && <p class="rb-item-title">{company}</p>}
           <SourceBadge source={_source} />
         </div>
         <div class="rb-sub-row">
           <p class="rb-item-sub">
-            {company}
+            {title}
             {loc && <span class="rb-meta-sep"> · {loc}</span>}
           </p>
           {period && <p class="rb-period">{period}</p>}
         </div>
       </div>
+      {/* ─── Section-level theme badges (narrative threading) ─── */}
+      {sectionSummary && (
+        <SectionThemeBadges
+          summary={sectionSummary}
+          strengths={strengths}
+          narrativeAxes={narrativeAxes}
+        />
+      )}
       {localBullets.length > 0 && (
         <ul class="rb-bullets">
           {localBullets.map((b, i) => (
@@ -457,6 +777,9 @@ function ExperienceItem({
               onProposalApproved={handleProposalApproved}
               onProposalRejected={handleProposalRejected}
               onResumeUpdated={onResumeUpdated}
+              annotation={_findAnnotationForBullet(bulletAnnotations, i)}
+              strengths={strengths}
+              narrativeAxes={narrativeAxes}
             />
           ))}
         </ul>
@@ -519,6 +842,10 @@ function ProjectItem({
   onProposalApproved,
   onProposalRejected,
   onResumeUpdated,
+  sectionSummary = null,
+  bulletAnnotations = [],
+  strengths = [],
+  narrativeAxes = [],
 }) {
   const {
     title = '',
@@ -600,6 +927,14 @@ function ProjectItem({
           ))}
         </div>
       )}
+      {/* ─── Section-level theme badges (narrative threading) ─── */}
+      {sectionSummary && (
+        <SectionThemeBadges
+          summary={sectionSummary}
+          strengths={strengths}
+          narrativeAxes={narrativeAxes}
+        />
+      )}
       {localBullets.length > 0 && (
         <ul class="rb-bullets">
           {localBullets.map((b, i) => (
@@ -616,6 +951,9 @@ function ProjectItem({
               onProposalApproved={handleProposalApproved}
               onProposalRejected={handleProposalRejected}
               onResumeUpdated={onResumeUpdated}
+              annotation={_findAnnotationForBullet(bulletAnnotations, i)}
+              strengths={strengths}
+              narrativeAxes={narrativeAxes}
             />
           ))}
         </ul>
@@ -966,12 +1304,16 @@ function BulletItem({
   onProposalApproved,
   onProposalRejected,
   onResumeUpdated,
+  annotation = null,
+  strengths = [],
+  narrativeAxes = [],
 }) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(text);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [lastSimilarityScore, setLastSimilarityScore] = useState(null);
   const textareaRef = useRef(null);
 
   // 편집 모드 진입 시 textarea 자동 포커스
@@ -1018,10 +1360,11 @@ function BulletItem({
     setSaving(true);
     setError('');
     try {
+      let responseData = null;
       if (onEditBullet) {
         // ── Sub-AC 8-3: useResumeActions 핸들러 경로 ────────────────────────
         // API 호출 + 응답 resume으로 상위 상태 즉시 갱신 (GET 재조회 없음).
-        await onEditBullet(section, itemIndex, bulletIndex, trimmed);
+        responseData = await onEditBullet(section, itemIndex, bulletIndex, trimmed);
       } else {
         // ── 레거시 경로: 직접 fetch + onUpdated 콜백 ────────────────────────
         const res = await fetch(
@@ -1034,10 +1377,15 @@ function BulletItem({
           }
         );
         if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || `HTTP ${res.status}`);
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `HTTP ${res.status}`);
         }
+        responseData = await res.json();
         onUpdated?.();
+      }
+      // Capture similarity score for inline feedback badge
+      if (responseData?.similarityScore) {
+        setLastSimilarityScore(responseData.similarityScore);
       }
       setEditing(false);
     } catch (err) {
@@ -1170,6 +1518,17 @@ function BulletItem({
   return (
     <li class="rb-bullet-item">
       <span class="rb-bullet-text">{text}</span>
+      {lastSimilarityScore && (
+        <BulletSimilarityBadge similarityScore={lastSimilarityScore} fadeDurationMs={6000} />
+      )}
+      {/* ─── Thread badges: strengths and axes this bullet connects to ─── */}
+      {annotation && (
+        <BulletThreadBadges
+          annotation={annotation}
+          strengths={strengths}
+          narrativeAxes={narrativeAxes}
+        />
+      )}
       <span class="rb-bullet-actions no-print">
         <button
           class="rb-bullet-edit-btn"
@@ -1209,6 +1568,262 @@ function BulletItem({
       )}
     </li>
   );
+}
+
+/**
+ * IdentifiedStrengthsSection — narrative strength rendering for resume consumption.
+ *
+ * Presents each strength as a polished resume-ready narrative block rather than
+ * metadata cards or keyword tags. Each strength flows as:
+ *
+ *   1. Strength label as a professional heading
+ *   2. Integrated narrative paragraph merging description + reasoning naturally
+ *      (decision reasoning from session analysis is woven into the text)
+ *   3. Supporting evidence as contextual proof points with project/repo references
+ *   4. Behavioral indicators as subtle inline context (not prominent tag clouds)
+ *
+ * Resume-consumption principles:
+ *   - Reads like a professional narrative, not a data dashboard
+ *   - Reasoning context is integrated, not separated into metadata blocks
+ *   - Evidence references ground claims in specific work
+ *   - Print output is clean and hierarchy is clear
+ *
+ * props:
+ *   strengths — IdentifiedStrength[] from the strengths identification pipeline
+ */
+function IdentifiedStrengthsSection({ strengths }) {
+  if (!Array.isArray(strengths) || strengths.length === 0) return null;
+
+  return (
+    <div class="rb-strengths-list">
+      {strengths.map((str, i) => (
+        <IdentifiedStrengthCard key={str.id || `str-${i}`} strength={str} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Single strength card — renders one IdentifiedStrength as a resume-ready narrative.
+ *
+ * Layout (resume-consumption format):
+ *   ┌──────────────────────────────────────────────────────┐
+ *   │ LABEL                                    scope hint  │
+ *   │                                                      │
+ *   │ Integrated narrative: description flows naturally     │
+ *   │ into reasoning, reading as a single coherent          │
+ *   │ paragraph that explains what and why.                 │
+ *   │                                                      │
+ *   │ Demonstrated through:                                │
+ *   │   • evidence bullet with project context             │
+ *   │   • evidence bullet with project context             │
+ *   │                                                      │
+ *   │ (behavioral indicators as subtle inline chips)       │
+ *   └──────────────────────────────────────────────────────┘
+ *
+ * Key differences from metadata-card format:
+ *   - No frequency/repo count badges (replaced with subtle scope hint)
+ *   - Reasoning integrated into narrative flow, not separate block
+ *   - Evidence bullets are primary (not secondary metadata)
+ *   - Behavior cluster tags are de-emphasized (screen-only, subtle)
+ */
+function IdentifiedStrengthCard({ strength }) {
+  const {
+    label = '',
+    description = '',
+    reasoning = '',
+    frequency = 0,
+    behaviorCluster = [],
+    repos = [],
+    exampleBullets = [],
+    evidenceIds = [],
+    projectIds = [],
+    _source,
+  } = strength;
+
+  const hasEvidence = exampleBullets.length > 0;
+  const hasBehaviors = behaviorCluster.length > 0;
+
+  // Build a subtle scope hint (e.g., "Across 3 projects in 2 repos")
+  // for context without the dashboard-metric feel
+  const scopeParts = [];
+  const projectCount = projectIds.length || (evidenceIds.length > 0 ? evidenceIds.length : 0);
+  if (projectCount > 1) scopeParts.push(`${projectCount} projects`);
+  if (repos.length > 1) scopeParts.push(`${repos.length} repos`);
+  const scopeHint = scopeParts.length > 0 ? `Across ${scopeParts.join(', ')}` : '';
+
+  // Build the integrated narrative paragraph:
+  // Merge description and reasoning into a single flowing text.
+  // If reasoning adds genuine new information beyond the description,
+  // append it as a continuation sentence. Otherwise, description alone suffices.
+  const narrativeParagraph = _buildNarrativeParagraph(description, reasoning);
+
+  // Build repo-contextualized evidence bullets: annotate each bullet with
+  // the repo it belongs to (when repos data is available and bullets can be matched).
+  // This grounds evidence in specific project context for resume readability.
+  const contextualizedEvidence = _contextualizeEvidence(exampleBullets, repos, projectIds);
+
+  return (
+    <div class={`rb-str-card${_source === 'system' ? ' rb-item--unconfirmed' : ''}`}>
+      {/* Header: strength label + subtle scope hint */}
+      <div class="rb-str-header">
+        <h3 class="rb-str-label">{label}</h3>
+        <div class="rb-str-meta">
+          {scopeHint && (
+            <span class="rb-str-scope" title={repos.join(', ')}>
+              {scopeHint}
+            </span>
+          )}
+          {_source && <SourceBadge source={_source} />}
+        </div>
+      </div>
+
+      {/* Integrated narrative — description + reasoning woven together */}
+      {narrativeParagraph && (
+        <p class="rb-str-narrative">{narrativeParagraph}</p>
+      )}
+
+      {/* Evidence — primary proof points with contextual grounding */}
+      {hasEvidence && (
+        <div class="rb-str-evidence">
+          <p class="rb-str-evidence-label">Demonstrated through</p>
+          <ul class="rb-str-evidence-list">
+            {contextualizedEvidence.slice(0, 3).map((item, k) => (
+              <li key={k} class="rb-str-evidence-item">
+                {item.text}
+                {item.repoHint && (
+                  <span class="rb-str-evidence-repo">{item.repoHint}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Episode count — subtle grounding indicator for evidence depth */}
+      {frequency > 0 && evidenceIds.length > 0 && (
+        <p class="rb-str-episode-depth">
+          Observed across {evidenceIds.length} evidence episode{evidenceIds.length !== 1 ? 's' : ''}
+        </p>
+      )}
+
+      {/* Behavioral indicators — subtle context, screen-only emphasis */}
+      {hasBehaviors && (
+        <div class="rb-str-behaviors">
+          {behaviorCluster.map((b, j) => (
+            <span key={j} class="rb-str-behavior-tag">{b}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Build repo-contextualized evidence items from example bullets and repo metadata.
+ *
+ * When repos are available, tries to attach a short repo hint to each evidence bullet
+ * (e.g., " — work-log" or " — api-service") to ground the evidence in a specific
+ * project context. This makes resume output more concrete and verifiable.
+ *
+ * Strategy:
+ *   - If there are multiple repos and exactly as many bullets, assign 1:1
+ *   - If there's only one repo, annotate all bullets with that repo
+ *   - If repos are empty or mismatched, return plain bullets without hints
+ *
+ * @param {string[]} bullets - Example bullet texts
+ * @param {string[]} repos - Repository names associated with this strength
+ * @param {string[]} projectIds - Project IDs (used as fallback context)
+ * @returns {{ text: string, repoHint: string|null }[]}
+ */
+function _contextualizeEvidence(bullets, repos, projectIds) {
+  if (!Array.isArray(bullets) || bullets.length === 0) return [];
+
+  const safeRepos = Array.isArray(repos) ? repos : [];
+  const safeProjects = Array.isArray(projectIds) ? projectIds : [];
+
+  return bullets.map((text, idx) => {
+    let repoHint = null;
+
+    if (safeRepos.length === 1) {
+      // Single repo — all evidence comes from there
+      repoHint = _formatRepoName(safeRepos[0]);
+    } else if (safeRepos.length > 1 && safeRepos.length === bullets.length) {
+      // 1:1 mapping — each bullet corresponds to a repo
+      repoHint = _formatRepoName(safeRepos[idx]);
+    } else if (safeRepos.length > 1) {
+      // Multiple repos but no 1:1 mapping — show a combined hint for the first bullet only
+      if (idx === 0) {
+        repoHint = safeRepos.slice(0, 2).map(_formatRepoName).join(', ');
+        if (safeRepos.length > 2) repoHint += ` +${safeRepos.length - 2}`;
+      }
+    }
+
+    return { text: (text || '').trim(), repoHint };
+  });
+}
+
+/**
+ * Format a repository name for display as a subtle evidence context hint.
+ * Strips common prefixes and shortens long names.
+ *
+ * @param {string} repo
+ * @returns {string}
+ */
+function _formatRepoName(repo) {
+  if (!repo) return '';
+  // Strip org prefix (e.g., "company/repo-name" → "repo-name")
+  const name = repo.includes('/') ? repo.split('/').pop() : repo;
+  // Truncate long names
+  return name.length > 25 ? name.slice(0, 22) + '...' : name;
+}
+
+/**
+ * Build a single narrative paragraph from description and reasoning.
+ *
+ * Strategy:
+ *   - If only description exists, use it as-is
+ *   - If only reasoning exists, use it as-is
+ *   - If both exist and reasoning adds substantive new information,
+ *     combine them into a flowing paragraph (description first, then reasoning
+ *     as a continuation)
+ *   - Avoids awkward repetition by checking for semantic overlap via
+ *     simple heuristic (shared leading words)
+ *
+ * @param {string} description - Primary description text
+ * @param {string} reasoning - Why this qualifies as a genuine strength
+ * @returns {string} Integrated narrative paragraph
+ */
+function _buildNarrativeParagraph(description, reasoning) {
+  const desc = (description || '').trim();
+  const reason = (reasoning || '').trim();
+
+  if (!desc && !reason) return '';
+  if (!reason) return desc;
+  if (!desc) return reason;
+
+  // Check if reasoning is substantially different from description.
+  // Simple heuristic: if the first 40 chars of reasoning appear in description,
+  // they're likely redundant — just use description.
+  const reasonStart = reason.slice(0, 40).toLowerCase();
+  const descLower = desc.toLowerCase();
+  if (descLower.includes(reasonStart) || reasonStart.includes(descLower.slice(0, 40))) {
+    // Reasoning largely overlaps with description — use the longer one
+    return desc.length >= reason.length ? desc : reason;
+  }
+
+  // Combine: description as the lead, reasoning as supporting continuation.
+  // Ensure proper sentence boundary.
+  const descEndsWithPeriod = /[.!?]$/.test(desc);
+  const normalizedDesc = descEndsWithPeriod ? desc : `${desc}.`;
+
+  // Start reasoning with lowercase if it begins with a capital letter
+  // to flow better as a continuation (unless it starts with a proper noun pattern)
+  const reasonFirstChar = reason.charAt(0);
+  const looksLikeProperNoun = reason.length > 1 && /^[A-Z][a-z]/.test(reason);
+  const flowReason = looksLikeProperNoun ? reason : (reasonFirstChar.toLowerCase() + reason.slice(1));
+
+  return `${normalizedDesc} ${flowReason}`;
 }
 
 /**
@@ -1413,9 +2028,455 @@ function formatPeriod(start, end) {
   return e ?? '';
 }
 
+// ─── Narrative threading helper functions ──────────────────────────────────
+
+/**
+ * Find the SectionThreadSummary for a given section and item index.
+ * @param {object|null} threadingData  Full NarrativeThreadingResult
+ * @param {string}      section        "experience" | "projects"
+ * @param {number}      itemIndex      0-based index
+ * @returns {object|null}
+ */
+function _findSectionSummary(threadingData, section, itemIndex) {
+  if (!threadingData || !Array.isArray(threadingData.sectionSummaries)) return null;
+  return threadingData.sectionSummaries.find(
+    (s) => s.section === section && s.itemIndex === itemIndex
+  ) || null;
+}
+
+/**
+ * Find all bullet annotations for a given section and item index.
+ * @param {object|null} threadingData
+ * @param {string}      section
+ * @param {number}      itemIndex
+ * @returns {object[]}
+ */
+function _findBulletAnnotations(threadingData, section, itemIndex) {
+  if (!threadingData || !Array.isArray(threadingData.bulletAnnotations)) return [];
+  return threadingData.bulletAnnotations.filter(
+    (a) => a.section === section && a.itemIndex === itemIndex
+  );
+}
+
+/**
+ * Find the annotation for a specific bullet by its bulletIndex.
+ * @param {object[]} annotations  Pre-filtered annotations for this item
+ * @param {number}   bulletIndex
+ * @returns {object|null}
+ */
+function _findAnnotationForBullet(annotations, bulletIndex) {
+  if (!Array.isArray(annotations)) return null;
+  return annotations.find((a) => a.bulletIndex === bulletIndex) || null;
+}
+
+/**
+ * Look up a label by ID from a list of strengths or axes.
+ * @param {string}   id
+ * @param {object[]} items  Array with { id, label } shape
+ * @returns {string}
+ */
+function _lookupLabel(id, items) {
+  if (!id || !Array.isArray(items)) return id;
+  const item = items.find((s) => s.id === id);
+  return item?.label || id;
+}
+
+/**
+ * SectionThemeBadges — shows the dominant strengths and axes for a resume
+ * section item (experience entry or project). Read-only annotation,
+ * hidden during print.
+ */
+function SectionThemeBadges({ summary, strengths, narrativeAxes }) {
+  if (!summary) return null;
+
+  const { dominantStrengthIds = [], dominantAxisIds = [], threadedBulletCount = 0, totalBulletCount = 0 } = summary;
+
+  if (dominantStrengthIds.length === 0 && dominantAxisIds.length === 0) return null;
+
+  return (
+    <div class="rb-thread-themes no-print" aria-label="Narrative themes">
+      {dominantAxisIds.map((axisId) => (
+        <span key={axisId} class="rb-thread-axis-tag" title={`Narrative axis: ${_lookupLabel(axisId, narrativeAxes)}`}>
+          {_lookupLabel(axisId, narrativeAxes)}
+        </span>
+      ))}
+      {dominantStrengthIds.map((strId) => (
+        <span key={strId} class="rb-thread-strength-tag" title={`Strength: ${_lookupLabel(strId, strengths)}`}>
+          {_lookupLabel(strId, strengths)}
+        </span>
+      ))}
+      {totalBulletCount > 0 && (
+        <span class="rb-thread-coverage" title={`${threadedBulletCount} of ${totalBulletCount} bullets connected to themes`}>
+          {threadedBulletCount}/{totalBulletCount}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * BulletThreadBadges — shows which strengths/axes a specific bullet connects to.
+ * Appears as tiny inline badges after the bullet text. Read-only, print-hidden.
+ */
+function BulletThreadBadges({ annotation, strengths, narrativeAxes }) {
+  if (!annotation) return null;
+
+  const { strengthIds = [], axisIds = [], confidence = 0 } = annotation;
+  if (strengthIds.length === 0 && axisIds.length === 0) return null;
+
+  // Only show high-confidence connections
+  if (confidence < 0.5) return null;
+
+  return (
+    <span class="rb-thread-badges no-print">
+      {axisIds.slice(0, 2).map((axisId) => (
+        <span
+          key={axisId}
+          class="rb-thread-badge rb-thread-badge--axis"
+          title={`Axis: ${_lookupLabel(axisId, narrativeAxes)}`}
+        >
+          {_truncateLabel(_lookupLabel(axisId, narrativeAxes), 20)}
+        </span>
+      ))}
+      {strengthIds.slice(0, 2).map((strId) => (
+        <span
+          key={strId}
+          class="rb-thread-badge rb-thread-badge--strength"
+          title={`Strength: ${_lookupLabel(strId, strengths)}`}
+        >
+          {_truncateLabel(_lookupLabel(strId, strengths), 18)}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function _truncateLabel(label, maxLen) {
+  if (!label || label.length <= maxLen) return label;
+  return label.slice(0, maxLen - 1) + '\u2026';
+}
+
+/* ──────────────────────────────────────────── */
+/* Coherence Score Badge                        */
+/* ──────────────────────────────────────────── */
+
+const GRADE_COLORS = {
+  A: { bg: '#ecfdf5', border: '#6ee7b7', text: '#065f46' },
+  B: { bg: '#eff6ff', border: '#93c5fd', text: '#1e40af' },
+  C: { bg: '#fefce8', border: '#fcd34d', text: '#92400e' },
+  D: { bg: '#fef2f2', border: '#fca5a5', text: '#991b1b' },
+};
+
+const SEVERITY_ICONS = { error: '⛔', warning: '⚠️', info: 'ℹ️' };
+
+/**
+ * Compact coherence validation badge displayed at the bottom of the resume.
+ * Shows overall grade, per-dimension scores, and expandable issue list.
+ * Auto-fixes are shown as a count with details on expand.
+ */
+function CoherenceScoreBadge({ report }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!report || typeof report.overallScore !== 'number') return null;
+
+  const { overallScore, grade, structuralFlow, redundancy, tonalConsistency,
+    issues = [], autoFixes = [] } = report;
+
+  const colors = GRADE_COLORS[grade] || GRADE_COLORS.D;
+  const pct = Math.round(overallScore * 100);
+
+  const errorCount = issues.filter(i => i.severity === 'error').length;
+  const warningCount = issues.filter(i => i.severity === 'warning').length;
+
+  return (
+    <div
+      class="rb-coherence"
+      style={{ background: colors.bg, borderColor: colors.border }}
+    >
+      <button
+        type="button"
+        class="rb-coherence__header"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+      >
+        <span class="rb-coherence__grade" style={{ color: colors.text }}>
+          {grade}
+        </span>
+        <span class="rb-coherence__title">
+          일관성 검증
+        </span>
+        <span class="rb-coherence__scores">
+          <ScorePill label="구조" score={structuralFlow?.score} />
+          <ScorePill label="중복" score={redundancy?.score} />
+          <ScorePill label="톤" score={tonalConsistency?.score} />
+        </span>
+        <span class="rb-coherence__pct" style={{ color: colors.text }}>
+          {pct}%
+        </span>
+        {(errorCount > 0 || warningCount > 0) && (
+          <span class="rb-coherence__counts">
+            {errorCount > 0 && <span class="rb-coherence__count rb-coherence__count--error">{errorCount}</span>}
+            {warningCount > 0 && <span class="rb-coherence__count rb-coherence__count--warning">{warningCount}</span>}
+          </span>
+        )}
+        {autoFixes.length > 0 && (
+          <span class="rb-coherence__fixes" title="자동 수정 적용됨">
+            🔧 {autoFixes.length}
+          </span>
+        )}
+        <span class="rb-coherence__chevron">{expanded ? '▲' : '▼'}</span>
+      </button>
+
+      {expanded && (
+        <div class="rb-coherence__details">
+          {/* Issues list */}
+          {issues.length > 0 && (
+            <div class="rb-coherence__issues">
+              <strong class="rb-coherence__subtitle">검출된 이슈 ({issues.length})</strong>
+              <ul class="rb-coherence__issue-list">
+                {issues.map((issue, idx) => (
+                  <li key={idx} class={`rb-coherence__issue rb-coherence__issue--${issue.severity}`}>
+                    <span class="rb-coherence__issue-icon">
+                      {SEVERITY_ICONS[issue.severity] || ''}
+                    </span>
+                    <span class="rb-coherence__issue-msg">{issue.message}</span>
+                    {issue.autoFixable && (
+                      <span class="rb-coherence__issue-tag">자동수정</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Auto-fixes applied */}
+          {autoFixes.length > 0 && (
+            <div class="rb-coherence__autofix-list">
+              <strong class="rb-coherence__subtitle">자동 수정 ({autoFixes.length})</strong>
+              <ul class="rb-coherence__issue-list">
+                {autoFixes.map((fix, idx) => (
+                  <li key={idx} class="rb-coherence__autofix">
+                    <span class="rb-coherence__fix-action">{_fixActionLabel(fix.action)}</span>
+                    {fix.before && (
+                      <span class="rb-coherence__fix-diff">
+                        <del>{fix.before}</del>
+                        {fix.after && fix.after !== '(removed — near-duplicate of another bullet)' && (
+                          <> → <ins>{fix.after}</ins></>
+                        )}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {issues.length === 0 && autoFixes.length === 0 && (
+            <p class="rb-coherence__clean">✅ 이슈 없음 — 이력서가 일관성 검증을 통과했습니다.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Small inline score pill for a coherence dimension */
+function ScorePill({ label, score }) {
+  if (typeof score !== 'number') return null;
+  const pct = Math.round(score * 100);
+  const color = pct >= 90 ? '#065f46' : pct >= 75 ? '#1e40af' : pct >= 60 ? '#92400e' : '#991b1b';
+  return (
+    <span class="rb-coherence__pill" style={{ color }}>
+      {label} {pct}%
+    </span>
+  );
+}
+
+function _fixActionLabel(action) {
+  switch (action) {
+    case 'removed_duplicate': return '중복 제거';
+    case 'normalized_voice': return '톤 통일';
+    case 'stripped_metadata_prefix': return '메타데이터 제거';
+    case 'reordered_chronologically': return '시간순 정렬';
+    default: return action || '수정';
+  }
+}
+
 /* ──────────────────────────────────────────── */
 /* Styles                                       */
 /* ──────────────────────────────────────────── */
+
+const COHERENCE_CSS = `
+  /* ─── Coherence validation badge ─── */
+  .rb-coherence {
+    border: 1px solid;
+    border-radius: var(--radius-lg, 10px);
+    font-size: 13px;
+    line-height: 1.4;
+    overflow: hidden;
+  }
+  .rb-coherence__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+  }
+  .rb-coherence__header:hover {
+    opacity: 0.85;
+  }
+  .rb-coherence__grade {
+    font-weight: 700;
+    font-size: 18px;
+    min-width: 24px;
+    text-align: center;
+  }
+  .rb-coherence__title {
+    font-weight: 600;
+    color: var(--text, #1f2937);
+    white-space: nowrap;
+  }
+  .rb-coherence__scores {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .rb-coherence__pill {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.6);
+    white-space: nowrap;
+  }
+  .rb-coherence__pct {
+    font-weight: 700;
+    font-size: 14px;
+    min-width: 36px;
+    text-align: right;
+  }
+  .rb-coherence__counts {
+    display: flex;
+    gap: 4px;
+  }
+  .rb-coherence__count {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 5px;
+    border-radius: 10px;
+    line-height: 1.5;
+  }
+  .rb-coherence__count--error {
+    background: #fecaca;
+    color: #991b1b;
+  }
+  .rb-coherence__count--warning {
+    background: #fef3c7;
+    color: #92400e;
+  }
+  .rb-coherence__fixes {
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .rb-coherence__chevron {
+    font-size: 10px;
+    color: var(--muted, #6b7280);
+    flex-shrink: 0;
+  }
+
+  /* ─── Expanded details ─── */
+  .rb-coherence__details {
+    padding: 8px 12px 12px;
+    border-top: 1px solid rgba(0,0,0,0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .rb-coherence__subtitle {
+    font-size: 12px;
+    color: var(--muted, #6b7280);
+    display: block;
+    margin-bottom: 4px;
+  }
+  .rb-coherence__issue-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .rb-coherence__issue {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text, #374151);
+  }
+  .rb-coherence__issue-icon {
+    flex-shrink: 0;
+    font-size: 12px;
+  }
+  .rb-coherence__issue-msg {
+    word-break: break-word;
+  }
+  .rb-coherence__issue-tag {
+    font-size: 10px;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: #dbeafe;
+    color: #1e40af;
+    white-space: nowrap;
+    flex-shrink: 0;
+    align-self: center;
+  }
+  .rb-coherence__autofix {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 12px;
+    padding: 4px 6px;
+    background: rgba(255,255,255,0.5);
+    border-radius: 4px;
+  }
+  .rb-coherence__fix-action {
+    font-weight: 600;
+    font-size: 11px;
+    color: var(--muted, #6b7280);
+  }
+  .rb-coherence__fix-diff {
+    font-size: 11px;
+    color: var(--text, #374151);
+    word-break: break-word;
+  }
+  .rb-coherence__fix-diff del {
+    background: #fecaca;
+    text-decoration: line-through;
+    padding: 0 2px;
+    border-radius: 2px;
+  }
+  .rb-coherence__fix-diff ins {
+    background: #bbf7d0;
+    text-decoration: none;
+    padding: 0 2px;
+    border-radius: 2px;
+  }
+  .rb-coherence__clean {
+    margin: 0;
+    font-size: 12px;
+    color: #065f46;
+  }
+
+  @media print {
+    .rb-coherence { display: none; }
+  }
+`;
 
 const RB_CSS = `
   /* ─── Body card ─── */
@@ -1713,6 +2774,90 @@ const RB_CSS = `
     color: var(--ink);
   }
 
+  .rb-axes-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+
+  .rb-axis-card {
+    padding: 12px 14px;
+    border: 1px solid rgba(17, 24, 39, 0.08);
+    border-radius: var(--radius-md);
+    background: rgba(248, 250, 252, 0.75);
+  }
+
+  .rb-axis-title {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+  }
+
+  .rb-axis-tagline {
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .rb-axis-evidence {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 10px;
+  }
+
+  .rb-axis-evidence-label {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .rb-axis-evidence-list {
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 4px;
+  }
+
+  .rb-axis-evidence-item {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink);
+  }
+
+  .rb-axis-description {
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .rb-axis-strengths {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .rb-axis-strength-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #553c9a;
+    background: #faf5ff;
+    border: 1px solid #e9d8fd;
+    border-radius: 999px;
+    white-space: nowrap;
+    cursor: default;
+  }
+
   /* ─── Source provenance badges ─── */
   .rb-source-badge {
     display: inline-flex;
@@ -1771,6 +2916,214 @@ const RB_CSS = `
     font-size: 11px;
     color: var(--muted);
     opacity: 0.65;
+  }
+
+  /* ─── Identified Strengths section (resume-consumption narrative format) ─── */
+  .rb-strengths-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .rb-str-card {
+    position: relative;
+    overflow: hidden;
+    padding: 18px 20px 16px;
+    border: 1px solid rgba(37, 99, 235, 0.12);
+    border-radius: calc(var(--radius-md) + 2px);
+    background:
+      radial-gradient(circle at top right, rgba(96, 165, 250, 0.14), transparent 26%),
+      linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(245, 248, 255, 0.92) 100%);
+    box-shadow:
+      0 8px 18px rgba(15, 23, 42, 0.04),
+      inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .rb-str-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(90deg, rgba(37, 99, 235, 0.08), transparent 18%, transparent 82%, rgba(15, 23, 42, 0.03));
+    opacity: 0.9;
+  }
+
+  .rb-str-header {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .rb-str-label {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.3;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+
+  .rb-str-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  /* Subtle scope hint (replaces frequency/repo count badges) */
+  .rb-str-scope {
+    font-size: 11px;
+    font-weight: 700;
+    color: #45628f;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    cursor: default;
+  }
+
+  /* Integrated narrative paragraph (description + reasoning woven together) */
+  .rb-str-narrative {
+    margin: 0;
+    position: relative;
+    font-size: 13.5px;
+    line-height: 1.72;
+    color: var(--ink);
+  }
+
+  /* Evidence proof points — primary, not secondary */
+  .rb-str-evidence {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-top: 2px;
+    padding: 12px 14px 10px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.62);
+    border: 1px solid rgba(30, 41, 59, 0.06);
+  }
+
+  .rb-str-evidence-label {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #6b7b95;
+  }
+
+  .rb-str-evidence-list {
+    margin: 0;
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .rb-str-evidence-item {
+    font-size: 13px;
+    line-height: 1.62;
+    color: var(--ink);
+    opacity: 0.94;
+  }
+
+  .rb-str-evidence-item::marker {
+    color: var(--muted);
+  }
+
+  /* Repo context hint on evidence bullets — subtle, professional */
+  .rb-str-evidence-repo {
+    display: inline;
+    margin-left: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--muted);
+    opacity: 0.75;
+    font-style: italic;
+  }
+
+  .rb-str-evidence-repo::before {
+    content: "— ";
+  }
+
+  /* Episode depth indicator — grounds strength in evidence volume */
+  .rb-str-episode-depth {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    opacity: 0.78;
+  }
+
+  /* Behavioral indicators — subtle, screen-emphasis only */
+  .rb-str-behaviors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 2px;
+    opacity: 0.7;
+  }
+
+  .rb-str-behavior-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    font-size: 10.5px;
+    font-weight: 500;
+    color: #64748b;
+    background: rgba(100, 116, 139, 0.06);
+    border: 1px solid rgba(100, 116, 139, 0.12);
+    border-radius: 999px;
+    white-space: nowrap;
+    cursor: default;
+  }
+
+  /* Print: clean narrative output */
+  @media print {
+    /* Hide behavioral indicators in print — narrative + evidence suffice */
+    .rb-str-behaviors {
+      display: none;
+    }
+
+    .rb-str-meta .rb-source-badge {
+      display: none;
+    }
+
+    .rb-str-card {
+      border-color: rgba(0, 0, 0, 0.10);
+      background: transparent;
+      padding: 10px 0;
+      break-inside: avoid;
+    }
+
+    .rb-str-scope {
+      color: rgba(0, 0, 0, 0.45);
+    }
+
+    .rb-str-narrative {
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+
+    .rb-str-evidence-item {
+      font-size: 12px;
+    }
+
+    .rb-str-evidence-repo {
+      color: rgba(0, 0, 0, 0.4);
+    }
+
+    .rb-str-episode-depth {
+      color: rgba(0, 0, 0, 0.4);
+      font-size: 10.5px;
+    }
   }
 
   /* ─── Strength Keywords section ─── */
@@ -2280,6 +3633,201 @@ const RB_CSS = `
     opacity: 1;
   }
 
+  /* ─── Narrative threading: section theme badges ─── */
+  .rb-thread-themes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 2px 0 4px;
+  }
+
+  .rb-thread-axis-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #553c9a;
+    background: #faf5ff;
+    border: 1px solid #e9d8fd;
+    border-radius: 999px;
+    white-space: nowrap;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .rb-thread-strength-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #2b6cb0;
+    background: #ebf8ff;
+    border: 1px solid #bee3f8;
+    border-radius: 999px;
+    white-space: nowrap;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .rb-thread-coverage {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 5px;
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* ─── Narrative threading: bullet-level thread badges ─── */
+  .rb-thread-badges {
+    display: inline-flex;
+    gap: 3px;
+    margin-left: 6px;
+    vertical-align: middle;
+    flex-shrink: 0;
+  }
+
+  .rb-thread-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 5px;
+    font-size: 9px;
+    font-weight: 600;
+    border-radius: 999px;
+    white-space: nowrap;
+    line-height: 16px;
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: 0.75;
+    transition: opacity 0.15s;
+  }
+
+  .rb-bullet-item:hover .rb-thread-badge {
+    opacity: 1;
+  }
+
+  .rb-thread-badge--axis {
+    color: #553c9a;
+    background: #faf5ff;
+    border: 1px solid #e9d8fd;
+  }
+
+  .rb-thread-badge--strength {
+    color: #2b6cb0;
+    background: #ebf8ff;
+    border: 1px solid #bee3f8;
+  }
+
+  /* ─── Section Bridge (transition text) ─── */
+  .rb-bridge {
+    position: relative;
+    margin: 8px 0 4px;
+    padding: 8px 14px;
+    border-left: 3px solid var(--rb-accent, #6366f1);
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.04) 0%, rgba(99, 102, 241, 0.02) 100%);
+    border-radius: 0 6px 6px 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    transition: background 0.2s ease;
+  }
+  .rb-bridge:hover {
+    background: rgba(99, 102, 241, 0.07);
+  }
+  .rb-bridge-flow {
+    flex-shrink: 0;
+    font-size: 0.9em;
+    color: var(--rb-accent, #6366f1);
+    opacity: 0.5;
+    line-height: 1.5;
+    margin-top: 1px;
+  }
+  .rb-bridge-text {
+    flex: 1;
+    font-size: 0.88em;
+    line-height: 1.55;
+    color: var(--rb-text-secondary, #555);
+    font-style: italic;
+    margin: 0;
+    letter-spacing: 0.01em;
+  }
+  .rb-bridge-badge {
+    display: inline-block;
+    font-size: 0.7em;
+    font-style: normal;
+    padding: 1px 5px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .rb-bridge-badge--user {
+    background: #e0f2fe;
+    color: #0369a1;
+  }
+  .rb-bridge-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .rb-bridge:hover .rb-bridge-actions {
+    opacity: 1;
+  }
+  .rb-bridge-btn {
+    background: none;
+    border: 1px solid transparent;
+    cursor: pointer;
+    font-size: 0.85em;
+    padding: 2px 5px;
+    border-radius: 3px;
+    color: var(--rb-text-secondary, #555);
+    line-height: 1;
+  }
+  .rb-bridge-btn:hover {
+    background: rgba(0, 0, 0, 0.06);
+    border-color: rgba(0, 0, 0, 0.1);
+  }
+  .rb-bridge-btn--dismiss {
+    color: #b91c1c;
+  }
+  .rb-bridge-btn--dismiss:hover {
+    background: rgba(185, 28, 28, 0.08);
+  }
+  .rb-bridge-edit {
+    flex: 1;
+  }
+  .rb-bridge-input {
+    width: 100%;
+    border: 1px solid #c7d2fe;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 0.88em;
+    font-style: italic;
+    color: var(--rb-text-secondary, #555);
+    background: #fafafa;
+    outline: none;
+    resize: vertical;
+    min-height: 2.4em;
+    font-family: inherit;
+    line-height: 1.5;
+  }
+  .rb-bridge-input:focus {
+    border-color: #6366f1;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  }
+
   /* ─── Print ─── */
   /*
    * A4 print layout optimisation (Sub-AC 22-2).
@@ -2310,6 +3858,9 @@ const RB_CSS = `
 
     /* Strength keywords section is informational-only, not printed */
     .rb-kw-section-wrap { display: none !important; }
+
+    /* Section bridge/transition text — screen-only narrative aid */
+    .rb-bridge { display: none !important; }
 
     /* Strip 미반영 (unconfirmed) left-border visual treatment */
     .rb-item--unconfirmed {
@@ -2370,6 +3921,7 @@ const RB_CSS = `
 
     /* Divider between header and body */
     .rb-divider { margin: 4pt 0; }
+    .rb-axes-grid { grid-template-columns: 1fr; gap: 8pt; }
 
     /* Section wrapper inter-element gap */
     .rb-section { gap: 6pt; }
