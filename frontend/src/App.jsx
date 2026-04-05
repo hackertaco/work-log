@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
 import { LoginPage } from './pages/Login.jsx';
 import { ProjectsPage } from './pages/ProjectsPage.jsx';
-import { ResumeAnalysisPage } from './pages/ResumeAnalysisPage.jsx';
 import { ResumeChatPage } from './pages/ResumeChatPage.jsx';
 import { ResumePage } from './pages/ResumePage.jsx';
 import { WorkLogPage } from './pages/WorkLogPage.jsx';
@@ -43,7 +42,8 @@ export function App() {
   }
 
   if (pathname === '/resume/analysis') {
-    return <ResumeAnalysisPage />;
+    // redirect to chat — analysis tab removed
+    return <ResumeChatPage />;
   }
 
   if (pathname === '/resume/chat') {
