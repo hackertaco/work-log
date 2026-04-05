@@ -39,12 +39,6 @@ export function ResumeShell({ children, pendingCount = 0, activePage = 'resume' 
               이력서 편집
             </a>
             <a
-              href="/resume/analysis"
-              class={`resume-nav-link${activePage === 'analysis' ? ' resume-nav-link--active' : ''}`}
-            >
-              이력서 분석
-            </a>
-            <a
               href="/resume/chat"
               class={`resume-nav-link${activePage === 'chat' ? ' resume-nav-link--active' : ''}`}
             >

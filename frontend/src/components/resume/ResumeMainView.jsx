@@ -254,9 +254,6 @@ export function ResumeMainView({
             </div>
 
             <div class="rmv-toolbar-actions">
-              <a class="rmv-analysis-link" href="/resume/analysis">
-                분석 화면
-              </a>
               <button
                 class="rmv-edit-btn"
                 type="button"
