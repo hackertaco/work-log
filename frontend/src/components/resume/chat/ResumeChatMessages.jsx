@@ -51,6 +51,7 @@ import { EvidenceSourceSummary } from './EvidenceSourceSummary.jsx';
 export function ResumeChatMessages({
   messages = [],
   loading = false,
+  hasDraft = false,
   onDiffApprove,
   onDiffReject,
   onJsonDiffApprove,
@@ -71,7 +72,9 @@ export function ResumeChatMessages({
     }
   }, [messages.length, loading]);
 
-  if (messages.length === 0 && !loading) {
+  const showWelcome = messages.length === 0 && !hasDraft;
+
+  if (showWelcome && !loading) {
     return (
       <div class="rcm-root rcm-empty">
         <WelcomeMessage />
@@ -82,7 +85,7 @@ export function ResumeChatMessages({
 
   return (
     <div class="rcm-root" ref={scrollRef}>
-      {messages.length === 0 && <WelcomeMessage />}
+      {showWelcome && <WelcomeMessage />}
 
       {messages.map((msg) => (
         <MessageBubble

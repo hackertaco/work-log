@@ -643,6 +643,7 @@ export function ResumeChatPage() {
           <ResumeChatMessages
             messages={messages}
             loading={loading}
+            hasDraft={!!draft}
             onDiffApprove={handleDiffApprove}
             onDiffReject={handleDiffReject}
             onJsonDiffApprove={handleJsonDiffApprove}
