@@ -1280,3 +1280,35 @@ export async function saveSectionBridges(doc) {
 export async function readSectionBridges() {
   return readPrivateJsonBlob(SECTION_BRIDGES_PATHNAME);
 }
+
+// ── Session storage ─────────────────────────────────────────────────────
+
+const SESSION_PREFIX = "resume/sessions/";
+
+export async function saveSession(sessionId, data) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const pathname = `${SESSION_PREFIX}${sessionId}.json`;
+  const json = JSON.stringify(data, null, 2);
+  const result = await put(pathname, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {}),
+  });
+  return { url: result.url };
+}
+
+export async function readSession(sessionId) {
+  const pathname = `${SESSION_PREFIX}${sessionId}.json`;
+  return readPrivateJsonBlob(pathname);
+}
+
+export async function deleteSession(sessionId) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const pathname = `${SESSION_PREFIX}${sessionId}.json`;
+  const listed = await list({ prefix: pathname, limit: 1, ...(token ? { token } : {}) });
+  if (listed.blobs.length > 0) {
+    await del(listed.blobs[0].url, ...(token ? [{ token }] : []));
+  }
+}
