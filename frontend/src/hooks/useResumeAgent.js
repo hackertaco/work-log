@@ -41,6 +41,7 @@ export function useResumeAgent() {
       const response = await fetch('/api/resume/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(body),
       });
 
@@ -56,6 +57,9 @@ export function useResumeAgent() {
         ]);
         return;
       }
+
+      // Guard against null body (non-streaming error responses)
+      if (!response.body) return;
 
       // ReadableStream reader로 SSE 스트림 읽기
       const reader = response.body.getReader();
@@ -163,6 +167,7 @@ export function useResumeAgent() {
       const res = await fetch('/api/resume/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           action: 'approve_diff',
           sessionId: sessionIdRef.current,
@@ -180,6 +185,7 @@ export function useResumeAgent() {
       const res = await fetch('/api/resume/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           action: 'reject_diff',
           sessionId: sessionIdRef.current,
