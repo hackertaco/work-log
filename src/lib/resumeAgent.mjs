@@ -101,6 +101,9 @@ export async function runAgentLoop({
     const toolName = fc.name;
     const callId = fc.call_id;
 
+    // Add the function_call itself to input so the API can match it with its output
+    input.push(fc);
+
     // Validate tool name
     if (!_allowedTools.has(toolName)) {
       input.push({
