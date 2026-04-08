@@ -18,15 +18,15 @@
 
 현재 병목:
 
-- [profile.mjs](/Users/seungahjung/Documents/company-code/work-log/src/lib/profile.mjs)
+- [profile.mjs](src/lib/profile.mjs)
   - 패턴 기반 점수화라서 `반복 강점`은 일부 잡지만, 이력서 구조와 직접 연결되지 않는다.
-- [resumeRecluster.mjs](/Users/seungahjung/Documents/company-code/work-log/src/lib/resumeRecluster.mjs)
+- [resumeRecluster.mjs](src/lib/resumeRecluster.mjs)
   - 미분류 키워드 비율과 재클러스터링 중심이라 `핵심 프로젝트 승격` 개념이 없다.
-- [resumeReconstruction.mjs](/Users/seungahjung/Documents/company-code/work-log/src/lib/resumeReconstruction.mjs)
+- [resumeReconstruction.mjs](src/lib/resumeReconstruction.mjs)
   - 업무로그 bullet을 다시 읽어 전체 이력서를 재구성하지만, 중간에 상위 개념 레이어가 없다.
-- [WorkLogPage.jsx](/Users/seungahjung/Documents/company-code/work-log/frontend/src/pages/WorkLogPage.jsx)
+- [WorkLogPage.jsx](frontend/src/pages/WorkLogPage.jsx)
   - 스냅샷 요약은 있지만 "이 로그가 어떤 대표 프로젝트로 연결되는가"가 없다.
-- [ResumeBody.jsx](/Users/seungahjung/Documents/company-code/work-log/frontend/src/components/resume/ResumeBody.jsx)
+- [ResumeBody.jsx](frontend/src/components/resume/ResumeBody.jsx)
   - `display_axes`는 렌더링되지만, 축-강점-프로젝트 계층은 아직 없다.
 
 ## Proposed phases
@@ -102,7 +102,7 @@
 - 프로젝트 요약을 만들 수 있을 만큼 문맥이 있음
 - 결과 또는 사용자 가치 문장이 최소 1개 존재
 
-기존 [profile.mjs](/Users/seungahjung/Documents/company-code/work-log/src/lib/profile.mjs)의 `projectArcs`는 이 단계의 입력으로 재사용할 수 있다.
+기존 [profile.mjs](src/lib/profile.mjs)의 `projectArcs`는 이 단계의 입력으로 재사용할 수 있다.
 
 ## Phase 4: derive strengths from projects and evidence
 
@@ -148,8 +148,8 @@
 
 영향 파일:
 
-- [resumeReconstruction.mjs](/Users/seungahjung/Documents/company-code/work-log/src/lib/resumeReconstruction.mjs)
-- [resume.mjs](/Users/seungahjung/Documents/company-code/work-log/src/routes/resume.mjs)
+- [resumeReconstruction.mjs](src/lib/resumeReconstruction.mjs)
+- [resume.mjs](src/routes/resume.mjs)
 
 변경 방향:
 
@@ -168,7 +168,7 @@
 
 영향 파일:
 
-- [WorkLogPage.jsx](/Users/seungahjung/Documents/company-code/work-log/frontend/src/pages/WorkLogPage.jsx)
+- [WorkLogPage.jsx](frontend/src/pages/WorkLogPage.jsx)
 
 추가할 것:
 
@@ -184,9 +184,9 @@
 
 영향 파일:
 
-- [ResumeBody.jsx](/Users/seungahjung/Documents/company-code/work-log/frontend/src/components/resume/ResumeBody.jsx)
-- [DisplayAxesView.jsx](/Users/seungahjung/Documents/company-code/work-log/frontend/src/components/resume/DisplayAxesView.jsx)
-- [AxesPanel.jsx](/Users/seungahjung/Documents/company-code/work-log/frontend/src/components/resume/AxesPanel.jsx)
+- [ResumeBody.jsx](frontend/src/components/resume/ResumeBody.jsx)
+- [DisplayAxesView.jsx](frontend/src/components/resume/DisplayAxesView.jsx)
+- [AxesPanel.jsx](frontend/src/components/resume/AxesPanel.jsx)
 
 추가할 것:
 
