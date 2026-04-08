@@ -41,9 +41,9 @@ const LAYOUT_CSS = `
   /* ─── 2-column grid ─── */
   .rl-root {
     display: grid;
-    grid-template-columns: 1fr 300px;
+    grid-template-columns: minmax(0, 1fr) 332px;
     grid-template-areas: "body panel";
-    gap: var(--space-6);
+    gap: var(--space-7);
     align-items: start;
   }
 

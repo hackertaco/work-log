@@ -73,12 +73,13 @@ export const SHELL_CSS = `
     backdrop-filter: blur(14px);
     background: rgba(248, 246, 240, 0.88);
     border-bottom: 1px solid var(--line-soft);
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
   }
 
   .resume-header-inner {
-    max-width: min(1400px, calc(100vw - 40px));
+    max-width: min(1480px, calc(100vw - 40px));
     margin: 0 auto;
-    padding: 14px 0;
+    padding: 14px 0 15px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -132,26 +133,29 @@ export const SHELL_CSS = `
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 8px 12px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--line-strong);
-    background: rgba(255, 255, 255, 0.62);
+    padding: 9px 13px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    background: rgba(255, 255, 255, 0.72);
     color: var(--text-strong);
     font-size: 13px;
     font-weight: 600;
     text-decoration: none;
-    transition: background-color 160ms ease, border-color 160ms ease;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.45);
+    transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
   }
 
   .resume-nav-link--active {
     background: rgba(24, 32, 52, 0.92);
     border-color: rgba(24, 32, 52, 0.92);
     color: var(--surface);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
   }
 
   .resume-nav-link:hover,
   .resume-nav-print:hover {
-    background: rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
   }
 
   .resume-nav-link--active:hover {
@@ -159,9 +163,9 @@ export const SHELL_CSS = `
   }
 
   .resume-main {
-    width: min(1400px, calc(100vw - 40px));
+    width: min(1480px, calc(100vw - 40px));
     margin: 0 auto;
-    padding: 24px 0 48px;
+    padding: 28px 0 56px;
   }
 
   @media (max-width: 900px) {

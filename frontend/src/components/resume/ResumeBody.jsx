@@ -52,6 +52,7 @@ import { BulletSimilarityBadge } from './BulletSimilarityBadge.jsx';
  *   coherenceReport     — (선택) coherence validation result from POST /api/resume/coherence-validation
  *                         { overallScore, grade, structuralFlow, redundancy, tonalConsistency,
  *                           issueCount, issues, autoFixCount, autoFixes }
+ *   companyStories      — (선택) chat draft 기반 회사별 대표 프로젝트/역량 요약
  */
 export function ResumeBody({
   resume,
@@ -71,6 +72,7 @@ export function ResumeBody({
   onBridgeEdit,
   onBridgeDismiss,
   coherenceReport = null,
+  companyStories = [],
 }) {
   // ─── Loading skeleton ─────────────────────────────────────────────────────
   if (loading) {
@@ -181,6 +183,7 @@ export function ResumeBody({
                 bulletAnnotations={_findBulletAnnotations(threadingData, 'experience', i)}
                 strengths={strengths}
                 narrativeAxes={narrativeAxes}
+                companyStory={_findCompanyStory(companyStories, exp)}
               />
             ))}
           </div>
@@ -645,6 +648,107 @@ function SourceBadge({ source }) {
   );
 }
 
+function CompanyStoryInlineBlock({ companyStory }) {
+  const {
+    narrative = '',
+    projects = [],
+    provenCapabilities = [],
+  } = companyStory;
+
+  return (
+    <div class="rb-company-story">
+      {narrative && (
+        <p class="rb-company-story-copy">
+          {narrative}
+        </p>
+      )}
+
+      {projects.length > 0 && (
+        <div class="rb-company-projects">
+          <p class="rb-company-story-label">대표 프로젝트</p>
+          <div class="rb-company-project-list">
+            {projects.map((project, index) => (
+              <div key={project.id ?? `${project.title}-${index}`} class="rb-company-project-card">
+                <div class="rb-company-project-top">
+                  <span class="rb-company-project-index">{index + 1}</span>
+                  <div class="rb-company-project-heading">
+                    <p class="rb-company-project-title">{project.title}</p>
+                    {project.oneLiner && (
+                      <p class="rb-company-project-oneliner">{project.oneLiner}</p>
+                    )}
+                  </div>
+                </div>
+
+                {project.problem && (
+                  <div class="rb-company-project-block">
+                    <span class="rb-company-project-label">문제</span>
+                    <p class="rb-company-project-copy">{project.problem}</p>
+                  </div>
+                )}
+
+                {Array.isArray(project.solution) && project.solution.length > 0 && (
+                  <div class="rb-company-project-block">
+                    <span class="rb-company-project-label">해결</span>
+                    <ul class="rb-company-project-points">
+                      {project.solution.slice(0, 3).map((item, itemIndex) => (
+                        <li key={itemIndex}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {Array.isArray(project.result) && project.result.length > 0 && (
+                  <div class="rb-company-project-block">
+                    <span class="rb-company-project-label">결과</span>
+                    <ul class="rb-company-project-points rb-company-project-points--result">
+                      {project.result.slice(0, 3).map((item, itemIndex) => (
+                        <li key={itemIndex}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {((Array.isArray(project.stack) && project.stack.length > 0) ||
+                  (Array.isArray(project.capabilities) && project.capabilities.length > 0)) && (
+                  <div class="rb-company-project-foot">
+                    {Array.isArray(project.stack) && project.stack.length > 0 && (
+                      <div class="rb-skill-tags rb-company-project-tags">
+                        {project.stack.slice(0, 8).map((item, itemIndex) => (
+                          <span key={itemIndex} class="rb-skill-tag">{item}</span>
+                        ))}
+                      </div>
+                    )}
+                    {Array.isArray(project.capabilities) && project.capabilities.length > 0 && (
+                      <div class="rb-company-capability-tags">
+                        {project.capabilities.slice(0, 6).map((item, itemIndex) => (
+                          <span key={itemIndex} class="rb-company-capability-tag">{item}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {provenCapabilities.length > 0 && (
+        <div class="rb-company-capabilities">
+          <p class="rb-company-story-label">이 회사에서 증명된 역량</p>
+          <div class="rb-company-capability-tags">
+            {provenCapabilities.map((capability, index) => (
+              <span key={`${capability}-${index}`} class="rb-company-capability-tag">
+                {capability}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * 경력 항목
  * schema: { company, title, start_date, end_date, location, bullets, _source }
@@ -676,6 +780,7 @@ function ExperienceItem({
   bulletAnnotations = [],
   strengths = [],
   narrativeAxes = [],
+  companyStory = null,
 }) {
   const {
     company = '',
@@ -760,6 +865,9 @@ function ExperienceItem({
           strengths={strengths}
           narrativeAxes={narrativeAxes}
         />
+      )}
+      {companyStory && (
+        <CompanyStoryInlineBlock companyStory={companyStory} />
       )}
       {localBullets.length > 0 && (
         <ul class="rb-bullets">
@@ -2069,6 +2177,21 @@ function _findAnnotationForBullet(annotations, bulletIndex) {
   return annotations.find((a) => a.bulletIndex === bulletIndex) || null;
 }
 
+function _findCompanyStory(companyStories, exp) {
+  if (!Array.isArray(companyStories) || companyStories.length === 0) return null;
+  const company = String(exp?.company ?? '').trim().toLowerCase();
+  if (!company) return null;
+
+  return companyStories.find((story) => {
+    const storyCompany = String(story?.company ?? '').trim().toLowerCase();
+    return (
+      storyCompany === company ||
+      storyCompany.includes(company) ||
+      company.includes(storyCompany)
+    );
+  }) || null;
+}
+
 /**
  * Look up a label by ID from a list of strengths or axes.
  * @param {string}   id
@@ -2655,6 +2778,166 @@ const RB_CSS = `
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+
+  .rb-company-story {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: 14px 16px;
+    border: 1px solid rgba(30, 64, 175, 0.12);
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(247, 250, 255, 0.88), rgba(255, 255, 255, 0.96));
+  }
+
+  .rb-company-story-copy {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ink);
+  }
+
+  .rb-company-story-label {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .rb-company-projects,
+  .rb-company-capabilities {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .rb-company-project-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .rb-company-project-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: rgba(255, 255, 255, 0.92);
+  }
+
+  .rb-company-project-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .rb-company-project-index {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    background: rgba(30, 64, 175, 0.1);
+    color: var(--accent);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .rb-company-project-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .rb-company-project-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+
+  .rb-company-project-oneliner {
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .rb-company-project-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .rb-company-project-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  .rb-company-project-copy {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ink);
+    line-height: 1.55;
+  }
+
+  .rb-company-project-points {
+    margin: 0;
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink);
+  }
+
+  .rb-company-project-points--result {
+    color: #1e3a8a;
+  }
+
+  .rb-company-project-points--result li {
+    font-weight: 600;
+  }
+
+  .rb-company-project-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .rb-company-project-tags {
+    gap: 6px;
+  }
+
+  .rb-company-capability-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .rb-company-capability-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #0f766e;
+    background: rgba(240, 253, 250, 0.92);
+    border: 1px solid rgba(15, 118, 110, 0.16);
+    border-radius: 999px;
+    white-space: nowrap;
   }
 
   /* ─── Projects ─── */

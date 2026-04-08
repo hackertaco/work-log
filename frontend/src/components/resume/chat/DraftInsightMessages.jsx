@@ -1,7 +1,7 @@
 import { useState } from 'preact/hooks';
 
 /**
- * DraftInsightMessages — 강점 후보 & 경력별 주요 경험 요약을
+ * DraftInsightMessages — 회사별 대표 프로젝트, 강점 후보, 경력별 주요 경험 요약을
  * 채팅 메시지 형태로 즉시 표시하는 UI 컴포넌트 (Sub-AC 3)
  *
  * ResumeDraftPanel이 로딩·패널 형태로 초안을 표시하는 반면,
@@ -13,10 +13,14 @@ import { useState } from 'preact/hooks';
  *   status              — 'loading' | 'generating' | 'ready' | 'error'  초안 상태
  *   error               — string | null       에러 메시지
  *   onRetry             — () => void          재시도 콜백
- *   onStrengthClick     — (strength) => void  강점 항목 클릭 콜백 (채팅 질의 트리거)
- *   onExperienceClick   — (experience) => void 경력 항목 클릭 콜백 (채팅 질의 트리거)
+ *   onCompanyClick      — (companyStory) => void  회사 카드 클릭 콜백
+ *   onProjectClick      — (companyStory, project) => void 프로젝트 클릭 콜백
+ *   onCapabilityClick   — (companyStory, capability) => void 역량 클릭 콜백
+ *   onStrengthClick     — (strength) => void      강점 항목 클릭 콜백
+ *   onExperienceClick   — (experience) => void    경력 항목 클릭 콜백
  *
  * ResumeDraft 구조 (관련 필드만):
+ *   companyStories       — Array<{ company, narrative, projects[], provenCapabilities[] }>
  *   strengthCandidates   — Array<{ id, label, description, frequency, behaviorCluster[], evidenceExamples[] }>
  *   experienceSummaries  — Array<{ company, highlights[], skills[], suggestedBullets[], dates[] }>
  *   suggestedSummary     — string
@@ -29,6 +33,9 @@ export function DraftInsightMessages({
   status = 'loading',
   error = null,
   onRetry,
+  onCompanyClick,
+  onProjectClick,
+  onCapabilityClick,
   onStrengthClick,
   onExperienceClick,
 }) {
@@ -56,6 +63,7 @@ export function DraftInsightMessages({
   if (!draft) return null;
 
   const {
+    companyStories = [],
     strengthCandidates = [],
     experienceSummaries = [],
     suggestedSummary = '',
@@ -64,7 +72,10 @@ export function DraftInsightMessages({
     dateRange = {},
   } = draft;
 
-  const hasContent = strengthCandidates.length > 0 || experienceSummaries.length > 0;
+  const hasContent =
+    companyStories.length > 0 ||
+    strengthCandidates.length > 0 ||
+    experienceSummaries.length > 0;
   if (!hasContent) return null;
 
   return (
@@ -73,6 +84,7 @@ export function DraftInsightMessages({
       <InsightHeaderMessage
         sources={sources}
         dateRange={dateRange}
+        companyCount={companyStories.length}
         strengthCount={strengthCandidates.length}
         experienceCount={experienceSummaries.length}
       />
@@ -88,12 +100,34 @@ export function DraftInsightMessages({
         </InsightBubble>
       )}
 
+      {/* ── 회사별 대표 프로젝트 / 역량 ── */}
+      {companyStories.length > 0 && (
+        <InsightBubble>
+          <div class="dim-section-header">
+            <span class="dim-section-icon" aria-hidden="true">🏢</span>
+            <span class="dim-section-label">회사별 대표 프로젝트</span>
+            <span class="dim-count-badge">{companyStories.length}개 회사</span>
+          </div>
+          <div class="dim-company-list">
+            {companyStories.map((story, i) => (
+              <CompanyStoryCard
+                key={story.id ?? `${story.company}-${i}`}
+                companyStory={story}
+                onCompanyClick={onCompanyClick}
+                onProjectClick={onProjectClick}
+                onCapabilityClick={onCapabilityClick}
+              />
+            ))}
+          </div>
+        </InsightBubble>
+      )}
+
       {/* ── 강점 후보 카드 목록 ── */}
       {strengthCandidates.length > 0 && (
         <InsightBubble>
           <div class="dim-section-header">
             <span class="dim-section-icon" aria-hidden="true">💪</span>
-            <span class="dim-section-label">핵심 강점 후보</span>
+            <span class="dim-section-label">공통 강점 후보</span>
             <span class="dim-count-badge">{strengthCandidates.length}건</span>
           </div>
           <div class="dim-strength-list">
@@ -113,8 +147,8 @@ export function DraftInsightMessages({
       {experienceSummaries.length > 0 && (
         <InsightBubble>
           <div class="dim-section-header">
-            <span class="dim-section-icon" aria-hidden="true">🏢</span>
-            <span class="dim-section-label">경력별 주요 경험</span>
+            <span class="dim-section-icon" aria-hidden="true">🗂️</span>
+            <span class="dim-section-label">보조 경력 요약</span>
             <span class="dim-count-badge">{experienceSummaries.length}개 회사</span>
           </div>
           <div class="dim-exp-list">
@@ -209,7 +243,7 @@ function InsightErrorMessage({ error, onRetry }) {
 }
 
 /** 분석 완료 헤더 메시지 — 소스 메타 정보 표시 */
-function InsightHeaderMessage({ sources, dateRange, strengthCount, experienceCount }) {
+function InsightHeaderMessage({ sources, dateRange, companyCount, strengthCount, experienceCount }) {
   const { commitCount = 0, sessionCount = 0, slackCount = 0 } = sources;
   const dateFrom = dateRange?.from ?? '';
   const dateTo = dateRange?.to ?? '';
@@ -234,6 +268,7 @@ function InsightHeaderMessage({ sources, dateRange, strengthCount, experienceCou
               <span class="dim-header-sources">{parts.join(', ')}</span>
             )}
             에서{' '}
+            <strong>회사 스토리 {companyCount}건</strong>,{' '}
             <strong>강점 {strengthCount}건</strong>,{' '}
             <strong>경력 요약 {experienceCount}건</strong>을 추출했습니다.
           </p>
@@ -243,6 +278,169 @@ function InsightHeaderMessage({ sources, dateRange, strengthCount, experienceCou
         </div>
       </div>
     </div>
+  );
+}
+
+function CompanyStoryCard({ companyStory, onCompanyClick, onProjectClick, onCapabilityClick }) {
+  const {
+    company,
+    role = '',
+    periodLabel = '',
+    narrative = '',
+    projects = [],
+    provenCapabilities = [],
+  } = companyStory;
+  const [expanded, setExpanded] = useState(false);
+  const visibleProjects = expanded ? projects : projects.slice(0, 2);
+
+  function handleCompanyClick() {
+    onCompanyClick?.(companyStory);
+  }
+
+  return (
+    <div
+      class="dim-company-card"
+      role="button"
+      tabIndex={0}
+      onClick={handleCompanyClick}
+      onKeyDown={(e) => { if (e.key === 'Enter') handleCompanyClick(); }}
+    >
+      <div class="dim-company-top">
+        <div class="dim-company-meta">
+          <span class="dim-company-name">{company}</span>
+          {(role || periodLabel) && (
+            <span class="dim-company-role">
+              {[role, periodLabel].filter(Boolean).join(' · ')}
+            </span>
+          )}
+        </div>
+        <span class="dim-company-count">{projects.length}개 프로젝트</span>
+      </div>
+
+      {narrative && <p class="dim-company-narrative">{narrative}</p>}
+
+      <div class="dim-company-projects">
+        {visibleProjects.map((project, index) => (
+          <ProjectStoryCard
+            key={project.id ?? `${project.title}-${index}`}
+            project={project}
+            index={index}
+            onClick={() => onProjectClick?.(companyStory, project)}
+          />
+        ))}
+      </div>
+
+      {projects.length > 2 && (
+        <button
+          class="dim-evidence-toggle"
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setExpanded((prev) => !prev); }}
+          aria-expanded={expanded}
+        >
+          {expanded ? '대표 프로젝트 접기' : `대표 프로젝트 더 보기 (${projects.length}개)`}
+        </button>
+      )}
+
+      {provenCapabilities.length > 0 && (
+        <div class="dim-company-capabilities">
+          <p class="dim-company-capability-label">이 회사에서 증명된 역량</p>
+          <div class="dim-chip-row">
+            {provenCapabilities.map((capability, index) => (
+              <button
+                key={`${capability}-${index}`}
+                class="dim-chip-button"
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCapabilityClick?.(companyStory, capability);
+                }}
+              >
+                {capability}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectStoryCard({ project, index, onClick }) {
+  const {
+    title,
+    oneLiner = '',
+    problem = '',
+    solution = [],
+    result = [],
+    stack = [],
+    capabilities = [],
+  } = project;
+
+  return (
+    <button
+      class="dim-project-card"
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.();
+      }}
+    >
+      <div class="dim-project-top">
+        <span class="dim-project-index">{index + 1}</span>
+        <div class="dim-project-heading">
+          <span class="dim-project-title">{title}</span>
+          {oneLiner && <span class="dim-project-oneliner">{oneLiner}</span>}
+        </div>
+      </div>
+
+      {problem && (
+        <div class="dim-project-block">
+          <span class="dim-project-label">문제</span>
+          <p class="dim-project-copy">{problem}</p>
+        </div>
+      )}
+
+      {solution.length > 0 && (
+        <div class="dim-project-block">
+          <span class="dim-project-label">해결</span>
+          <ul class="dim-project-list">
+            {solution.slice(0, 3).map((item, itemIndex) => (
+              <li key={itemIndex}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {result.length > 0 && (
+        <div class="dim-project-block">
+          <span class="dim-project-label">결과</span>
+          <ul class="dim-project-list dim-project-list--result">
+            {result.slice(0, 3).map((item, itemIndex) => (
+              <li key={itemIndex}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {(stack.length > 0 || capabilities.length > 0) && (
+        <div class="dim-project-foot">
+          {stack.length > 0 && (
+            <div class="dim-chip-row">
+              {stack.slice(0, 6).map((item, itemIndex) => (
+                <span key={itemIndex} class="dim-chip dim-chip--skill">{item}</span>
+              ))}
+            </div>
+          )}
+          {capabilities.length > 0 && (
+            <div class="dim-chip-row">
+              {capabilities.slice(0, 4).map((item, itemIndex) => (
+                <span key={itemIndex} class="dim-chip dim-chip--capability">{item}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </button>
   );
 }
 
@@ -392,7 +590,7 @@ const DIM_CSS = `
     display: flex;
     align-items: flex-start;
     gap: var(--space-2);
-    max-width: 720px;
+    max-width: 920px;
     width: 100%;
     align-self: flex-start;
   }
@@ -430,7 +628,7 @@ const DIM_CSS = `
     border-bottom-left-radius: 4px;
     font-size: 14px;
     line-height: 1.65;
-    max-width: 600px;
+    max-width: 860px;
     word-break: break-word;
     background: rgba(255, 255, 255, 0.92);
     color: var(--ink);
@@ -587,6 +785,200 @@ const DIM_CSS = `
   }
 
   /* ─── Strength list ─── */
+  .dim-company-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .dim-company-card {
+    padding: var(--space-3);
+    background: linear-gradient(180deg, rgba(247, 250, 255, 0.96), rgba(255, 255, 255, 0.98));
+    border: 1px solid rgba(30, 64, 175, 0.14);
+    border-radius: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    cursor: pointer;
+    transition: box-shadow 0.14s, border-color 0.14s, transform 0.12s;
+  }
+
+  .dim-company-card:hover {
+    border-color: rgba(30, 64, 175, 0.28);
+    box-shadow: 0 10px 24px rgba(30, 64, 175, 0.08);
+    transform: translateY(-1px);
+  }
+
+  .dim-company-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .dim-company-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .dim-company-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .dim-company-name {
+    font-size: 15px;
+    font-weight: 800;
+    color: var(--ink-strong);
+    letter-spacing: -0.02em;
+  }
+
+  .dim-company-role {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .dim-company-count {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--accent);
+    background: rgba(30, 64, 175, 0.08);
+    padding: 3px 8px;
+    border-radius: 999px;
+  }
+
+  .dim-company-narrative {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ink);
+    line-height: 1.6;
+  }
+
+  .dim-company-projects {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .dim-project-card {
+    width: 100%;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 14px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.14s, box-shadow 0.14s, background 0.14s;
+  }
+
+  .dim-project-card:hover {
+    border-color: rgba(30, 64, 175, 0.24);
+    box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+    background: rgba(248, 250, 255, 0.96);
+  }
+
+  .dim-project-top {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+
+  .dim-project-index {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    background: rgba(30, 64, 175, 0.12);
+    color: var(--accent);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .dim-project-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .dim-project-title {
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--ink-strong);
+    line-height: 1.45;
+  }
+
+  .dim-project-oneliner {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .dim-project-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .dim-project-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .dim-project-copy {
+    margin: 0;
+    font-size: 11px;
+    color: var(--ink);
+    line-height: 1.55;
+  }
+
+  .dim-project-list {
+    margin: 0;
+    padding-left: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 11px;
+    color: var(--ink);
+    line-height: 1.55;
+  }
+
+  .dim-project-list--result li {
+    color: #1e3a8a;
+    font-weight: 600;
+  }
+
+  .dim-project-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .dim-company-capabilities {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .dim-company-capability-label {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--ink-strong);
+  }
+
   .dim-strength-list {
     display: flex;
     flex-direction: column;
@@ -690,9 +1082,32 @@ const DIM_CSS = `
     background: rgba(30, 64, 175, 0.08);
   }
 
+  .dim-chip--capability {
+    color: #0f766e;
+    background: rgba(15, 118, 110, 0.1);
+  }
+
   .dim-chip--more {
     color: var(--accent);
     font-weight: 600;
+  }
+
+  .dim-chip-button {
+    border: 1px solid rgba(15, 118, 110, 0.18);
+    background: rgba(240, 253, 250, 0.92);
+    color: #0f766e;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: border-color 0.14s, background 0.14s, transform 0.12s;
+  }
+
+  .dim-chip-button:hover {
+    border-color: rgba(15, 118, 110, 0.36);
+    background: rgba(204, 251, 241, 0.92);
+    transform: translateY(-1px);
   }
 
   /* ─── Evidence toggle ─── */
@@ -889,9 +1304,16 @@ const DIM_CSS = `
       max-width: 100%;
     }
 
+    .dim-company-card,
+    .dim-project-card,
     .dim-str-card,
     .dim-exp-card {
       padding: var(--space-2);
+    }
+
+    .dim-company-top {
+      flex-direction: column;
+      align-items: flex-start;
     }
   }
 `;

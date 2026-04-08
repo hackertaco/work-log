@@ -439,7 +439,7 @@ const RCM_CSS = `
   .rcm-root {
     flex: 1;
     overflow-y: auto;
-    padding: var(--space-5) var(--space-6);
+    padding: var(--space-5) 28px;
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -456,7 +456,7 @@ const RCM_CSS = `
     display: flex;
     align-items: flex-end;
     gap: var(--space-2);
-    max-width: 720px;
+    max-width: 920px;
     width: 100%;
   }
 
@@ -517,7 +517,7 @@ const RCM_CSS = `
     border-radius: 16px;
     font-size: 14px;
     line-height: 1.65;
-    max-width: 600px;
+    max-width: 780px;
     word-break: break-word;
     white-space: pre-wrap;
   }
