@@ -84,7 +84,7 @@ export function InlineSourceBadge({ citation, index }) {
       </button>
 
       {showPopover && (
-        <CitationPopover ref={popoverRef} citation={citation} index={index} />
+        <CitationPopover popoverRef={popoverRef} citation={citation} index={index} />
       )}
 
       <style>{ISB_CSS}</style>
@@ -160,7 +160,7 @@ export function parseInlineCitations(content, citations) {
  *   - 호버 시 SourceCitations 내 해당 항목 하이라이트 (CSS 클래스 연동)
  *   - 접근성: role="dialog" (인터랙티브 요소 포함)
  */
-function CitationPopover({ citation, index, ref }) {
+function CitationPopover({ citation, index, popoverRef }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -190,7 +190,7 @@ function CitationPopover({ citation, index, ref }) {
   };
 
   return (
-    <div class="isb-popover" role="dialog" aria-label={`출처 ${index} 상세`} ref={ref}>
+    <div class="isb-popover" role="dialog" aria-label={`출처 ${index} 상세`} ref={popoverRef}>
       <div class="isb-popover-header">
         <SourceIcon source={source} />
         <span class="isb-popover-source">{sourceLabel}</span>

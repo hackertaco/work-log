@@ -83,9 +83,11 @@ export function SuggestionPanel({
       {!loading && fetchError && (
         <div class="sp-state sp-state--error">
           <p class="sp-error-msg">{fetchError}</p>
-          <button class="sp-retry-btn" onClick={onRefreshSuggestions}>
-            다시 시도
-          </button>
+          {onRefreshSuggestions && (
+            <button class="sp-retry-btn" onClick={onRefreshSuggestions}>
+              다시 시도
+            </button>
+          )}
         </div>
       )}
 

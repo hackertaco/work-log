@@ -93,9 +93,11 @@ export function LinkedInSupplementPanel({
       {!loading && fetchError && (
         <div class="lisp-state lisp-state--error">
           <p class="lisp-error-msg">{fetchError}</p>
-          <button class="lisp-retry-btn" onClick={onRefreshSuggestions}>
-            다시 시도
-          </button>
+          {onRefreshSuggestions && (
+            <button class="lisp-retry-btn" onClick={onRefreshSuggestions}>
+              다시 시도
+            </button>
+          )}
         </div>
       )}
 
