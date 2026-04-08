@@ -107,6 +107,9 @@ mock.module("../lib/blob.mjs", {
     readChatDraft:                 async () => null,
     saveChatDraftContext:          async () => ({ url: "https://blob/resume/chat-draft-context.json" }),
     readChatDraftContext:          async () => null,
+    saveSession:                   async () => ({ url: "blob://session" }),
+    readSession:                   async () => null,
+    deleteSession:                 async () => {},
   }
 });
 

@@ -154,6 +154,9 @@ mock.module("../lib/blob.mjs", {
     },
     readChatDraftContext: async () => _chatDraftContextResult,
     CHAT_DRAFT_CONTEXT_PATHNAME: "resume/chat-draft-context.json",
+    saveSession:                  async () => ({ url: "blob://session" }),
+    readSession:                  async () => null,
+    deleteSession:                async () => {},
   }
 });
 
