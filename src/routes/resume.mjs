@@ -266,6 +266,7 @@ import {
   generateRecommendations,
   formatRecommendations,
 } from "../lib/resumeChatRecommendEngine.mjs";
+import { agentRouter } from "./resume.agent.mjs";
 
 export const resumeRouter = new Hono();
 
@@ -9744,3 +9745,6 @@ resumeRouter.patch("/json-diff-apply", async (c) => {
     appliedAt: new Date().toISOString(),
   });
 });
+
+// ─── Mount agent sub-router ──────────────────────────────────────────────────
+resumeRouter.route("/", agentRouter);
