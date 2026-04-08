@@ -26,7 +26,7 @@ export function BulletSimilarityBadge({ similarityScore, fadeDurationMs = 5000 }
     setVisible(true);
     setFading(false);
 
-    const fadeTimer = setTimeout(() => setFading(true), fadeDurationMs - 600);
+    const fadeTimer = setTimeout(() => setFading(true), Math.max(0, fadeDurationMs - 600));
     const hideTimer = setTimeout(() => setVisible(false), fadeDurationMs);
 
     return () => {

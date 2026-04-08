@@ -27,7 +27,7 @@ export function BulletQualityPanel() {
       try {
         const params = new URLSearchParams();
         if (daysBack) params.set('days', String(daysBack));
-        const res = await fetch(`/api/resume/quality-report?${params}`);
+        const res = await fetch(`/api/resume/quality-report?${params}`, { credentials: 'include' });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.error || `HTTP ${res.status}`);

@@ -44,13 +44,14 @@ export function ResumeChatInput({
     if (!loading && !disabled && textareaRef.current) {
       textareaRef.current.focus();
     }
-  }, [loading]);
+  }, [loading, disabled]);
 
   function handleInput(e) {
     setValue(e.target.value);
   }
 
   function handleKeyDown(e) {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
