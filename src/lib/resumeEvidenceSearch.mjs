@@ -754,10 +754,23 @@ export async function searchAllSources(parsedQuery, options = {}) {
     maxResults: options.maxResultsPerSource ?? DEFAULT_MAX_RESULTS,
   };
 
+  const errors = [];
   const [commits, slack, sessions] = await Promise.all([
-    searchCommits(parsedQuery, adapterOptions).catch(() => []),
-    searchSlack(parsedQuery, adapterOptions).catch(() => []),
-    searchSessionMemory(parsedQuery, adapterOptions).catch(() => []),
+    searchCommits(parsedQuery, adapterOptions).catch((err) => {
+      console.error("[EvidenceSearch] commits search failed:", err.message);
+      errors.push(`commits: ${err.message}`);
+      return [];
+    }),
+    searchSlack(parsedQuery, adapterOptions).catch((err) => {
+      console.error("[EvidenceSearch] slack search failed:", err.message);
+      errors.push(`slack: ${err.message}`);
+      return [];
+    }),
+    searchSessionMemory(parsedQuery, adapterOptions).catch((err) => {
+      console.error("[EvidenceSearch] sessions search failed:", err.message);
+      errors.push(`sessions: ${err.message}`);
+      return [];
+    }),
   ]);
 
   return {
@@ -765,6 +778,7 @@ export async function searchAllSources(parsedQuery, options = {}) {
     slack,
     sessions,
     totalCount: commits.length + slack.length + sessions.length,
+    errors,
   };
 }
 
@@ -827,24 +841,38 @@ export async function searchWithAnalyzedQuery(analyzed, options = {}) {
   const sessionParams = sourceParams.sessions;
 
   // 비활성 소스는 빈 배열로 즉시 반환 (API 호출 없음)
+  const errors = [];
+
   const commitSearch = commitParams?.enabled
     ? searchCommits(buildSourceQuery("commits"), {
         dataDir: options.dataDir,
         maxResults: commitParams.maxResults ?? DEFAULT_MAX_RESULTS,
-      }).catch(() => [])
+      }).catch((err) => {
+        console.error("[EvidenceSearch] commits search failed:", err.message);
+        errors.push(`commits: ${err.message}`);
+        return [];
+      })
     : Promise.resolve([]);
 
   const slackSearch = slackParams?.enabled
     ? searchSlack(buildSourceQuery("slack"), {
         maxResults: slackParams.maxResults ?? DEFAULT_MAX_RESULTS,
-      }).catch(() => [])
+      }).catch((err) => {
+        console.error("[EvidenceSearch] slack search failed:", err.message);
+        errors.push(`slack: ${err.message}`);
+        return [];
+      })
     : Promise.resolve([]);
 
   const sessionSearch = sessionParams?.enabled
     ? searchSessionMemory(buildSourceQuery("sessions"), {
         dataDir: options.dataDir,
         maxResults: sessionParams.maxResults ?? DEFAULT_MAX_RESULTS,
-      }).catch(() => [])
+      }).catch((err) => {
+        console.error("[EvidenceSearch] sessions search failed:", err.message);
+        errors.push(`sessions: ${err.message}`);
+        return [];
+      })
     : Promise.resolve([]);
 
   const [commits, slack, sessions] = await Promise.all([
@@ -858,5 +886,6 @@ export async function searchWithAnalyzedQuery(analyzed, options = {}) {
     slack,
     sessions,
     totalCount: commits.length + slack.length + sessions.length,
+    errors,
   };
 }
