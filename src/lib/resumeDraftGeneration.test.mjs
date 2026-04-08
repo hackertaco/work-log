@@ -354,4 +354,102 @@ describe("generateResumeDraft", () => {
       }
     }
   });
+
+  test("returns companyStories alongside legacy draft fields", async () => {
+    const savedKey = process.env.OPENAI_API_KEY;
+    const savedDisable = process.env.WORK_LOG_DISABLE_OPENAI;
+    const savedFetch = globalThis.fetch;
+
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.WORK_LOG_DISABLE_OPENAI;
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      async json() {
+        return {
+          output_text: JSON.stringify({
+            company_stories: [
+              {
+                company: "브릿지코드",
+                role: "선임 매니저",
+                period_label: "2024.02 – 2025.11",
+                narrative: "M&A 자동화와 AI 매칭 흐름을 제품화한 경험.",
+                projects: [
+                  {
+                    title: "AI 기반 딜 자동 추천 시스템",
+                    one_liner: "Claude와 Milvus로 제안 속도를 끌어올린 매칭 시스템",
+                    problem: "딜 매칭이 수작업이라 속도와 품질 편차가 컸다.",
+                    solution: [
+                      "Claude 기반 조건 요약 설계",
+                      "Milvus 벡터 검색 기반 자동 추천 구축"
+                    ],
+                    result: ["제안 속도 10배 향상"],
+                    stack: ["Claude", "Milvus", "Python"],
+                    capabilities: ["LLM 제품화", "RAG 설계"]
+                  }
+                ],
+                proven_capabilities: ["AI 기반 문제 해결", "추천 시스템 설계"]
+              }
+            ],
+            strength_candidates: [
+              {
+                label: "운영 안정성 우선 개선",
+                description: "실패 가능성이 큰 지점을 먼저 줄이는 패턴.",
+                frequency: 3,
+                behavior_cluster: ["예외 처리", "호환성 보강"],
+                evidence_examples: ["예외 처리 보강"]
+              }
+            ],
+            experience_summaries: [
+              {
+                company: "브릿지코드",
+                highlights: ["AI 자동 추천 시스템 구축"],
+                skills: ["Claude", "Milvus"],
+                suggested_bullets: ["AI 자동 추천으로 제안 속도 향상"]
+              }
+            ],
+            suggested_summary: "AI와 자동화를 연결하는 프로덕트 엔지니어.",
+            data_gaps: []
+          })
+        };
+      }
+    });
+
+    try {
+      const draft = await generateResumeDraft({
+        fromDate: "2026-03-31",
+        toDate: "2026-03-31",
+        existingResume: {
+          experience: [
+            {
+              company: "브릿지코드",
+              title: "선임 매니저",
+              start_date: "2024-02",
+              end_date: "2025-11"
+            }
+          ]
+        }
+      });
+
+      assert.ok(Array.isArray(draft.companyStories), "companyStories should be an array");
+      assert.equal(draft.companyStories[0].company, "브릿지코드");
+      assert.equal(draft.companyStories[0].role, "선임 매니저");
+      assert.equal(draft.companyStories[0].projects[0].title, "AI 기반 딜 자동 추천 시스템");
+      assert.deepEqual(draft.companyStories[0].projects[0].result, ["제안 속도 10배 향상"]);
+      assert.ok(Array.isArray(draft.strengthCandidates), "legacy strengthCandidates should remain");
+      assert.ok(Array.isArray(draft.experienceSummaries), "legacy experienceSummaries should remain");
+    } finally {
+      globalThis.fetch = savedFetch;
+      if (savedKey) {
+        process.env.OPENAI_API_KEY = savedKey;
+      } else {
+        delete process.env.OPENAI_API_KEY;
+      }
+      if (savedDisable) {
+        process.env.WORK_LOG_DISABLE_OPENAI = savedDisable;
+      } else {
+        delete process.env.WORK_LOG_DISABLE_OPENAI;
+      }
+    }
+  });
 });

@@ -122,9 +122,9 @@ export function ResumeChatInput({
 const RCI_CSS = `
   .rci-root {
     width: 100%;
-    padding: var(--space-3) var(--space-4);
-    background: rgba(255, 255, 255, 0.94);
-    border-top: 1px solid var(--line-strong);
+    padding: 14px 28px 18px;
+    background: linear-gradient(180deg, rgba(248, 250, 252, 0.54), rgba(255, 255, 255, 0.92));
+    border-top: 1px solid rgba(148, 163, 184, 0.18);
     backdrop-filter: blur(10px);
   }
 
@@ -139,9 +139,10 @@ const RCI_CSS = `
     gap: var(--space-2);
     background: rgba(255, 255, 255, 0.9);
     border: 1.5px solid var(--line-strong);
-    border-radius: var(--radius-lg);
+    border-radius: 18px;
     padding: var(--space-2) var(--space-3);
     transition: border-color 0.15s, box-shadow 0.15s;
+    box-shadow: 0 8px 26px rgba(15, 23, 42, 0.04);
   }
 
   .rci-root:not(.rci-root--disabled) .rci-inner:focus-within {
@@ -228,5 +229,11 @@ const RCI_CSS = `
     color: var(--muted);
     opacity: 0.7;
     text-align: right;
+  }
+
+  @media (max-width: 900px) {
+    .rci-root {
+      padding: 12px 16px 16px;
+    }
   }
 `;

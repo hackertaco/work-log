@@ -72,6 +72,24 @@ export function ResumeChatPage() {
     handleSubmitRef.current?.(parsed);
   }, []);
 
+  const handleCompanyClick = useCallback((companyStory) => {
+    const query = `${companyStory.company}에서 내가 주도한 대표 프로젝트와 증명된 역량을 정리해줘`;
+    const parsed = parseResumeQuery(query);
+    handleSubmitRef.current?.(parsed);
+  }, []);
+
+  const handleProjectClick = useCallback((companyStory, project) => {
+    const query = `${companyStory.company}의 "${project.title}" 프로젝트를 문제-해결-결과 중심으로 이력서용으로 정리해줘`;
+    const parsed = parseResumeQuery(query);
+    handleSubmitRef.current?.(parsed);
+  }, []);
+
+  const handleCapabilityClick = useCallback((companyStory, capability) => {
+    const query = `${companyStory.company} 경험에서 "${capability}" 역량이 드러나는 근거를 정리해줘`;
+    const parsed = parseResumeQuery(query);
+    handleSubmitRef.current?.(parsed);
+  }, []);
+
   /** handleSubmit의 최신 버전을 보관하는 ref (클릭 핸들러에서 참조) */
   const handleSubmitRef = useRef(null);
 
@@ -250,6 +268,7 @@ export function ResumeChatPage() {
           draftContext: draft
             ? {
                 dateRange: draft.dateRange,
+                companyStories: draft.companyStories,
                 strengthCandidates: draft.strengthCandidates,
                 experienceSummaries: draft.experienceSummaries,
                 suggestedSummary: draft.suggestedSummary,
@@ -636,6 +655,9 @@ export function ResumeChatPage() {
             status={insightStatus}
             error={insightError}
             onRetry={insightRetry}
+            onCompanyClick={handleCompanyClick}
+            onProjectClick={handleProjectClick}
+            onCapabilityClick={handleCapabilityClick}
             onStrengthClick={handleStrengthClick}
             onExperienceClick={handleExperienceClick}
           />
@@ -769,19 +791,25 @@ const RCP_CSS = `
   .rcp-root {
     display: flex;
     flex-direction: column;
-    height: calc(100vh - 64px); /* 헤더 높이 제외 */
+    height: calc(100vh - 92px); /* 헤더 + 상하 여백 */
     overflow: hidden;
-    margin: 0;           /* ResumeShell .resume-main padding 무시 */
+    margin: 0;
     padding: 0;
     width: 100%;
-    max-width: 860px;
+    max-width: 1080px;
     margin-left: auto;
     margin-right: auto;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.9));
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 28px;
+    box-shadow:
+      0 20px 44px rgba(15, 23, 42, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.55);
   }
 
   /* 채팅 페이지 전용 main 영역 재정의 */
   .resume-shell .resume-main:has(.rcp-root) {
-    padding: 0;
+    padding: 10px 0 28px;
     width: 100%;
     max-width: 100%;
   }
@@ -797,6 +825,8 @@ const RCP_CSS = `
     display: flex;
     flex-direction: column;
     scroll-behavior: smooth;
+    padding-top: 10px;
+    padding-bottom: 8px;
   }
 
   /*
@@ -814,6 +844,17 @@ const RCP_CSS = `
     flex: 1;
     justify-content: center;
     align-items: center;
+  }
+
+  @media (max-width: 900px) {
+    .rcp-root {
+      height: calc(100vh - 78px);
+      border-radius: 20px;
+    }
+
+    .resume-shell .resume-main:has(.rcp-root) {
+      padding: 0;
+    }
   }
 
   /* ─── 큐 상태 표시줄 ─── */

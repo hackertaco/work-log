@@ -46,6 +46,7 @@ export function ResumeMainView({
   const [identifiedStrengths, setIdentifiedStrengths] = useState([]);
   const [narrativeAxes, setNarrativeAxes] = useState([]);
   const [threadingData, setThreadingData] = useState(null);
+  const [companyStories, setCompanyStories] = useState([]);
 
   // ── Coherence validation report state ───────────────────────────────────
   const [coherenceReport, setCoherenceReport] = useState(null);
@@ -77,6 +78,7 @@ export function ResumeMainView({
     fetchNarrativeAxes();
     fetchThreadingData();
     fetchCoherenceReport();
+    fetchChatDraftStories();
   }, []);
 
   // Bullet-level action types for legacy SuggestionItem format
@@ -162,6 +164,19 @@ export function ResumeMainView({
       }
     } catch {
       // Non-critical: project view can still render without threading annotations
+    }
+  }
+
+  async function fetchChatDraftStories() {
+    try {
+      const res = await fetch('/api/resume/chat/generate-draft', { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (mountedRef.current) {
+        setCompanyStories(Array.isArray(data?.draft?.companyStories) ? data.draft.companyStories : []);
+      }
+    } catch {
+      // Non-critical: experience view can still render without company stories
     }
   }
 
@@ -280,6 +295,7 @@ export function ResumeMainView({
             onBridgeEdit={handleBridgeEdit}
             onBridgeDismiss={handleBridgeDismiss}
             coherenceReport={coherenceReport}
+            companyStories={companyStories}
           />
         </>
       )}
