@@ -10,6 +10,10 @@ import { parseResumeQuery } from '../lib/resumeQueryParser.js';
 import { useSectionApplyQueue } from '../hooks/useSectionApplyQueue.js';
 import { useDraftContext } from '../hooks/useDraftContext.js';
 import { useResumeChat } from '../hooks/useResumeChat.js';
+import { useResumeAgent } from '../hooks/useResumeAgent.js';
+
+/** 에이전트 모드 활성화 플래그 — window.__RESUME_AGENT_ENABLED가 truthy일 때 에이전트 사용 */
+const AGENT_ENABLED = typeof window !== 'undefined' && window.__RESUME_AGENT_ENABLED;
 
 /**
  * ResumeChatPage — 채팅 기반 이력서 구체화 페이지 (/resume/chat)
@@ -33,6 +37,20 @@ export function ResumeChatPage() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(() => `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+  /* ─── 에이전트 모드 (AGENT_ENABLED 플래그 뒤) ─────────────────────────────────
+   *
+   * 훅은 항상 호출해야 하므로 조건부 호출은 하지 않는다.
+   * AGENT_ENABLED일 때만 agent 훅의 값을 실제로 사용한다.
+   */
+  const agent = useResumeAgent();
+
+  /** 에이전트 모드: 마운트 시 세션 초기화 */
+  useEffect(() => {
+    if (AGENT_ENABLED) {
+      agent.initSession();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** 초안 로딩 완료 시 드래프트 객체를 보관한다 (향후 채팅 컨텍스트에 활용) */
   const [draft, setDraft] = useState(null);
@@ -330,7 +348,11 @@ export function ResumeChatPage() {
     }
   }, [loading, messages, sessionId]);
 
-  /** Sub-AC 3: handleSubmit ref를 항상 최신 버전으로 동기화 */
+  /** Sub-AC 3: handleSubmit ref를 항상 최신 버전으로 동기화
+   *  에이전트 모드에서도 클릭 핸들러가 올바른 submit을 사용하도록
+   *  effectiveSubmit이 아닌 handleSubmit을 사용한다 (effectiveSubmit은 아직 정의 전).
+   *  effectiveSubmit 정의 후 아래에서 다시 동기화한다.
+   */
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
@@ -644,6 +666,30 @@ export function ResumeChatPage() {
     handleSubmit(parsed);
   }
 
+  /**
+   * 에이전트 모드에서 사용할 submit 핸들러.
+   * AGENT_ENABLED일 때 기존 handleSubmit 대신 agent.sendMessage를 호출한다.
+   * parsedQuery.raw 텍스트를 에이전트에 전달한다.
+   */
+  const handleSubmitForAgent = useCallback((parsedQuery) => {
+    if (AGENT_ENABLED) {
+      return agent.sendMessage(parsedQuery.raw);
+    }
+    return handleSubmit(parsedQuery);
+  }, [agent.sendMessage, handleSubmit]);
+
+  /** 실제로 사용할 submit 핸들러 — 에이전트 모드 여부에 따라 분기 */
+  const effectiveSubmit = AGENT_ENABLED ? handleSubmitForAgent : handleSubmit;
+
+  /** 에이전트 모드에서도 클릭 핸들러(강점/경력)가 올바른 submit을 호출하도록 ref를 재동기화 */
+  useEffect(() => {
+    handleSubmitRef.current = effectiveSubmit;
+  }, [effectiveSubmit]);
+  /** 실제로 표시할 메시지 — 에이전트 모드이면 agent.messages를 우선 사용 */
+  const effectiveMessages = AGENT_ENABLED ? agent.messages : messages;
+  /** 실제 로딩 상태 */
+  const effectiveLoading = AGENT_ENABLED ? agent.loading : loading;
+
   return (
     <ResumeShell activePage="chat">
       <div class="rcp-root" onClick={handleExampleClick}>
@@ -663,8 +709,8 @@ export function ResumeChatPage() {
           />
 
           <ResumeChatMessages
-            messages={messages}
-            loading={loading}
+            messages={effectiveMessages}
+            loading={effectiveLoading}
             hasDraft={!!draft}
             onDiffApprove={handleDiffApprove}
             onDiffReject={handleDiffReject}
@@ -722,10 +768,25 @@ export function ResumeChatPage() {
           </div>
         )}
 
+        {/* ── 에이전트 진행 상태 표시 (AGENT_ENABLED) ── */}
+        {AGENT_ENABLED && agent.progress && (
+          <AgentProgressBar step={agent.progress} />
+        )}
+
+        {/* ── 에이전트 diff 승인 UI (AGENT_ENABLED) ── */}
+        {AGENT_ENABLED && agent.pendingDiff && (
+          <AgentDiffApproval
+            diff={agent.pendingDiff}
+            onApprove={() => agent.approveDiff(agent.pendingDiff.messageId)}
+            onReject={() => agent.rejectDiff(agent.pendingDiff.messageId)}
+            onRevise={(feedback) => agent.reviseDiff(agent.pendingDiff.messageId, feedback)}
+          />
+        )}
+
         {/* ── 입력창 ── */}
         <ResumeChatInput
-          onSubmit={handleSubmit}
-          loading={loading}
+          onSubmit={effectiveSubmit}
+          loading={effectiveLoading}
         />
       </div>
 
@@ -780,6 +841,101 @@ function QueueStatusBar({ queue, currentIndex, pendingCount, isProcessing, onCle
         >
           취소
         </button>
+      )}
+    </div>
+  );
+}
+
+/* ── AgentProgressBar 컴포넌트 ─────────────────────────────────────────────── */
+
+/** 에이전트 진행 단계를 표시하는 바. AGENT_ENABLED일 때만 렌더링된다. */
+const AGENT_STEP_LABELS = {
+  searching_evidence: '근거 자료 검색 중…',
+  analyzing: '분석 중…',
+  generating_diff: '변경 사항 생성 중…',
+  thinking: '생각 중…',
+};
+
+function AgentProgressBar({ step }) {
+  const label = AGENT_STEP_LABELS[step] || `${step}…`;
+  return (
+    <div class="rcp-agent-progress" role="status" aria-live="polite">
+      <span class="rcp-queue-spinner" aria-hidden="true" />
+      <span class="rcp-agent-progress-text">{label}</span>
+    </div>
+  );
+}
+
+/* ── AgentDiffApproval 컴포넌트 ────────────────────────────────────────────── */
+
+/**
+ * AgentDiffApproval — 에이전트가 제안한 diff를 승인/거절/수정할 수 있는 패널.
+ *
+ * Props:
+ *   diff      — { messageId, section, operation, payload, evidence }
+ *   onApprove — () => void
+ *   onReject  — () => void
+ *   onRevise  — (feedback: string) => void
+ */
+function AgentDiffApproval({ diff, onApprove, onReject, onRevise }) {
+  const [reviseMode, setReviseMode] = useState(false);
+  const [feedback, setFeedback] = useState('');
+
+  const handleReviseSubmit = () => {
+    if (!feedback.trim()) return;
+    onRevise(feedback.trim());
+    setReviseMode(false);
+    setFeedback('');
+  };
+
+  return (
+    <div class="rcp-agent-diff" role="region" aria-label="에이전트 변경 제안">
+      <div class="rcp-agent-diff-header">
+        <span class="rcp-agent-diff-section">{diff.section}</span>
+        <span class="rcp-agent-diff-op">{diff.operation}</span>
+      </div>
+
+      {diff.payload && (
+        <pre class="rcp-agent-diff-payload">{
+          typeof diff.payload === 'string' ? diff.payload : JSON.stringify(diff.payload, null, 2)
+        }</pre>
+      )}
+
+      {diff.evidence && (
+        <div class="rcp-agent-diff-evidence">
+          <span class="rcp-agent-diff-evidence-label">근거:</span> {diff.evidence}
+        </div>
+      )}
+
+      {reviseMode ? (
+        <div class="rcp-agent-diff-revise">
+          <input
+            class="rcp-agent-diff-revise-input"
+            type="text"
+            placeholder="수정 요청 사항을 입력하세요…"
+            value={feedback}
+            onInput={(e) => setFeedback(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleReviseSubmit()}
+          />
+          <button class="rcp-agent-diff-btn rcp-agent-diff-btn--revise" type="button" onClick={handleReviseSubmit}>
+            전송
+          </button>
+          <button class="rcp-agent-diff-btn rcp-agent-diff-btn--cancel" type="button" onClick={() => { setReviseMode(false); setFeedback(''); }}>
+            취소
+          </button>
+        </div>
+      ) : (
+        <div class="rcp-agent-diff-actions">
+          <button class="rcp-agent-diff-btn rcp-agent-diff-btn--approve" type="button" onClick={onApprove}>
+            승인
+          </button>
+          <button class="rcp-agent-diff-btn rcp-agent-diff-btn--reject" type="button" onClick={onReject}>
+            거절
+          </button>
+          <button class="rcp-agent-diff-btn rcp-agent-diff-btn--revise" type="button" onClick={() => setReviseMode(true)}>
+            수정 요청
+          </button>
+        </div>
       )}
     </div>
   );
@@ -999,6 +1155,154 @@ const RCP_CSS = `
 
   .rcp-diff-panel .rjdv-root {
     margin: 0;
+  }
+
+  /* ─── 에이전트 진행 상태 바 ─── */
+  .rcp-agent-progress {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 6px var(--space-4);
+    background: rgba(236, 253, 245, 0.95);
+    border-top: 1px solid #a7f3d0;
+    border-bottom: 1px solid #d1fae5;
+    font-size: 12px;
+    color: #065f46;
+    flex-shrink: 0;
+    animation: rcp-queue-bar-fadein 0.2s ease;
+  }
+
+  .rcp-agent-progress-text {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  /* ─── 에이전트 diff 승인 패널 ─── */
+  .rcp-agent-diff {
+    flex-shrink: 0;
+    padding: var(--space-3) var(--space-4);
+    background: rgba(245, 247, 255, 0.95);
+    border-top: 1px solid #c7d2fe;
+    border-bottom: 1px solid #e0e7ff;
+    animation: rcp-queue-bar-fadein 0.2s ease;
+  }
+
+  .rcp-agent-diff-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .rcp-agent-diff-section {
+    font-weight: 700;
+    font-size: 13px;
+    color: #312e81;
+  }
+
+  .rcp-agent-diff-op {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(99, 102, 241, 0.12);
+    color: #4338ca;
+    font-weight: 600;
+  }
+
+  .rcp-agent-diff-payload {
+    font-size: 12px;
+    line-height: 1.5;
+    background: rgba(255, 255, 255, 0.7);
+    border: 1px solid #e0e7ff;
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);
+    margin-bottom: var(--space-2);
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    color: #1e1b4b;
+  }
+
+  .rcp-agent-diff-evidence {
+    font-size: 11px;
+    color: #6366f1;
+    margin-bottom: var(--space-2);
+  }
+
+  .rcp-agent-diff-evidence-label {
+    font-weight: 700;
+  }
+
+  .rcp-agent-diff-actions,
+  .rcp-agent-diff-revise {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .rcp-agent-diff-btn {
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: 4px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+
+  .rcp-agent-diff-btn--approve {
+    background: #059669;
+    color: #fff;
+    border-color: #047857;
+  }
+  .rcp-agent-diff-btn--approve:hover {
+    background: #047857;
+  }
+
+  .rcp-agent-diff-btn--reject {
+    background: none;
+    color: #dc2626;
+    border-color: rgba(220, 38, 38, 0.35);
+  }
+  .rcp-agent-diff-btn--reject:hover {
+    background: rgba(220, 38, 38, 0.06);
+    border-color: #dc2626;
+  }
+
+  .rcp-agent-diff-btn--revise {
+    background: none;
+    color: #4338ca;
+    border-color: rgba(67, 56, 202, 0.35);
+  }
+  .rcp-agent-diff-btn--revise:hover {
+    background: rgba(67, 56, 202, 0.06);
+    border-color: #4338ca;
+  }
+
+  .rcp-agent-diff-btn--cancel {
+    background: none;
+    color: #64748b;
+    border-color: rgba(100, 116, 139, 0.35);
+  }
+  .rcp-agent-diff-btn--cancel:hover {
+    background: rgba(100, 116, 139, 0.06);
+  }
+
+  .rcp-agent-diff-revise-input {
+    flex: 1;
+    border: 1px solid #c7d2fe;
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    font-size: 12px;
+    outline: none;
+    background: #fff;
+    color: #1e1b4b;
+  }
+  .rcp-agent-diff-revise-input:focus {
+    border-color: #6366f1;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
   }
 
   @media print {
