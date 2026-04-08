@@ -238,7 +238,8 @@ async function serveStatic(pathname, c) {
     if (!ext) {
       const indexPath = path.join(publicDir, "index.html");
       if (await fileExists(indexPath)) {
-        const content = await fs.readFile(indexPath);
+        let content = await fs.readFile(indexPath, "utf-8");
+        content = injectRuntimeEnv(content);
         return new Response(content, {
           headers: { "Content-Type": "text/html; charset=utf-8" }
         });
@@ -256,8 +257,15 @@ async function serveStatic(pathname, c) {
   };
   const contentType = contentTypeMap[ext] ?? "text/plain; charset=utf-8";
 
-  const content = await fs.readFile(filePath);
+  let content = await fs.readFile(filePath, ext === ".html" ? "utf-8" : undefined);
+  if (ext === ".html") content = injectRuntimeEnv(content);
   return new Response(content, {
     headers: { "Content-Type": contentType }
   });
+}
+
+function injectRuntimeEnv(html) {
+  const agentEnabled = process.env.RESUME_AGENT_ENABLED === "1";
+  const script = `<script>window.__RESUME_AGENT_ENABLED=${agentEnabled};</script>`;
+  return html.replace("</head>", `${script}</head>`);
 }
