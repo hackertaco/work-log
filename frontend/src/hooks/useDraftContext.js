@@ -77,7 +77,7 @@ export function useDraftContext({
   /** Stop the polling timer */
   function _stopPolling() {
     if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current);
+      clearTimeout(pollTimerRef.current);
       pollTimerRef.current = null;
     }
   }
@@ -187,14 +187,15 @@ export function useDraftContext({
   const startPolling = useCallback((currentTaskId) => {
     _stopPolling();
 
-    pollTimerRef.current = setInterval(async () => {
-      if (!mountedRef.current) {
-        _stopPolling();
-        return;
-      }
+    async function schedulePoll() {
+      if (!mountedRef.current) return;
 
       const state = await pollStatus();
-      if (!state || !mountedRef.current) return;
+      if (!state || !mountedRef.current) {
+        // Schedule next tick even on transient network error
+        pollTimerRef.current = setTimeout(schedulePoll, pollInterval);
+        return;
+      }
 
       // Update progress for UI feedback
       if (state.progress) {
@@ -202,7 +203,7 @@ export function useDraftContext({
       }
 
       if (state.status === 'completed') {
-        _stopPolling();
+        pollTimerRef.current = null;
 
         // Generation done — fetch the result
         try {
@@ -238,7 +239,7 @@ export function useDraftContext({
       }
 
       if (state.status === 'failed') {
-        _stopPolling();
+        pollTimerRef.current = null;
         if (!mountedRef.current) return;
         setError(state.error || '초안 생성 실패');
         setStatus('error');
@@ -253,8 +254,11 @@ export function useDraftContext({
         return;
       }
 
-      // status === 'pending' — keep polling
-    }, pollInterval);
+      // status === 'pending' — schedule next poll after interval
+      pollTimerRef.current = setTimeout(schedulePoll, pollInterval);
+    }
+
+    pollTimerRef.current = setTimeout(schedulePoll, pollInterval);
   }, [pollInterval, pollStatus, fetchCachedDraft]);
 
   /**

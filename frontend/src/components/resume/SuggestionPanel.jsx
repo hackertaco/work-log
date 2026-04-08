@@ -60,7 +60,7 @@ export function SuggestionPanel({
             </span>
           )}
         </div>
-        {!loading && (
+        {!loading && onRefreshSuggestions && (
           <button
             class="sp-refresh-btn"
             onClick={onRefreshSuggestions}

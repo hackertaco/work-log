@@ -70,7 +70,7 @@ export function LinkedInSupplementPanel({
             </span>
           )}
         </div>
-        {!loading && (
+        {!loading && onRefreshSuggestions && (
           <button
             class="lisp-refresh-btn"
             onClick={onRefreshSuggestions}
