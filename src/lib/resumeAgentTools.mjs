@@ -1,11 +1,12 @@
 /**
  * resumeAgentTools.mjs — Agent tool definitions and executor for the resume agent.
  *
- * Defines 4 tools used by the ReAct loop:
+ * Defines 5 tools used by the ReAct loop:
  *   1. search_evidence  — search worklog sources for evidence
  *   2. read_draft_context — read cached draft from Vercel Blob
  *   3. update_section   — propose a diff for user approval (interrupt)
  *   4. ask_user         — ask the user a question (interrupt)
+ *   5. search_github    — search GitHub repos/commits for a user
  */
 
 import { searchAllSources } from "./resumeEvidenceSearch.mjs";
@@ -105,6 +106,31 @@ export const TOOL_DEFINITIONS = [
       required: ["question"],
     },
   },
+  {
+    type: "function",
+    name: "search_github",
+    description:
+      "GitHub API로 사용자의 레포 목록, 최근 커밋, 사용 언어를 조회합니다. " +
+      "사용자가 깃헙 프로젝트 이력을 물어보거나 이력서에 반영할 프로젝트를 찾을 때 사용하세요.",
+    parameters: {
+      type: "object",
+      properties: {
+        username: {
+          type: "string",
+          description: "GitHub 사용자명 (예: 'hackertaco')",
+        },
+        includeCommits: {
+          type: "boolean",
+          description: "최근 커밋도 가져올지 (기본 true)",
+        },
+        maxRepos: {
+          type: "number",
+          description: "가져올 최대 레포 수 (기본 20)",
+        },
+      },
+      required: ["username"],
+    },
+  },
 ];
 
 // ─── Interrupt detection ────────────────────────────────────────────────────
@@ -186,6 +212,90 @@ function executeAskUser({ question, context }) {
   };
 }
 
+async function executeSearchGithub({ username, includeCommits = true, maxRepos = 20 }) {
+  const token = process.env.GITHUB_TOKEN;
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "work-log-agent",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  // Fetch repos
+  let repos = [];
+  try {
+    const repoRes = await fetch(
+      `https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=${maxRepos}`,
+      { headers }
+    );
+    if (!repoRes.ok) {
+      const err = await repoRes.text();
+      return { repos: [], error: `GitHub API error: ${repoRes.status} ${err.slice(0, 200)}` };
+    }
+    repos = await repoRes.json();
+  } catch (err) {
+    return { repos: [], error: `GitHub API fetch failed: ${err.message}` };
+  }
+
+  // Summarize repos
+  const repoSummaries = repos.map((r) => ({
+    name: r.name,
+    fullName: r.full_name,
+    description: r.description,
+    language: r.language,
+    stars: r.stargazers_count,
+    forks: r.forks_count,
+    updatedAt: r.updated_at,
+    createdAt: r.created_at,
+    topics: r.topics || [],
+    private: r.private,
+    url: r.html_url,
+  }));
+
+  // Optionally fetch recent commits from top repos
+  let recentCommits = [];
+  if (includeCommits) {
+    const topRepos = repos.filter((r) => !r.fork).slice(0, 5);
+    const commitPromises = topRepos.map(async (repo) => {
+      try {
+        const commitRes = await fetch(
+          `https://api.github.com/repos/${repo.full_name}/commits?author=${encodeURIComponent(username)}&per_page=5`,
+          { headers }
+        );
+        if (!commitRes.ok) return [];
+        const commits = await commitRes.json();
+        return commits.map((c) => ({
+          repo: repo.name,
+          sha: c.sha?.slice(0, 7),
+          message: c.commit?.message?.split("\n")[0],
+          date: c.commit?.author?.date,
+        }));
+      } catch {
+        return [];
+      }
+    });
+    const results = await Promise.all(commitPromises);
+    recentCommits = results.flat();
+  }
+
+  // Aggregate languages
+  const languageCounts = {};
+  for (const r of repos) {
+    if (r.language) languageCounts[r.language] = (languageCounts[r.language] || 0) + 1;
+  }
+  const topLanguages = Object.entries(languageCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([lang, count]) => ({ language: lang, repoCount: count }));
+
+  return {
+    username,
+    totalRepos: repos.length,
+    topLanguages,
+    repos: repoSummaries,
+    recentCommits,
+  };
+}
+
 // ─── Dispatcher ─────────────────────────────────────────────────────────────
 
 const TOOL_MAP = {
@@ -193,6 +303,7 @@ const TOOL_MAP = {
   read_draft_context: executeReadDraftContext,
   update_section: executeUpdateSection,
   ask_user: executeAskUser,
+  search_github: executeSearchGithub,
 };
 
 /**
