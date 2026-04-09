@@ -47,8 +47,8 @@ const { TOOL_DEFINITIONS, executeTool, isInterruptTool } = await import(
 // ─── TOOL_DEFINITIONS ───────────────────────────────────────────────────────
 
 describe("TOOL_DEFINITIONS", () => {
-  test("has 4 tools", () => {
-    assert.equal(TOOL_DEFINITIONS.length, 4);
+  test("has 5 tools", () => {
+    assert.equal(TOOL_DEFINITIONS.length, 5);
   });
 
   test("each tool has name, description, and parameters", () => {
@@ -67,6 +67,7 @@ describe("TOOL_DEFINITIONS", () => {
       "ask_user",
       "read_draft_context",
       "search_evidence",
+      "search_github",
       "update_section",
     ]);
   });
