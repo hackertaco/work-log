@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
+import snarkdown from 'snarkdown';
 import { summarizeParsedQuery } from '../../../lib/resumeQueryParser.js';
 import { ResumeDiffViewer } from './ResumeDiffViewer.jsx';
 import { ResumeJsonDiffViewer } from './ResumeJsonDiffViewer.jsx';
@@ -288,13 +289,14 @@ function MessageContent({ content, citations = null }) {
           );
         }
 
-        // 일반 텍스트: 줄바꿈을 <br>로 변환
+        // 일반 텍스트: 마크다운 렌더링 (snarkdown 출력은 LLM 응답 전용, 외부 입력 아님)
+        const html = snarkdown(part).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
         return (
-          <span key={i} class="rcm-text">
-            {part.split('\n').map((line, j) => (
-              j === 0 ? line : [<br key={j} />, line]
-            ))}
-          </span>
+          <span
+            key={i}
+            class="rcm-text rcm-markdown"
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
         );
       })}
     </>
@@ -628,6 +630,20 @@ const RCM_CSS = `
   .rcm-bubble--user .rcm-code {
     background: rgba(255, 255, 255, 0.15);
   }
+
+  /* ─── Markdown rendered content ─── */
+  .rcm-markdown h2 { font-size: 15px; font-weight: 700; margin: 12px 0 6px; }
+  .rcm-markdown h3 { font-size: 14px; font-weight: 700; margin: 10px 0 4px; }
+  .rcm-markdown h4 { font-size: 13px; font-weight: 600; margin: 8px 0 4px; }
+  .rcm-markdown p { margin: 4px 0; }
+  .rcm-markdown ul, .rcm-markdown ol { margin: 4px 0; padding-left: 20px; }
+  .rcm-markdown li { margin: 2px 0; }
+  .rcm-markdown strong { font-weight: 700; }
+  .rcm-markdown em { font-style: italic; }
+  .rcm-markdown hr { border: none; border-top: 1px solid var(--border, #e5e7eb); margin: 8px 0; }
+  .rcm-markdown a { color: var(--accent, #3b82f6); text-decoration: underline; }
+  .rcm-markdown code { background: rgba(0,0,0,0.06); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .rcm-markdown blockquote { border-left: 3px solid var(--border, #d1d5db); padding-left: 10px; margin: 6px 0; color: var(--muted, #6b7280); }
 
   /* ─── Screen reader only ─── */
   .rcm-sr-only {
