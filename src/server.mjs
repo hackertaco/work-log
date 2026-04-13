@@ -265,7 +265,7 @@ async function serveStatic(pathname, c) {
 }
 
 function injectRuntimeEnv(html) {
-  const agentEnabled = process.env.RESUME_AGENT_ENABLED === "1";
+  const agentEnabled = process.env.RESUME_AGENT_ENABLED !== "0";
   const script = `<script>window.__RESUME_AGENT_ENABLED=${agentEnabled};</script>`;
   return html.replace("</head>", `${script}</head>`);
 }
