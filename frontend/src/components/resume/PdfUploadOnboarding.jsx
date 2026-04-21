@@ -248,7 +248,7 @@ export function PdfUploadOnboarding({ onComplete, linkedinProfile = null, onBack
           <div class={styles.logo}>WL</div>
           <h1 class={styles.title}>이력서 불러오기</h1>
           <p class={styles.subtitle}>
-            기존 이력서 PDF를 업로드하면 Living Resume 시스템이 초기화됩니다.
+            기존 이력서 PDF를 업로드하면 편집 가능한 기본 이력서를 바로 만들 수 있습니다.
           </p>
         </div>
 

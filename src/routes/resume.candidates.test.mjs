@@ -33,12 +33,15 @@ let saveResumeDataFn       = async () => ({ url: "https://blob/resume/data.json"
 let readSuggestionsDataFn  = async () => _emptySuggestionsDoc();
 let saveSuggestionsDataFn  = async () => ({ url: "https://blob/resume/suggestions.json" });
 let saveSnapshotFn         = async () => ({ snapshotKey: "resume/snapshots/test.json", url: "https://blob/test" });
+let readBatchSummaryFn     = async () => null;
+let saveBatchSummaryFn     = async () => ({ url: "https://blob/resume/batch-summaries/test.json" });
 
 // Track call counts for side-effect assertions
 let saveResumeDataCallCount    = 0;
 let saveSuggestionsDataCallArg = null;
 let saveSnapshotCallCount      = 0;
 let saveSnapshotCallArgs       = null; // [resumeDoc, meta] from most recent call
+let saveBatchSummaryCallArgs   = null;
 
 // ─── Default fixture helpers ──────────────────────────────────────────────────
 
@@ -150,6 +153,11 @@ mock.module("../lib/blob.mjs", {
     saveSuggestionsData:          (...args) => {
       saveSuggestionsDataCallArg = args[0];
       return saveSuggestionsDataFn(...args);
+    },
+    readBatchSummary:             (...args) => readBatchSummaryFn(...args),
+    saveBatchSummary:             (...args) => {
+      saveBatchSummaryCallArgs = args;
+      return saveBatchSummaryFn(...args);
     },
     saveDailyBullets:             async () => ({ url: "https://blob/resume/bullets/test.json" }),
     readDailyBullets:             async () => null,
@@ -442,11 +450,17 @@ function patchRequest(id, body) {
   });
 }
 
+function handoffRequest(id) {
+  return authed(`http://localhost/api/resume/candidates/${id}/handoff`);
+}
+
 function resetCounters() {
   saveResumeDataCallCount    = 0;
   saveSuggestionsDataCallArg = null;
   saveSnapshotCallCount      = 0;
   saveSnapshotCallArgs       = null;
+  saveBatchSummaryCallArgs   = null;
+  readBatchSummaryFn         = async () => null;
 }
 
 // ─── 1. Happy path: pending → approved ───────────────────────────────────────
@@ -672,6 +686,91 @@ test("PATCH /api/resume/candidates/:id (discarded) — suggestion marked 'discar
   assert.equal(updated.status, "discarded", "suggestion status must be 'discarded'");
   assert.ok(updated.discardedAt, "discardedAt timestamp must be set");
   assert.doesNotThrow(() => new Date(updated.discardedAt), "discardedAt must be a valid date string");
+});
+
+test("PATCH /api/resume/candidates/:id (discarded) — discard reason metadata is persisted", async () => {
+  resetCounters();
+  readSuggestionsDataFn = async () => _pendingAppendBulletDoc();
+
+  const app = buildApp();
+  const res = await app.fetch(patchRequest("cand-001", {
+    status: "discarded",
+    reasonCode: "missing_metric",
+    note: "숫자가 빠져 있어요",
+  }));
+
+  assert.equal(res.status, 200);
+  const updated = saveSuggestionsDataCallArg.suggestions.find((s) => s.id === "cand-001");
+  assert.equal(updated.discardReasonCode, "missing_metric");
+  assert.equal(updated.discardNote, "숫자가 빠져 있어요");
+});
+
+test("PATCH /api/resume/candidates/:id (discarded) — missing_metric returns follow-up guidance and syncs batch summary", async () => {
+  resetCounters();
+  readSuggestionsDataFn = async () => _pendingAppendBulletDoc();
+  readBatchSummaryFn = async () => ({
+    date: "2025-03-01",
+    candidateGeneration: { status: "generated", generated: 1, superseded: 0, message: "ok" },
+    candidatePreview: [
+      { id: "cand-001", description: "Acme Corp: deployed microservices to Kubernetes" },
+    ],
+  });
+
+  const app = buildApp();
+  const res = await app.fetch(patchRequest("cand-001", {
+    status: "discarded",
+    reasonCode: "missing_metric",
+    note: "성과 수치 확인 필요",
+  }));
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.followUp?.kind, "missing_metric");
+  assert.match(body.followUp?.body ?? "", /수치가 없음/);
+  assert.equal(saveBatchSummaryCallArgs?.[0], "2025-03-01");
+  assert.equal(
+    saveBatchSummaryCallArgs?.[1]?.candidateGeneration?.lastAction?.followUp?.kind,
+    "missing_metric"
+  );
+});
+
+test("GET /api/resume/candidates/:id/handoff — returns candidate context and a chat prompt", async () => {
+  readSuggestionsDataFn = async () => _pendingAppendBulletDoc({
+    detail: "서비스 배포 이후 장애율이 줄었습니다.",
+  });
+
+  const app = buildApp();
+  const res = await app.fetch(handoffRequest("cand-001"));
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.candidate.id, "cand-001");
+  assert.equal(body.handoff.sectionLabel, "경력");
+  assert.match(body.handoff.prompt, /Acme Corp: deployed microservices to Kubernetes/);
+  assert.match(body.handoff.prompt, /성과 중심/);
+});
+
+test("GET /api/resume/candidates/:id/handoff — 404 when candidate id does not exist", async () => {
+  readSuggestionsDataFn = async () => _emptySuggestionsDoc();
+
+  const app = buildApp();
+  const res = await app.fetch(handoffRequest("missing"));
+  const body = await res.json();
+
+  assert.equal(res.status, 404);
+  assert.equal(body.ok, false);
+});
+
+test("GET /api/resume/candidates/:id/handoff — 409 when candidate is no longer pending", async () => {
+  readSuggestionsDataFn = async () => _pendingAppendBulletDoc({ status: "approved" });
+
+  const app = buildApp();
+  const res = await app.fetch(handoffRequest("cand-001"));
+  const body = await res.json();
+
+  assert.equal(res.status, 409);
+  assert.equal(body.ok, false);
 });
 
 // ─── 3. No "applied" intermediate state ──────────────────────────────────────

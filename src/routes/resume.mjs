@@ -107,8 +107,9 @@ import {
   saveChatDraft,
   readChatDraft,
   saveChatDraftContext,
-  readChatDraftContext
+  readChatDraftContext,
 } from "../lib/blob.mjs";
+import * as blobStore from "../lib/blob.mjs";
 import {
   mergeKeywords,
   removeKeyword,
@@ -197,6 +198,11 @@ import {
 // NOTE: resumeQueryAnalyzer is used by the agent tools (resumeAgentTools.mjs), not directly in routes.
 // NOTE: resumeChatRecommendEngine legacy endpoints removed — replaced by agent.
 import { agentRouter } from "./resume.agent.mjs";
+import {
+  buildCandidateFollowUp,
+  isValidCandidateDiscardReason,
+  withLiveDraftState,
+} from "../lib/resumeBatchSummary.mjs";
 
 export const resumeRouter = new Hono();
 
@@ -263,6 +269,84 @@ resumeRouter.get("/status", async (c) => {
         error: "Failed to check resume status",
         detail: err.message ?? String(err)
       },
+      502
+    );
+  }
+});
+
+// ─── GET /api/resume/batch-summary/latest ───────────────────────────────────
+
+resumeRouter.get("/batch-summary/latest", async (c) => {
+  try {
+    const stored = await blobStore.readLatestBatchSummary?.();
+    if (!stored) {
+      return c.json({ ok: false, exists: false }, 404);
+    }
+
+    return c.json({
+      ok: true,
+      summary: withLiveDraftState(stored, getDraftGenerationState()),
+    });
+  } catch (err) {
+    console.error("[resume/batch-summary/latest] read failed:", err);
+    return c.json(
+      { ok: false, error: "배치 요약을 불러오지 못했습니다.", detail: err.message ?? String(err) },
+      502
+    );
+  }
+});
+
+// ─── GET /api/resume/batch-summary ──────────────────────────────────────────
+
+resumeRouter.get("/batch-summary", async (c) => {
+  const rawLimit = c.req.query("limit");
+  const limit = rawLimit ? Number(rawLimit) : 10;
+
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return c.json({ ok: false, error: "limit은 1 이상의 숫자여야 합니다." }, 400);
+  }
+
+  try {
+    const summaries = await blobStore.listBatchSummaries?.(limit);
+    return c.json({
+      ok: true,
+      summaries: (summaries || []).map((summary) =>
+        withLiveDraftState(summary, getDraftGenerationState())
+      ),
+      total: summaries?.length ?? 0,
+    });
+  } catch (err) {
+    console.error("[resume/batch-summary] list failed:", err);
+    return c.json(
+      { ok: false, error: "배치 요약 목록을 불러오지 못했습니다.", detail: err.message ?? String(err) },
+      502
+    );
+  }
+});
+
+// ─── GET /api/resume/batch-summary/:date ────────────────────────────────────
+
+resumeRouter.get("/batch-summary/:date", async (c) => {
+  const date = c.req.param("date");
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return c.json({ ok: false, error: "date 형식은 YYYY-MM-DD 이어야 합니다." }, 400);
+  }
+
+  try {
+    const stored = await blobStore.readBatchSummary?.(date);
+    if (!stored) {
+      return c.json({ ok: false, exists: false }, 404);
+    }
+
+    return c.json({
+      ok: true,
+      summary: withLiveDraftState(stored, getDraftGenerationState()),
+    });
+  } catch (err) {
+    console.error("[resume/batch-summary/:date] read failed:", err);
+    return c.json(
+      { ok: false, error: "배치 요약을 불러오지 못했습니다.", detail: err.message ?? String(err) },
       502
     );
   }
@@ -1729,6 +1813,52 @@ resumeRouter.get("/candidates", async (c) => {
   }
 });
 
+// ─── GET /api/resume/candidates/:id/handoff ─────────────────────────────────
+
+resumeRouter.get("/candidates/:id/handoff", async (c) => {
+  const candidateId = c.req.param("id");
+
+  try {
+    const doc = await readSuggestionsData();
+    const candidate = doc.suggestions.find((item) => item?.id === candidateId);
+
+    if (!candidate) {
+      return c.json({ ok: false, error: "후보를 찾을 수 없습니다." }, 404);
+    }
+
+    if (candidate.status !== "pending") {
+      return c.json(
+        {
+          ok: false,
+          error: `이미 처리된 후보입니다. (현재 status: ${candidate.status})`,
+        },
+        409
+      );
+    }
+
+    return c.json({
+      ok: true,
+      candidate: {
+        id: candidate.id,
+        section: candidate.section ?? null,
+        action: candidate.action ?? null,
+        description: candidate.description ?? "",
+        detail: candidate.detail ?? "",
+        source: candidate.source ?? null,
+        logDate: candidate.logDate ?? null,
+        status: candidate.status,
+      },
+      handoff: buildCandidateChatHandoff(candidate),
+    });
+  } catch (err) {
+    console.error("[resume/candidates/handoff] read failed:", err);
+    return c.json(
+      { ok: false, error: "후보 handoff를 불러오지 못했습니다.", detail: err.message ?? String(err) },
+      502
+    );
+  }
+});
+
 // ─── PATCH /api/resume/candidates/:id ────────────────────────────────────────
 
 /**
@@ -1785,7 +1915,7 @@ resumeRouter.patch("/candidates/:id", async (c) => {
     return c.json({ ok: false, error: "Request body must be valid JSON" }, 400);
   }
 
-  const { status } = body ?? {};
+  const { status, reasonCode, note } = body ?? {};
 
   if (status !== "approved" && status !== "discarded") {
     return c.json(
@@ -1793,6 +1923,17 @@ resumeRouter.patch("/candidates/:id", async (c) => {
         ok: false,
         error: 'status 필드는 "approved" 또는 "discarded" 이어야 합니다.',
         received: status ?? null
+      },
+      400
+    );
+  }
+
+  if (status === "discarded" && reasonCode !== undefined && !isValidCandidateDiscardReason(reasonCode)) {
+    return c.json(
+      {
+        ok: false,
+        error: "유효하지 않은 discard reason 입니다.",
+        received: reasonCode,
       },
       400
     );
@@ -1925,6 +2066,10 @@ resumeRouter.patch("/candidates/:id", async (c) => {
       `[resume/candidates/patch] approved id="${candidateId}" action="${candidate.action}" section="${candidate.section}"`
     );
 
+    _syncBatchSummaryCandidateStatus(candidate.logDate, candidateId, "approved").catch((err) =>
+      console.warn("[resume/candidates/patch] batch summary sync (approve) failed (non-fatal):", err)
+    );
+
     // ── Quality tracking (fire-and-forget) ──────────────────────────────────
     _trackSuggestionQuality(candidate, "approved").catch((err) =>
       console.warn("[resume/candidates/patch] quality tracking failed (non-fatal):", err)
@@ -1935,7 +2080,20 @@ resumeRouter.patch("/candidates/:id", async (c) => {
 
   // ── 6. Branch: discarded ────────────────────────────────────────────────────
   const now = new Date().toISOString();
-  doc.suggestions[idx] = { ...candidate, status: "discarded", discardedAt: now };
+  const followUp = buildCandidateFollowUp({
+    candidate,
+    reasonCode: reasonCode ?? null,
+    note,
+  });
+  doc.suggestions[idx] = {
+    ...candidate,
+    status: "discarded",
+    discardedAt: now,
+    ...(reasonCode ? { discardReasonCode: reasonCode } : {}),
+    ...(typeof note === "string" && note.trim()
+      ? { discardNote: note.trim() }
+      : {}),
+  };
   doc.updatedAt = now;
 
   try {
@@ -1957,7 +2115,15 @@ resumeRouter.patch("/candidates/:id", async (c) => {
     `[resume/candidates/patch] discarded id="${candidateId}" action="${candidate.action}" section="${candidate.section}"`
   );
 
-  return c.json({ ok: true, status: "discarded" });
+  _syncBatchSummaryCandidateStatus(candidate.logDate, candidateId, "discarded", {
+    discardReasonCode: reasonCode ?? null,
+    discardNote: typeof note === "string" ? note.trim() : null,
+    followUp,
+  }).catch((err) =>
+    console.warn("[resume/candidates/patch] batch summary sync (discard) failed (non-fatal):", err)
+  );
+
+  return c.json({ ok: true, status: "discarded", ...(followUp ? { followUp } : {}) });
 });
 
 // ─── GET /api/resume/strength-keywords ───────────────────────────────────────
@@ -5147,6 +5313,160 @@ resumeRouter.delete("/section-bridges/:from/:to", async (c) => {
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
 
+function applySuggestionPatch(resume, suggestion, { itemSource = "user_approved" } = {}) {
+  if (!resume || typeof resume !== "object") {
+    throw new Error("resume document is required");
+  }
+
+  if (isBulletProposal(suggestion)) {
+    return applyBulletProposal(resume, suggestion);
+  }
+
+  const action = suggestion?.action;
+  const patch = suggestion?.patch ?? {};
+
+  switch (action) {
+    case "append_bullet":
+      return applyAppendBulletSuggestion(resume, suggestion, patch, itemSource);
+    case "update_summary":
+    case "add_summary":
+      return applySummarySuggestion(resume, patch, itemSource);
+    case "add_skill":
+    case "add_skills":
+      return applySkillsSuggestion(resume, patch, itemSource);
+    case "delete_item":
+      return applyDeleteItemSuggestion(resume, patch);
+    default:
+      throw new Error(`Unsupported suggestion action: ${String(action ?? "unknown")}`);
+  }
+}
+
+function applyAppendBulletSuggestion(resume, suggestion, patch, itemSource) {
+  const bullet = typeof patch?.bullet === "string" ? patch.bullet.trim() : "";
+  if (!bullet) {
+    throw new Error("append_bullet requires patch.bullet");
+  }
+
+  const section = patch?.section ?? suggestion?.section ?? "experience";
+  if (!["experience", "projects"].includes(section)) {
+    throw new Error(`append_bullet does not support section: ${section}`);
+  }
+
+  const items = Array.isArray(resume[section]) ? [...resume[section]] : [];
+  const matchIndex = items.findIndex((item) => {
+    if (section === "experience") {
+      if (patch?.company && item?.company === patch.company) return true;
+      if (patch?.title && item?.title === patch.title) return true;
+    }
+
+    if (section === "projects") {
+      if (patch?.name && item?.name === patch.name) return true;
+      if (patch?.title && item?.title === patch.title) return true;
+    }
+
+    return false;
+  });
+
+  if (matchIndex === -1) {
+    const target = patch?.company ?? patch?.name ?? patch?.title ?? "unknown target";
+    throw new Error(`Could not find target item for append_bullet: ${target}`);
+  }
+
+  const item = items[matchIndex] ?? {};
+  const bullets = Array.isArray(item.bullets) ? [...item.bullets, bullet] : [bullet];
+  items[matchIndex] = {
+    ...item,
+    bullets,
+    _source: itemSource,
+  };
+
+  return {
+    ...resume,
+    [section]: items,
+    _sources: {
+      ...(resume._sources ?? {}),
+      [section]: itemSource,
+    },
+  };
+}
+
+function applySummarySuggestion(resume, patch, itemSource) {
+  const text = typeof patch?.text === "string" ? patch.text.trim() : "";
+  if (!text) {
+    throw new Error("summary suggestion requires patch.text");
+  }
+
+  return {
+    ...resume,
+    summary: text,
+    _sources: {
+      ...(resume._sources ?? {}),
+      summary: itemSource,
+    },
+  };
+}
+
+function applySkillsSuggestion(resume, patch, itemSource) {
+  const incoming = Array.isArray(patch?.skills)
+    ? patch.skills
+    : (typeof patch?.skill === "string" ? [patch.skill] : []);
+  const skillsToAdd = incoming
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean);
+
+  if (skillsToAdd.length === 0) {
+    throw new Error("skills suggestion requires patch.skills or patch.skill");
+  }
+
+  const existing = Array.isArray(resume?.skills?.technical) ? resume.skills.technical : [];
+  const merged = [...existing];
+  for (const skill of skillsToAdd) {
+    if (!merged.includes(skill)) {
+      merged.push(skill);
+    }
+  }
+
+  return {
+    ...resume,
+    skills: {
+      technical: merged,
+      languages: Array.isArray(resume?.skills?.languages) ? [...resume.skills.languages] : [],
+      tools: Array.isArray(resume?.skills?.tools) ? [...resume.skills.tools] : [],
+    },
+    _sources: {
+      ...(resume._sources ?? {}),
+      skills: itemSource,
+    },
+  };
+}
+
+function applyDeleteItemSuggestion(resume, patch) {
+  const section = patch?.section ?? null;
+  const itemIndex = patch?.itemIndex;
+
+  if (!["experience", "projects"].includes(section)) {
+    throw new Error(`delete_item requires a deletable section, received: ${String(section)}`);
+  }
+  if (!Number.isInteger(itemIndex) || itemIndex < 0) {
+    throw new Error("delete_item requires a valid patch.itemIndex");
+  }
+
+  const items = Array.isArray(resume[section]) ? [...resume[section]] : null;
+  if (!items) {
+    throw new Error(`Section is not an array: ${section}`);
+  }
+  if (itemIndex >= items.length) {
+    throw new Error(`delete_item index out of range for ${section}: ${itemIndex}`);
+  }
+
+  items.splice(itemIndex, 1);
+
+  return {
+    ...resume,
+    [section]: items,
+  };
+}
+
 /**
  * Extract bullet text from a suggestion and track the generated-vs-final
  * similarity for quality monitoring.
@@ -5964,6 +6284,108 @@ resumeRouter.get("/chat/generate-draft", async (c) => {
 });
 
 // ─── Legacy chat endpoints (refine-section, modify-section, search-evidence, recommend, draft-section) removed — replaced by agent
+
+function buildCandidateChatHandoff(candidate) {
+  const sectionLabel = candidateSectionLabel(candidate?.section);
+  const actionLabel = candidateActionLabel(candidate?.action);
+  const description = String(candidate?.description ?? "").trim();
+  const detail = String(candidate?.detail ?? "").trim();
+  const logDatePrefix = candidate?.logDate ? `${candidate.logDate} 업무로그 기준으로 ` : "";
+  const focusLine = candidateRefinementFocus(candidate?.action, sectionLabel);
+  const detailLine = detail ? ` 참고 메모: ${detail}.` : "";
+
+  return {
+    sectionLabel,
+    actionLabel,
+    prompt:
+      `${logDatePrefix}${sectionLabel} 섹션 후보를 이력서용으로 다듬어줘. ` +
+      `현재 후보 문장은 "${description}" 이야.${detailLine} ` +
+      `${focusLine} 필요한 근거가 부족하면 어떤 수치나 맥락을 보강하면 좋을지도 함께 알려줘.`,
+    guidance: "후보 문장을 더 강한 bullet로 고치거나, 부족한 숫자·맥락을 바로 이어서 물어볼 수 있습니다.",
+  };
+}
+
+function candidateSectionLabel(section) {
+  switch (section) {
+    case "summary":
+      return "요약";
+    case "experience":
+      return "경력";
+    case "projects":
+      return "프로젝트";
+    case "skills":
+      return "기술";
+    default:
+      return "이력서";
+  }
+}
+
+function candidateActionLabel(action) {
+  switch (action) {
+    case "append_bullet":
+      return "불릿 추가";
+    case "update_summary":
+      return "요약 수정";
+    case "add_skill":
+    case "add_skills":
+      return "기술 추가";
+    case "add_experience":
+      return "경력 추가";
+    case "delete_item":
+      return "항목 정리";
+    default:
+      return "후보 다듬기";
+  }
+}
+
+function candidateRefinementFocus(action, sectionLabel) {
+  switch (action) {
+    case "append_bullet":
+      return "더 강한 성과 중심 bullet로 다시 써주고.";
+    case "update_summary":
+      return "채용담당자가 빠르게 이해할 수 있는 한두 문장 요약으로 다시 정리해주고.";
+    case "add_skill":
+    case "add_skills":
+      return "왜 이 기술이 중요한지 맥락까지 보이도록 정리해주고.";
+    case "delete_item":
+      return "무엇을 남기고 무엇을 걷어내야 할지 판단 이유까지 설명해주고.";
+    default:
+      return `${sectionLabel} 섹션에 바로 넣을 수 있게 더 선명한 문장으로 바꿔주고.`;
+  }
+}
+
+async function _syncBatchSummaryCandidateStatus(logDate, candidateId, status, extras = {}) {
+  if (!logDate) return;
+  if (typeof blobStore.readBatchSummary !== "function" || typeof blobStore.saveBatchSummary !== "function") {
+    return;
+  }
+
+  const stored = await blobStore.readBatchSummary(logDate);
+  if (!stored) return;
+
+  const nextPreview = (stored.candidatePreview || []).filter((item) => item.id !== candidateId);
+  const nextSummary = {
+    ...stored,
+    candidatePreview: nextPreview,
+  };
+
+  if (nextSummary.emptyState?.reasonCode === "generated" && nextPreview.length === 0) {
+    nextSummary.emptyState = null;
+  }
+
+  const candidateGeneration = nextSummary.candidateGeneration || {};
+  nextSummary.candidateGeneration = {
+    ...candidateGeneration,
+    lastAction: {
+      candidateId,
+      status,
+      actedAt: new Date().toISOString(),
+      ...extras,
+    },
+  };
+
+  await blobStore.saveBatchSummary(logDate, nextSummary);
+}
 
 // ─── PATCH /api/resume/json-diff-apply ────────────────────────────────────────
 /**

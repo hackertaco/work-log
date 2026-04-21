@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks';
+import { HealthCheckCard } from './HealthCheckCard.jsx';
 import { LinkedInStep } from './LinkedInStep.jsx';
 import { PdfUploadOnboarding } from './PdfUploadOnboarding.jsx';
 
@@ -20,7 +21,7 @@ import { PdfUploadOnboarding } from './PdfUploadOnboarding.jsx';
  * @param {{ onComplete: () => void }} props
  *   onComplete — 온보딩 완료 후 ResumePage 에서 이력서를 재조회하는 콜백
  */
-export function OnboardingView({ onComplete }) {
+export function OnboardingView({ onComplete, healthCheck = null, onHealthAction = null }) {
   const [step, setStep] = useState('linkedin'); // 'linkedin' | 'pdf'
   /**
    * LinkedIn 단계에서 수집된 프로필 데이터.
@@ -34,7 +35,10 @@ export function OnboardingView({ onComplete }) {
     return (
       <PdfUploadOnboarding
         linkedinProfile={linkedinProfile}
-        onComplete={onComplete}
+        onComplete={(resumeData) => {
+          window.sessionStorage.setItem('resume_onboarding_completed', '1');
+          onComplete?.(resumeData);
+        }}
         onBack={() => {
           setStep('linkedin');
           setLinkedinProfile(null);
@@ -52,9 +56,18 @@ export function OnboardingView({ onComplete }) {
           <div class="onboarding-logo">WL</div>
           <h1 class="onboarding-title">이력서 시작하기</h1>
           <p class="onboarding-subtitle">
-            LinkedIn 프로필을 연결하면 기본 정보를 자동으로 채울 수 있습니다.
+            LinkedIn 프로필과 기존 PDF를 연결하면 기본 이력서를 만들고, 이후 기록/제안/채팅 흐름이 열립니다.
           </p>
         </div>
+
+        {healthCheck ? (
+          <HealthCheckCard
+            healthCheck={healthCheck}
+            title="시작 전에 지금 상태 확인"
+            compact
+            onAction={onHealthAction}
+          />
+        ) : null}
 
         {/* Step indicator */}
         <div class="onboarding-steps" aria-label="온보딩 단계">

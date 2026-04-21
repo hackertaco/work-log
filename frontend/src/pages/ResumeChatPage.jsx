@@ -37,6 +37,9 @@ export function ResumeChatPage() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(() => `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const [candidateHandoff, setCandidateHandoff] = useState(null);
+  const [candidateHandoffLoading, setCandidateHandoffLoading] = useState(false);
+  const [candidateHandoffError, setCandidateHandoffError] = useState('');
 
   /* ─── 에이전트 모드 (AGENT_ENABLED 플래그 뒤) ─────────────────────────────────
    *
@@ -690,11 +693,93 @@ export function ResumeChatPage() {
   /** 실제 로딩 상태 */
   const effectiveLoading = AGENT_ENABLED ? agent.loading : loading;
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const candidateId = new URLSearchParams(window.location.search).get('candidateId');
+    if (!candidateId) return undefined;
+
+    let cancelled = false;
+    setCandidateHandoffLoading(true);
+    setCandidateHandoffError('');
+
+    fetch(`/api/resume/candidates/${encodeURIComponent(candidateId)}/handoff`, {
+      credentials: 'include',
+    })
+      .then(async (res) => {
+        if (res.status === 401 || res.status === 403) {
+          navigate(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+          return null;
+        }
+
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(payload.error || `후보 handoff를 불러오지 못했습니다. HTTP ${res.status}`);
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!payload || cancelled) return;
+        setCandidateHandoff(payload);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setCandidateHandoffError(err.message || '후보 handoff를 불러오지 못했습니다.');
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCandidateHandoffLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const clearCandidateHandoffQuery = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete('candidateId');
+    window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+  }, []);
+
+  const dismissCandidateHandoff = useCallback(() => {
+    setCandidateHandoff(null);
+    setCandidateHandoffError('');
+    clearCandidateHandoffQuery();
+  }, [clearCandidateHandoffQuery]);
+
+  const handleCandidateHandoffStart = useCallback(() => {
+    const prompt = candidateHandoff?.handoff?.prompt;
+    if (!prompt) return;
+
+    const parsed = parseResumeQuery(prompt);
+    dismissCandidateHandoff();
+    effectiveSubmit(parsed);
+  }, [candidateHandoff, dismissCandidateHandoff, effectiveSubmit]);
+
   return (
     <ResumeShell activePage="chat">
       <div class="rcp-root" onClick={handleExampleClick}>
         {/* ── 메시지 목록 (초안 패널 + 대화 기록) ── */}
         <div class="rcp-messages-area">
+          {candidateHandoffLoading || candidateHandoff || candidateHandoffError ? (
+            <CandidateHandoffPanel
+              handoff={candidateHandoff}
+              loading={candidateHandoffLoading}
+              error={candidateHandoffError}
+              disabled={effectiveLoading}
+              onStart={handleCandidateHandoffStart}
+              onDismiss={dismissCandidateHandoff}
+            />
+          ) : null}
+
+          <ChatPurposePanel
+            insightStatus={insightStatus}
+            generating={insightGenerating}
+          />
+
           {/* Sub-AC 3: 강점 후보·경력별 경험 요약을 채팅 메시지 형태로 즉시 표시 */}
           <DraftInsightMessages
             draft={insightDraft}
@@ -795,6 +880,97 @@ export function ResumeChatPage() {
   );
 }
 
+function ChatPurposePanel({ insightStatus, generating }) {
+  const statusLine = generating || insightStatus === 'generating'
+    ? '지금은 초안을 모으는 중이라, 잠시 뒤 근거와 함께 대화를 시작할 수 있습니다.'
+    : insightStatus === 'ready'
+      ? '초안이 준비되어 있어 최근 경험을 바로 이력서 문장으로 다듬을 수 있습니다.'
+      : '초안이 아직 없어도 “최근 경험을 어떻게 반영할까?”처럼 직접 질문하며 시작할 수 있습니다.';
+
+  return (
+    <section class="rcp-intro-card">
+      <p class="rcp-intro-kicker">WHEN TO USE CHAT</p>
+      <h2>채팅은 경험의 의미를 묻고 이력서 문장으로 다듬는 단계예요.</h2>
+      <p class="rcp-intro-copy">{statusLine}</p>
+      <ul class="rcp-intro-list">
+        <li>나는 최근에 --- 경험이 있는데, 이걸 이력서에 어떻게 반영하면 좋을까?</li>
+        <li>이 bullet이 너무 모호한데 더 강한 성과 중심 문장으로 바꿔줘.</li>
+        <li>이 강점이 드러나는 근거를 찾아서 면접/이력서용으로 정리해줘.</li>
+      </ul>
+    </section>
+  );
+}
+
+function CandidateHandoffPanel({
+  handoff,
+  loading,
+  error,
+  disabled,
+  onStart,
+  onDismiss,
+}) {
+  const prompt = handoff?.handoff?.prompt || '';
+  const candidate = handoff?.candidate;
+
+  return (
+    <section class="rcp-handoff-card" aria-live="polite">
+      <div class="rcp-handoff-head">
+        <div>
+          <p class="rcp-handoff-kicker">FROM BATCH FEED</p>
+          <h2>이 후보를 바로 채팅에서 다듬을 수 있어요.</h2>
+        </div>
+        <button
+          type="button"
+          class="rcp-handoff-dismiss"
+          onClick={onDismiss}
+          aria-label="후보 handoff 닫기"
+        >
+          닫기
+        </button>
+      </div>
+
+      {loading ? (
+        <p class="rcp-handoff-copy">후보 문맥을 불러오는 중…</p>
+      ) : null}
+
+      {!loading && error ? (
+        <p class="rcp-handoff-error">{error}</p>
+      ) : null}
+
+      {!loading && !error && handoff ? (
+        <>
+          <div class="rcp-handoff-meta">
+            <span>{handoff?.handoff?.sectionLabel || '후보'}</span>
+            <span>{handoff?.handoff?.actionLabel || '다듬기'}</span>
+            {candidate?.logDate ? <span>{candidate.logDate}</span> : null}
+          </div>
+          <p class="rcp-handoff-copy">{candidate?.description}</p>
+          {candidate?.detail ? (
+            <p class="rcp-handoff-detail">{candidate.detail}</p>
+          ) : null}
+          <div class="rcp-handoff-prompt">
+            <strong>채팅 시작 문장</strong>
+            <p>{prompt}</p>
+          </div>
+          <div class="rcp-handoff-actions">
+            <button
+              type="button"
+              class="rcp-handoff-primary"
+              disabled={disabled}
+              onClick={onStart}
+            >
+              {disabled ? '처리 중…' : '이 후보로 대화 시작'}
+            </button>
+            <p class="rcp-handoff-guidance">
+              {handoff?.handoff?.guidance || '보강이 필요한 수치나 맥락도 바로 이어서 질문할 수 있습니다.'}
+            </p>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 /* ── QueueStatusBar 컴포넌트 ────────────────────────────────────────────────── */
 
 /**
@@ -880,6 +1056,13 @@ function AgentProgressBar({ step }) {
 function AgentDiffApproval({ diff, onApprove, onReject, onRevise }) {
   const [reviseMode, setReviseMode] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState('');
+
+  const content = formatAgentDiffContent(diff);
+  const evidenceItems = formatAgentDiffEvidence(diff?.evidence);
+  const sectionLabel = labelAgentDiffSection(diff?.section);
+  const operationLabel = labelAgentDiffOperation(diff?.operation);
 
   const handleReviseSubmit = () => {
     if (!feedback.trim()) return;
@@ -888,34 +1071,88 @@ function AgentDiffApproval({ diff, onApprove, onReject, onRevise }) {
     setFeedback('');
   };
 
+  const handleApprove = async () => {
+    if (!content || applying) return;
+    setApplying(true);
+    setApplyError('');
+
+    try {
+      const res = await fetch('/api/resume/section', {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          section: diff.section,
+          content,
+          messageId: diff.messageId,
+        }),
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        navigate(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+        return;
+      }
+
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error || `반영에 실패했습니다. HTTP ${res.status}`);
+      }
+
+      await onApprove();
+    } catch (err) {
+      setApplyError(err.message || '반영에 실패했습니다.');
+    } finally {
+      setApplying(false);
+    }
+  };
+
   return (
     <div class="rcp-agent-diff" role="region" aria-label="에이전트 변경 제안">
       <div class="rcp-agent-diff-header">
-        <span class="rcp-agent-diff-section">{diff.section}</span>
-        <span class="rcp-agent-diff-op">{diff.operation}</span>
+        <div>
+          <p class="rcp-agent-diff-kicker">PROPOSED UPDATE</p>
+          <h3 class="rcp-agent-diff-title">이 제안을 승인하면 이력서에 바로 반영됩니다.</h3>
+        </div>
+        <div class="rcp-agent-diff-badges">
+          <span class="rcp-agent-diff-section">{sectionLabel}</span>
+          <span class="rcp-agent-diff-op">{operationLabel}</span>
+        </div>
       </div>
 
-      {diff.payload && (
-        <pre class="rcp-agent-diff-payload">{
-          typeof diff.payload === 'string' ? diff.payload : JSON.stringify(diff.payload, null, 2)
-        }</pre>
-      )}
-
-      {diff.evidence && (
-        <div class="rcp-agent-diff-evidence">
-          <span class="rcp-agent-diff-evidence-label">근거:</span> {diff.evidence}
+      {content ? (
+        <div class="rcp-agent-diff-payload-block">
+          <span class="rcp-agent-diff-payload-label">반영될 내용</span>
+          <pre class="rcp-agent-diff-payload">{content}</pre>
         </div>
-      )}
+      ) : null}
+
+      {evidenceItems.length ? (
+        <div class="rcp-agent-diff-evidence">
+          <span class="rcp-agent-diff-evidence-label">근거</span>
+          <ul class="rcp-agent-diff-evidence-list">
+            {evidenceItems.map((item, index) => (
+              <li key={`${item}-${index}`}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {!content ? (
+        <p class="rcp-agent-diff-warning">
+          이 제안은 아직 자동 반영 형식으로 정리되지 않았습니다. 수정 요청으로 원하는 형태를 먼저 말해보세요.
+        </p>
+      ) : null}
+
+      {applyError ? <p class="rcp-agent-diff-error">{applyError}</p> : null}
 
       {reviseMode ? (
         <div class="rcp-agent-diff-revise">
-          <input
+          <textarea
             class="rcp-agent-diff-revise-input"
-            type="text"
             placeholder="수정 요청 사항을 입력하세요…"
             value={feedback}
             onInput={(e) => setFeedback(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleReviseSubmit()}
+            rows={3}
           />
           <button class="rcp-agent-diff-btn rcp-agent-diff-btn--revise" type="button" onClick={handleReviseSubmit}>
             전송
@@ -926,11 +1163,11 @@ function AgentDiffApproval({ diff, onApprove, onReject, onRevise }) {
         </div>
       ) : (
         <div class="rcp-agent-diff-actions">
-          <button class="rcp-agent-diff-btn rcp-agent-diff-btn--approve" type="button" onClick={onApprove}>
-            승인
+          <button class="rcp-agent-diff-btn rcp-agent-diff-btn--approve" type="button" onClick={handleApprove} disabled={!content || applying}>
+            {applying ? '반영 중…' : '이 내용으로 반영'}
           </button>
           <button class="rcp-agent-diff-btn rcp-agent-diff-btn--reject" type="button" onClick={onReject}>
-            거절
+            지금은 반영 안 함
           </button>
           <button class="rcp-agent-diff-btn rcp-agent-diff-btn--revise" type="button" onClick={() => setReviseMode(true)}>
             수정 요청
@@ -939,6 +1176,81 @@ function AgentDiffApproval({ diff, onApprove, onReject, onRevise }) {
       )}
     </div>
   );
+}
+
+function formatAgentDiffContent(diff) {
+  const payload = diff?.payload;
+  if (typeof payload === 'string') return payload.trim();
+  if (!payload || typeof payload !== 'object') return '';
+
+  if (typeof payload.after === 'string' && payload.after.trim()) {
+    return payload.after.trim();
+  }
+  if (typeof payload.text === 'string' && payload.text.trim()) {
+    return payload.text.trim();
+  }
+  if (typeof payload.content === 'string' && payload.content.trim()) {
+    return payload.content.trim();
+  }
+  if (Array.isArray(payload.bullets) && payload.bullets.length) {
+    return payload.bullets
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .map((item) => `- ${item}`)
+      .join('\n');
+  }
+  if (Array.isArray(payload.after) && payload.after.length) {
+    return payload.after
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+function formatAgentDiffEvidence(evidence) {
+  if (!Array.isArray(evidence)) return [];
+  return evidence
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object') {
+        return String(item.text || item.summary || item.message || item.id || '').trim();
+      }
+      return '';
+    })
+    .filter(Boolean);
+}
+
+function labelAgentDiffSection(section) {
+  switch (section) {
+    case 'experience':
+      return '경력 섹션';
+    case 'summary':
+      return '요약 섹션';
+    case 'projects':
+      return '프로젝트 섹션';
+    case 'skills':
+      return '기술 섹션';
+    case 'strengths':
+      return '강점 섹션';
+    default:
+      return section || '이력서 섹션';
+  }
+}
+
+function labelAgentDiffOperation(operation) {
+  switch (operation) {
+    case 'rewrite':
+      return '다시 쓰기';
+    case 'replace':
+      return '교체';
+    case 'add':
+      return '추가';
+    case 'remove':
+      return '제거';
+    default:
+      return operation || '수정';
+  }
 }
 
 /* ── Styles ─────────────────────────────────────────────────────────────────── */
@@ -1002,6 +1314,172 @@ const RCP_CSS = `
     align-items: center;
   }
 
+  .rcp-intro-card {
+    margin: 0 18px 16px;
+    padding: 18px 20px;
+    border-radius: 22px;
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+  }
+
+  .rcp-handoff-card {
+    margin: 18px 18px 16px;
+    padding: 18px 20px;
+    border-radius: 22px;
+    background: linear-gradient(135deg, rgba(219, 234, 254, 0.68), rgba(255, 255, 255, 0.96));
+    border: 1px solid rgba(96, 165, 250, 0.24);
+    box-shadow: 0 14px 32px rgba(30, 64, 175, 0.08);
+  }
+
+  .rcp-handoff-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .rcp-handoff-kicker,
+  .rcp-handoff-copy,
+  .rcp-handoff-guidance,
+  .rcp-handoff-detail {
+    margin: 0;
+  }
+
+  .rcp-handoff-kicker {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    color: var(--accent);
+  }
+
+  .rcp-handoff-head h2 {
+    margin: 8px 0 0;
+    font-size: 20px;
+    line-height: 1.35;
+  }
+
+  .rcp-handoff-dismiss {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+  }
+
+  .rcp-handoff-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+  }
+
+  .rcp-handoff-meta span {
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.8);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .rcp-handoff-copy {
+    margin-top: 12px;
+    color: var(--text-strong);
+    font-size: 15px;
+    line-height: 1.7;
+  }
+
+  .rcp-handoff-detail {
+    margin-top: 8px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .rcp-handoff-prompt {
+    margin-top: 14px;
+    padding: 14px 16px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.78);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+  }
+
+  .rcp-handoff-prompt strong {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+
+  .rcp-handoff-prompt p,
+  .rcp-handoff-guidance {
+    margin: 0;
+    line-height: 1.7;
+  }
+
+  .rcp-handoff-actions {
+    margin-top: 14px;
+    display: grid;
+    gap: 8px;
+  }
+
+  .rcp-handoff-primary {
+    justify-self: start;
+    border: 0;
+    border-radius: 999px;
+    padding: 10px 16px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .rcp-handoff-primary:disabled {
+    opacity: 0.6;
+    cursor: wait;
+  }
+
+  .rcp-handoff-guidance {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .rcp-handoff-error {
+    margin: 12px 0 0;
+    color: #b42318;
+    line-height: 1.6;
+  }
+
+  .rcp-intro-kicker {
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    color: var(--muted);
+  }
+
+  .rcp-intro-card h2,
+  .rcp-intro-copy {
+    margin: 0;
+  }
+
+  .rcp-intro-copy {
+    margin-top: 8px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+
+  .rcp-intro-list {
+    margin: 12px 0 0;
+    padding-left: 20px;
+    display: grid;
+    gap: 8px;
+    color: var(--text-strong);
+  }
+
   @media (max-width: 900px) {
     .rcp-root {
       height: calc(100vh - 78px);
@@ -1010,6 +1488,16 @@ const RCP_CSS = `
 
     .resume-shell .resume-main:has(.rcp-root) {
       padding: 0;
+    }
+
+    .rcp-intro-card {
+      margin: 0 12px 14px;
+      padding: 16px;
+    }
+
+    .rcp-handoff-card {
+      margin: 12px 12px 14px;
+      padding: 16px;
     }
   }
 
@@ -1180,43 +1668,88 @@ const RCP_CSS = `
   /* ─── 에이전트 diff 승인 패널 ─── */
   .rcp-agent-diff {
     flex-shrink: 0;
-    padding: var(--space-3) var(--space-4);
-    background: rgba(245, 247, 255, 0.95);
-    border-top: 1px solid #c7d2fe;
-    border-bottom: 1px solid #e0e7ff;
+    margin: 12px 18px 0;
+    padding: 18px 20px;
+    background: linear-gradient(135deg, rgba(245, 247, 255, 0.98), rgba(255, 255, 255, 0.94));
+    border: 1px solid rgba(199, 210, 254, 0.9);
+    border-radius: 22px;
+    box-shadow: 0 14px 28px rgba(79, 70, 229, 0.08);
     animation: rcp-queue-bar-fadein 0.2s ease;
+    display: grid;
+    gap: 14px;
   }
 
   .rcp-agent-diff-header {
     display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .rcp-agent-diff-kicker {
+    margin: 0 0 6px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    color: #4338ca;
+  }
+
+  .rcp-agent-diff-title {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.4;
+    color: #1e1b4b;
+  }
+
+  .rcp-agent-diff-badges {
+    display: flex;
     align-items: center;
-    gap: var(--space-2);
-    margin-bottom: var(--space-2);
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .rcp-agent-diff-section {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.14);
+    color: #1d4ed8;
     font-weight: 700;
-    font-size: 13px;
-    color: #312e81;
+    font-size: 12px;
   }
 
   .rcp-agent-diff-op {
-    font-size: 11px;
-    padding: 1px 6px;
+    font-size: 12px;
+    padding: 6px 12px;
     border-radius: 999px;
-    background: rgba(99, 102, 241, 0.12);
-    color: #4338ca;
+    background: rgba(15, 23, 42, 0.08);
+    color: #475569;
     font-weight: 600;
   }
 
-  .rcp-agent-diff-payload {
+  .rcp-agent-diff-payload-block {
+    display: grid;
+    gap: 8px;
+  }
+
+  .rcp-agent-diff-payload-label {
     font-size: 12px;
-    line-height: 1.5;
-    background: rgba(255, 255, 255, 0.7);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #64748b;
+    text-transform: uppercase;
+  }
+
+  .rcp-agent-diff-payload {
+    font-size: 14px;
+    line-height: 1.7;
+    background: rgba(255, 255, 255, 0.92);
     border: 1px solid #e0e7ff;
-    border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-3);
-    margin-bottom: var(--space-2);
+    border-radius: 18px;
+    padding: 16px 18px;
+    margin: 0;
     overflow-x: auto;
     white-space: pre-wrap;
     word-break: break-word;
@@ -1226,30 +1759,65 @@ const RCP_CSS = `
   }
 
   .rcp-agent-diff-evidence {
-    font-size: 11px;
-    color: #6366f1;
-    margin-bottom: var(--space-2);
+    display: grid;
+    gap: 8px;
+    font-size: 13px;
+    color: #475569;
   }
 
   .rcp-agent-diff-evidence-label {
     font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 12px;
+  }
+
+  .rcp-agent-diff-evidence-list {
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 6px;
+  }
+
+  .rcp-agent-diff-warning,
+  .rcp-agent-diff-error {
+    margin: 0;
+    padding: 12px 14px;
+    border-radius: 16px;
+    line-height: 1.6;
+  }
+
+  .rcp-agent-diff-warning {
+    background: rgba(245, 158, 11, 0.12);
+    color: #92400e;
+  }
+
+  .rcp-agent-diff-error {
+    background: rgba(254, 226, 226, 0.92);
+    color: #b91c1c;
   }
 
   .rcp-agent-diff-actions,
   .rcp-agent-diff-revise {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: 10px;
+    flex-wrap: wrap;
   }
 
   .rcp-agent-diff-btn {
     border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    padding: 4px 14px;
-    font-size: 12px;
+    border-radius: 999px;
+    padding: 10px 16px;
+    font-size: 13px;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s;
+  }
+
+  .rcp-agent-diff-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 
   .rcp-agent-diff-btn--approve {
@@ -1292,17 +1860,37 @@ const RCP_CSS = `
 
   .rcp-agent-diff-revise-input {
     flex: 1;
+    min-height: 88px;
     border: 1px solid #c7d2fe;
-    border-radius: var(--radius-sm);
-    padding: 4px 10px;
-    font-size: 12px;
+    border-radius: 16px;
+    padding: 12px 14px;
+    font-size: 14px;
+    line-height: 1.6;
     outline: none;
     background: #fff;
     color: #1e1b4b;
+    resize: vertical;
   }
   .rcp-agent-diff-revise-input:focus {
     border-color: #6366f1;
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  }
+
+  @media (max-width: 900px) {
+    .rcp-agent-diff {
+      margin: 12px 12px 0;
+      padding: 16px;
+    }
+
+    .rcp-agent-diff-header,
+    .rcp-agent-diff-revise {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .rcp-agent-diff-badges {
+      justify-content: flex-start;
+    }
   }
 
   @media print {

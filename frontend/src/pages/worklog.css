@@ -1216,9 +1216,291 @@
   font-size: 12px;
 }
 
+.worklog-batch-summary {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.worklog-batch-summary__header,
+.worklog-batch-summary__body,
+.worklog-batch-summary__stats,
+.worklog-batch-summary__footer {
+  display: grid;
+  gap: 14px;
+}
+
+.worklog-batch-summary__header {
+  grid-template-columns: minmax(0, 1.8fr) minmax(260px, 1fr);
+  align-items: start;
+}
+
+.worklog-batch-summary__title {
+  margin: 6px 0 8px;
+  font-size: 24px;
+}
+
+.worklog-batch-summary__subtitle,
+.worklog-batch-summary__hint,
+.worklog-batch-summary__empty p,
+.worklog-batch-summary__meta,
+.worklog-batch-summary__draft,
+.worklog-batch-summary__candidate-copy {
+  color: var(--muted);
+}
+
+.worklog-batch-summary__status {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.worklog-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  background: rgba(17, 24, 39, 0.08);
+}
+
+.worklog-status-pill--generated {
+  background: rgba(22, 163, 74, 0.12);
+  color: #166534;
+}
+
+.worklog-status-pill--below_threshold,
+.worklog-status-pill--no_changes {
+  background: rgba(217, 119, 6, 0.12);
+  color: #92400e;
+}
+
+.worklog-status-pill--error {
+  background: rgba(220, 38, 38, 0.12);
+  color: #991b1b;
+}
+
+.worklog-status-pill--skipped {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.worklog-batch-summary__stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.worklog-batch-summary__stat,
+.worklog-batch-summary__panel,
+.worklog-batch-summary__candidate,
+.worklog-batch-summary__follow-up {
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 18px;
+  background: #fff;
+}
+
+.worklog-batch-summary__stat {
+  padding: 14px 16px;
+}
+
+.worklog-batch-summary__stat span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.worklog-batch-summary__stat strong {
+  font-size: 22px;
+}
+
+.worklog-batch-summary__body {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.worklog-batch-summary__panel {
+  padding: 18px;
+}
+
+.worklog-batch-summary__panel h3,
+.worklog-batch-summary__panel-kicker,
+.worklog-batch-summary__candidate-copy {
+  margin: 0;
+}
+
+.worklog-batch-summary__panel-kicker {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.worklog-batch-summary__meta {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.worklog-batch-summary__empty {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(17, 24, 39, 0.04);
+}
+
+.worklog-batch-summary__candidate-list,
+.worklog-batch-summary__reason-list {
+  display: grid;
+  gap: 12px;
+}
+
+.worklog-batch-summary__candidate {
+  padding: 14px;
+}
+
+.worklog-batch-summary__follow-up {
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(254, 249, 195, 0.68), rgba(255, 255, 255, 0.96));
+  border-color: rgba(217, 119, 6, 0.18);
+}
+
+.worklog-batch-summary__follow-up-head {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: start;
+}
+
+.worklog-batch-summary__follow-up-head h3,
+.worklog-batch-summary__follow-up-body,
+.worklog-batch-summary__follow-up-list {
+  margin: 0;
+}
+
+.worklog-batch-summary__follow-up-note {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(146, 64, 14, 0.08);
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.worklog-batch-summary__follow-up-body {
+  color: var(--ink);
+  line-height: 1.6;
+}
+
+.worklog-batch-summary__follow-up-list {
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.worklog-batch-summary__follow-up-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.worklog-batch-summary__candidate-head,
+.worklog-batch-summary__candidate-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.worklog-batch-summary__candidate-head {
+  margin-bottom: 8px;
+}
+
+.worklog-batch-summary__badge,
+.worklog-batch-summary__action,
+.worklog-reason-chip,
+.worklog-inline-action {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.worklog-batch-summary__badge,
+.worklog-batch-summary__action {
+  padding: 5px 10px;
+  background: rgba(17, 24, 39, 0.08);
+}
+
+.worklog-batch-summary__action {
+  color: var(--muted);
+}
+
+.worklog-batch-summary__candidate-actions {
+  margin-top: 12px;
+}
+
+.worklog-inline-action,
+.worklog-reason-chip {
+  border: 1px solid rgba(17, 24, 39, 0.12);
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.worklog-inline-action {
+  padding: 7px 12px;
+}
+
+.worklog-inline-action--link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.worklog-inline-action--secondary {
+  color: var(--muted);
+}
+
+.worklog-reason-chip {
+  padding: 8px 10px;
+}
+
+.worklog-inline-action:disabled,
+.worklog-reason-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.worklog-batch-summary__reason-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.worklog-batch-summary__footer {
+  grid-auto-flow: column;
+  justify-content: start;
+}
+
+.worklog-batch-summary__error {
+  color: #b91c1c;
+  font-size: 13px;
+}
+
 @media (max-width: 900px) {
   .worklog-hero,
   .worklog-panel-topbar,
+  .worklog-batch-summary__header,
+  .worklog-batch-summary__body,
+  .worklog-batch-summary__stats,
   .worklog-insight-layout,
   .worklog-stat-bar,
   .worklog-story-layout,
@@ -1267,5 +1549,13 @@
   .worklog-snapshot-meta-row .worklog-toggle-group {
     position: static;
     justify-self: start;
+  }
+
+  .worklog-batch-summary__reason-list {
+    grid-template-columns: 1fr;
+  }
+
+  .worklog-batch-summary__footer {
+    grid-auto-flow: row;
   }
 }
