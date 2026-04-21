@@ -9,7 +9,7 @@
 export function ResumeShell({ children, pendingCount = 0, activePage = 'resume' }) {
   const pageLabel = {
     chat: 'RESUME CHAT',
-  }[activePage] ?? 'LIVING RESUME';
+  }[activePage] ?? 'RESUME EDITOR';
 
   return (
     <div class="resume-shell">

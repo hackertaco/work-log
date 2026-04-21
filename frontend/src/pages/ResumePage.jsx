@@ -3,9 +3,12 @@ import { navigate } from '../App.jsx';
 import { OnboardingView } from '../components/resume/OnboardingView.jsx';
 import { ResumeLayout } from '../components/resume/ResumeLayout.jsx';
 import { ResumeMainView } from '../components/resume/ResumeMainView.jsx';
+import { NextStepPanel } from '../components/resume/NextStepPanel.jsx';
 import { ResumeShell } from '../components/resume/ResumeShell.jsx';
 import { SuggestionPanel } from '../components/resume/SuggestionPanel.jsx';
 import { LinkedInSupplementPanel } from '../components/resume/LinkedInSupplementPanel.jsx';
+import { HealthCheckCard } from '../components/resume/HealthCheckCard.jsx';
+import { useResumeHealthCheck } from '../hooks/useResumeHealthCheck.js';
 
 /**
  * /resume 라우트
@@ -26,6 +29,11 @@ export function ResumePage() {
   const [suggestions, setSuggestions] = useState([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [suggestionsError, setSuggestionsError] = useState('');
+  const [showNextStepPanel, setShowNextStepPanel] = useState(false);
+  const {
+    healthCheck,
+    refresh: refreshHealthCheck,
+  } = useResumeHealthCheck({ redirectOnAuthError: true });
 
   const pendingCount = suggestions.filter((s) => s.status === 'pending').length;
 
@@ -61,6 +69,7 @@ export function ResumePage() {
       if (!status.exists) {
         setResume(null);
         setPhase('onboarding');
+        void refreshHealthCheck();
         return;
       }
 
@@ -88,6 +97,7 @@ export function ResumePage() {
       // Extract the inner document so components receive the resume object directly.
       setResume(data.resume ?? data);
       setPhase('main');
+      void refreshHealthCheck();
     } catch (err) {
       setErrorMsg(err.message);
       setPhase('error');
@@ -97,6 +107,14 @@ export function ResumePage() {
   useEffect(() => {
     fetchResume();
   }, []);
+
+  useEffect(() => {
+    if (phase !== 'main') return;
+    if (window.sessionStorage.getItem('resume_onboarding_completed') === '1') {
+      setShowNextStepPanel(true);
+      window.sessionStorage.removeItem('resume_onboarding_completed');
+    }
+  }, [phase]);
 
   useEffect(() => {
     if (phase === 'main') {
@@ -147,45 +165,71 @@ export function ResumePage() {
 
   if (phase === 'onboarding') {
     // 온보딩 컴포넌트들은 자체 전체 페이지 레이아웃을 가짐
-    return <OnboardingView onComplete={fetchResume} />;
+    return (
+      <OnboardingView
+        onComplete={fetchResume}
+        healthCheck={healthCheck}
+        onHealthAction={(action) => navigate(action.href)}
+      />
+    );
   }
 
   // phase === 'main' — 이력서 본문 + 제안 패널 2-column 레이아웃
   return (
     <ResumeShell pendingCount={pendingCount} activePage="resume">
-      <ResumeLayout
-        body={
-          <ResumeMainView
-            resume={resume}
-            onRefresh={fetchResume}
-            onResumePatched={setResume}
-            suggestions={suggestions}
-            onSuggestionResolved={markSuggestionResolved}
+      <>
+        {showNextStepPanel && healthCheck ? (
+          <NextStepPanel
+            healthCheck={healthCheck}
+            onDismiss={() => setShowNextStepPanel(false)}
+            onAction={(action) => navigate(action.href)}
           />
-        }
-        panel={
-          <>
-            <LinkedInSupplementPanel
-              suggestions={suggestions}
-              loading={suggestionsLoading}
-              fetchError={suggestionsError}
-              onRefreshSuggestions={fetchSuggestions}
-              onSuggestionResolved={markSuggestionResolved}
-              onResumePatched={setResume}
-              onResumeUpdated={fetchResume}
+        ) : null}
+
+        {healthCheck ? (
+          <div style={{ marginBottom: '20px' }}>
+            <HealthCheckCard
+              healthCheck={healthCheck}
+              title="지금 어디까지 준비됐는지"
+              onAction={(action) => navigate(action.href)}
             />
-            <SuggestionPanel
-              suggestions={suggestions}
-              loading={suggestionsLoading}
-              fetchError={suggestionsError}
-              onRefreshSuggestions={fetchSuggestions}
-              onSuggestionResolved={markSuggestionResolved}
+          </div>
+        ) : null}
+
+        <ResumeLayout
+          body={
+            <ResumeMainView
+              resume={resume}
+              onRefresh={fetchResume}
               onResumePatched={setResume}
-              onResumeUpdated={fetchResume}
+              suggestions={suggestions}
+              onSuggestionResolved={markSuggestionResolved}
             />
-          </>
-        }
-      />
+          }
+          panel={
+            <>
+              <LinkedInSupplementPanel
+                suggestions={suggestions}
+                loading={suggestionsLoading}
+                fetchError={suggestionsError}
+                onRefreshSuggestions={fetchSuggestions}
+                onSuggestionResolved={markSuggestionResolved}
+                onResumePatched={setResume}
+                onResumeUpdated={fetchResume}
+              />
+              <SuggestionPanel
+                suggestions={suggestions}
+                loading={suggestionsLoading}
+                fetchError={suggestionsError}
+                onRefreshSuggestions={fetchSuggestions}
+                onSuggestionResolved={markSuggestionResolved}
+                onResumePatched={setResume}
+                onResumeUpdated={fetchResume}
+              />
+            </>
+          }
+        />
+      </>
     </ResumeShell>
   );
 }

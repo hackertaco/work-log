@@ -1,9 +1,11 @@
 import path from "node:path";
 
 import { readBulletCache, writeBulletCache } from "./bulletCache.mjs";
+import { readSuggestionsData, saveBatchSummary } from "./blob.mjs";
 import { loadConfig } from "./config.mjs";
 import { summarizeWithOpenAI } from "./openai.mjs";
 import { buildProfileSummary } from "./profile.mjs";
+import { buildBatchSummary } from "./resumeBatchSummary.mjs";
 import {
   emitCommitCollected,
   emitSessionCollected,
@@ -130,6 +132,26 @@ export async function runDailyBatch(inputDate) {
   //     completes regardless of hook outcome.
   const candidateHook = await emitWorkLogSaved(date, summary);
 
+  let suggestionsDoc = null;
+  try {
+    suggestionsDoc = await readSuggestionsData();
+  } catch (err) {
+    console.warn(`[batch date="${date}"] Failed to read suggestions for batch summary:`, err.message ?? String(err));
+  }
+
+  const batchSummary = buildBatchSummary({
+    date,
+    summary,
+    candidateHook,
+    suggestionsDoc,
+  });
+
+  try {
+    await saveBatchSummary(date, batchSummary);
+  } catch (err) {
+    console.warn(`[batch date="${date}"] Failed to save batch summary:`, err.message ?? String(err));
+  }
+
   return {
     ...summary,
     paths: {
@@ -139,7 +161,8 @@ export async function runDailyBatch(inputDate) {
       resumeMdPath,
       profilePath
     },
-    candidateHook
+    candidateHook,
+    batchSummary,
   };
 }
 

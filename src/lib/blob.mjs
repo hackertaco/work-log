@@ -35,6 +35,12 @@ export const SNAPSHOTS_PREFIX = "resume/snapshots/";
 export const SUGGESTIONS_PATHNAME = "resume/suggestions.json";
 
 /**
+ * Blob pathname prefix for persisted batch summary feed documents.
+ * Individual files are stored at `resume/batch-summaries/{YYYY-MM-DD}.json`.
+ */
+export const BATCH_SUMMARY_PREFIX = "resume/batch-summaries/";
+
+/**
  * Blob pathname prefix for per-day bullet cache files.
  * Individual files are stored at `resume/bullets/{YYYY-MM-DD}.json`.
  */
@@ -265,6 +271,89 @@ export async function readSuggestionsData() {
     return { schemaVersion: 1, updatedAt: new Date().toISOString(), suggestions: [] };
   }
   return data;
+}
+
+// ─── Batch summary feed storage ─────────────────────────────────────────────
+
+/**
+ * Derive the Vercel Blob pathname for a given work-log date's batch summary.
+ *
+ * @param {string} date
+ * @returns {string}
+ */
+export function batchSummaryPathnameForDate(date) {
+  return `${BATCH_SUMMARY_PREFIX}${date}.json`;
+}
+
+/**
+ * Save (overwrite) a persisted batch summary document.
+ *
+ * @param {string} date
+ * @param {object} data
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveBatchSummary(date, data) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const pathname = batchSummaryPathnameForDate(date);
+  const json = JSON.stringify(data, null, 2);
+
+  const result = await put(pathname, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {}),
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Read a persisted batch summary document for a specific date.
+ *
+ * @param {string} date
+ * @returns {Promise<object|null>}
+ */
+export async function readBatchSummary(date) {
+  return readPrivateJsonBlob(batchSummaryPathnameForDate(date));
+}
+
+/**
+ * List persisted batch summaries, newest date first.
+ *
+ * @param {number} [limit]
+ * @returns {Promise<object[]>}
+ */
+export async function listBatchSummaries(limit) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const { blobs } = await list({
+    prefix: BATCH_SUMMARY_PREFIX,
+    ...(token ? { token } : {}),
+  });
+
+  const dates = blobs
+    .map((blob) => blob.pathname.slice(BATCH_SUMMARY_PREFIX.length).replace(/\.json$/, ""))
+    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .sort()
+    .reverse();
+
+  const cappedDates =
+    typeof limit === "number" && Number.isFinite(limit) && limit > 0
+      ? dates.slice(0, limit)
+      : dates;
+
+  const summaries = await Promise.all(cappedDates.map((date) => readBatchSummary(date)));
+  return summaries.filter(Boolean);
+}
+
+/**
+ * Read the newest persisted batch summary.
+ *
+ * @returns {Promise<object|null>}
+ */
+export async function readLatestBatchSummary() {
+  const [latest] = await listBatchSummaries(1);
+  return latest ?? null;
 }
 
 // ─── Daily bullets cache storage ───────────────────────────────────────────────

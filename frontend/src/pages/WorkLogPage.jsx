@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { navigate } from '../App.jsx';
+import { BatchSummaryFeed } from '../components/resume/BatchSummaryFeed.jsx';
+import { HealthCheckCard } from '../components/resume/HealthCheckCard.jsx';
+import { useResumeHealthCheck } from '../hooks/useResumeHealthCheck.js';
 import './worklog.css';
 
 const SEOUL_DATE = new Intl.DateTimeFormat('en-CA', {
@@ -84,6 +88,9 @@ export function WorkLogPage() {
   const [profileWindow, setProfileWindow] = useState('all');
   const [status, setStatus] = useState('불러오는 중...');
   const [error, setError] = useState('');
+  const [batchSummary, setBatchSummary] = useState(null);
+  const [batchActionError, setBatchActionError] = useState('');
+  const [busyCandidateId, setBusyCandidateId] = useState(null);
   const [isBooting, setIsBooting] = useState(true);
   const [isRunningBatch, setIsRunningBatch] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -91,6 +98,7 @@ export function WorkLogPage() {
   const archiveRef = useRef(null);
   const lastBatchRunAtRef = useRef(0);
   const BATCH_THROTTLE_MS = 8000;
+  const { healthCheck, refresh: refreshHealthCheck } = useResumeHealthCheck();
 
   useEffect(() => {
     void bootstrap();
@@ -190,6 +198,7 @@ export function WorkLogPage() {
     lastBatchRunAtRef.current = now;
     setIsRunningBatch(true);
     setError('');
+    setBatchActionError('');
     setStatus(`${dateInput} 배치 실행 중...`);
 
     try {
@@ -209,6 +218,8 @@ export function WorkLogPage() {
       setDateInput(payload.date);
       selectedDateRef.current = payload.date;
       setStatus(`${payload.date} 배치 완료`);
+      setBatchSummary(payload.batchSummary || null);
+      void refreshHealthCheck();
 
       const daysRes = await fetch('/api/days');
       const nextDays = daysRes.ok ? await daysRes.json() : days;
@@ -234,6 +245,12 @@ export function WorkLogPage() {
   const breakdownSegments = buildWorkEstimateSegments(dayPayload);
   const shareSentence = dayPayload?.highlights?.shareableSentence || buildShareSentence(dayPayload, leadStory);
 
+  useEffect(() => {
+    if (healthCheck?.batchSummary) {
+      setBatchSummary(healthCheck.batchSummary);
+    }
+  }, [healthCheck?.batchSummary]);
+
   function handleDateInput(event) {
     setDateInput(event.currentTarget.value);
   }
@@ -246,6 +263,66 @@ export function WorkLogPage() {
       }
     } catch {
       // keep prior profile visible
+    }
+  }
+
+  async function handleCandidateApprove(candidateId) {
+    await updateCandidateStatus(candidateId, 'approved');
+  }
+
+  async function handleCandidateDiscard(candidateId, reasonCode) {
+    await updateCandidateStatus(candidateId, 'discarded', { reasonCode });
+  }
+
+  async function updateCandidateStatus(candidateId, nextStatus, extra = {}) {
+    setBusyCandidateId(candidateId);
+    setBatchActionError('');
+
+    try {
+      const res = await fetch(`/api/resume/candidates/${encodeURIComponent(candidateId)}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: nextStatus, ...extra }),
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        navigate(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+        return;
+      }
+
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error || `후보 상태를 저장하지 못했습니다. HTTP ${res.status}`);
+      }
+
+      setBatchSummary((prev) => {
+        if (!prev) return prev;
+        const nextLastAction = payload?.followUp
+          ? {
+              candidateId,
+              status: nextStatus,
+              actedAt: new Date().toISOString(),
+              discardReasonCode: extra.reasonCode ?? null,
+              discardNote: typeof extra.note === 'string' ? extra.note.trim() : null,
+              followUp: payload.followUp,
+            }
+          : prev?.candidateGeneration?.lastAction ?? null;
+
+        return {
+          ...prev,
+          candidateGeneration: {
+            ...(prev.candidateGeneration || {}),
+            ...(nextLastAction ? { lastAction: nextLastAction } : {}),
+          },
+          candidatePreview: (prev.candidatePreview || []).filter((item) => item.id !== candidateId),
+        };
+      });
+      void refreshHealthCheck();
+    } catch (err) {
+      setBatchActionError(err.message || '후보 상태를 저장하지 못했습니다.');
+    } finally {
+      setBusyCandidateId(null);
     }
   }
 
@@ -314,7 +391,7 @@ export function WorkLogPage() {
               <button class="worklog-primary-action" type="button" onClick={handleRunBatch} disabled={isRunningBatch}>
                 {isRunningBatch ? 'Generating...' : 'Generate Record'}
               </button>
-              <a class="worklog-back-link worklog-back-link--secondary" href="/resume">Living Resume</a>
+              <a class="worklog-back-link worklog-back-link--secondary" href="/resume">이력서 편집 열기</a>
             </div>
           </div>
         </section>
@@ -327,10 +404,41 @@ export function WorkLogPage() {
             </div>
           </div>
 
+          {batchSummary ? (
+            <>
+              <BatchSummaryFeed
+                summary={batchSummary}
+                busyCandidateId={busyCandidateId}
+                actionError={batchActionError}
+                onApprove={handleCandidateApprove}
+                onDiscard={handleCandidateDiscard}
+              />
+              <div class="worklog-divider" />
+            </>
+          ) : null}
+
+          {!batchSummary && healthCheck ? (
+            <>
+              <HealthCheckCard
+                healthCheck={healthCheck}
+                title="지금 무엇부터 하면 되는지"
+                compact
+                onAction={(action) => {
+                  if (action.kind === 'generate_record') {
+                    void handleRunBatch();
+                    return;
+                  }
+                  navigate(action.href);
+                }}
+              />
+              <div class="worklog-divider" />
+            </>
+          ) : null}
+
           {isBooting ? <StateMessage message="업무로그를 불러오는 중..." /> : null}
 
           {!isBooting && !days.length ? (
-            <StateMessage message="아직 생성된 업무로그가 없습니다." />
+            <StateMessage message="아직 생성된 업무로그가 없습니다. 먼저 오늘 기록을 생성하면 커밋과 근거가 모이기 시작합니다." />
           ) : null}
 
           {!isBooting && dayPayload?.missing ? (

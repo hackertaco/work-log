@@ -77,7 +77,7 @@ export function LoginPage() {
         <div class={styles.header}>
           <div class={styles.logo}>WL</div>
           <h1 class={styles.title}>Work Log</h1>
-          <p class={styles.subtitle}>이력서 편집 권한이 필요합니다</p>
+          <p class={styles.subtitle}>이력서를 수정하고 제안을 반영하려면 로그인해 주세요</p>
         </div>
 
         {/* Form */}
@@ -122,7 +122,7 @@ export function LoginPage() {
 
         {/* Hint */}
         <p class={styles.hint}>
-          토큰은 환경변수 <code>RESUME_TOKEN</code>에 설정합니다
+          팀에서 받은 액세스 코드를 입력하면 바로 이어서 편집할 수 있습니다.
         </p>
       </div>
     </div>
