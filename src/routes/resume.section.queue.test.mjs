@@ -357,62 +357,6 @@ mock.module("../lib/resumeAppealPoints.mjs", {
   }
 });
 
-mock.module("../lib/resumeChatApplyIntent.mjs", {
-  namedExports: {
-    detectApplyIntent:        () => false,
-    extractSectionFromContext: () => null,
-    extractProposedChanges:   () => ({ changes: [], sourceIndex: -1 }),
-    parseApplyIntent:         () => ({
-      detected: false,
-      section: null,
-      changes: [],
-      confidence: 0,
-      ambiguous: true,
-      clarificationNeeded: null,
-      sourceMessageIndex: -1,
-    }),
-  }
-});
-
-mock.module("../lib/resumeSummarySectionChat.mjs", {
-  namedExports: {
-    generateSummaryChatDiff: async () => ({
-      hasEnoughEvidence: false,
-      section: "summary",
-      before: "",
-      after: "",
-      evidence: [],
-      dataGaps: [],
-      followUpQuestions: [],
-    }),
-  }
-});
-
-mock.module("../lib/resumeStrengthsSectionChat.mjs", {
-  namedExports: {
-    generateStrengthsChatDiff: async () => ({
-      hasEnoughEvidence: false,
-      section: "strengths",
-      before: "",
-      after: "",
-      evidence: [],
-      strengthsData: [],
-      dataGaps: [],
-      followUpQuestions: [],
-    }),
-    formatStrengthsAsText: (strengths) => {
-      if (!Array.isArray(strengths) || strengths.length === 0) return "";
-      return strengths.map((s, i) => `${i + 1}. ${s.label}`).join("\n");
-    },
-  }
-});
-
-mock.module("../lib/resumeChatApplySections.mjs", {
-  namedExports: {
-    applyChatChangesToResume: () => ({ diff: null, skippedChanges: [] }),
-  }
-});
-
 mock.module("../lib/openai.mjs", {
   namedExports: {
     openaiChat: async () => "AI 응답",
