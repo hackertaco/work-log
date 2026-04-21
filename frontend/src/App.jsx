@@ -41,11 +41,6 @@ export function App() {
     return <ResumePage />;
   }
 
-  if (pathname === '/resume/analysis') {
-    // redirect to chat — analysis tab removed
-    return <ResumeChatPage />;
-  }
-
   if (pathname === '/resume/chat') {
     return <ResumeChatPage />;
   }

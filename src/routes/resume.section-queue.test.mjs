@@ -372,23 +372,6 @@ mock.module("../lib/resumeAppealPoints.mjs", {
   }
 });
 
-mock.module("../lib/resumeChatApplyIntent.mjs", {
-  namedExports: {
-    detectApplyIntent:         () => false,
-    extractSectionFromContext: () => null,
-    extractProposedChanges:    () => ({ changes: [], sourceIndex: -1 }),
-    parseApplyIntent:          () => ({
-      detected: false,
-      section: null,
-      changes: [],
-      confidence: 0,
-      ambiguous: true,
-      clarificationNeeded: null,
-      sourceMessageIndex: -1,
-    }),
-  }
-});
-
 // ─── Load router under test AFTER mocks ──────────────────────────────────────
 
 const { resumeRouter } = await import("./resume.mjs");

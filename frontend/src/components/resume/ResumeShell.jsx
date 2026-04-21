@@ -4,11 +4,10 @@
  * Props:
  *   children      — page body
  *   pendingCount  — optional pending suggestion count badge
- *   activePage    — 'resume' | 'analysis' | 'chat'
+ *   activePage    — 'resume' | 'chat'
  */
 export function ResumeShell({ children, pendingCount = 0, activePage = 'resume' }) {
   const pageLabel = {
-    analysis: 'RESUME ANALYSIS',
     chat: 'RESUME CHAT',
   }[activePage] ?? 'LIVING RESUME';
 
