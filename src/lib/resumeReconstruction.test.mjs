@@ -25,6 +25,7 @@ import {
   isResumeStale,
   mergeWithUserEdits,
   fullReconstructExtractCache,
+  buildLayeredProjectionHints,
   _normalizeNarrativeAxes,
   _mergeNarrativeAxes,
   _computeCoverage,
@@ -268,6 +269,70 @@ describe("gatherWorkLogBullets", () => {
     } finally {
       await cleanup();
     }
+  });
+});
+
+describe("buildLayeredProjectionHints", () => {
+  test("emits separate project and person-signal hints from shared worklog evidence", () => {
+    const entries = [
+      {
+        date: "2026-04-20",
+        projects: [
+          {
+            repo: "product-web",
+            category: "company",
+            commitCount: 4,
+            commits: [
+              { subject: "Fix checkout timeout" },
+              { subject: "Reduce payment retry noise" },
+            ],
+          },
+        ],
+        highlights: {
+          storyThreads: [
+            {
+              repo: "product-web",
+              outcome: "결제 흐름 안정화",
+              impact: "오류 가능성 감소",
+              why: "운영 비용 절감",
+            },
+          ],
+          aiReview: [],
+          workingStyleSignals: [],
+        },
+      },
+      {
+        date: "2026-04-21",
+        projects: [
+          {
+            repo: "payments-api",
+            category: "company",
+            commitCount: 3,
+            commits: [
+              { subject: "Fix payment crash" },
+              { subject: "Add retry guard" },
+            ],
+          },
+        ],
+        highlights: {
+          storyThreads: [
+            {
+              repo: "payments-api",
+              outcome: "운영 안정성 강화",
+              impact: "운영 혼선 감소",
+              why: "사용자 이탈 방지",
+            },
+          ],
+          aiReview: [],
+          workingStyleSignals: [],
+        },
+      },
+    ];
+
+    const result = buildLayeredProjectionHints(entries);
+
+    assert.ok(result.projectHints.some((hint) => hint.includes("product-web")));
+    assert.ok(result.personSignalHints.some((hint) => hint.includes("Reliability engineering")));
   });
 });
 

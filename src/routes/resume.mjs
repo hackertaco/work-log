@@ -203,6 +203,7 @@ import {
   isValidCandidateDiscardReason,
   withLiveDraftState,
 } from "../lib/resumeBatchSummary.mjs";
+import { filterSuggestionsWithLayeringRules } from "../lib/resumeLayeredSignals.mjs";
 
 export const resumeRouter = new Hono();
 
@@ -1186,14 +1187,15 @@ resumeRouter.post("/generate-candidates", async (c) => {
 
   // ── 6. Convert diff to pending SuggestionItems ───────────────────────────────────────────
   const rawSuggestions = diffToSuggestions(diff, date);
-  const compressedSuggestions = compressWorkLogSuggestions(rawSuggestions);
+  const layeredSuggestions = filterSuggestionsWithLayeringRules(rawSuggestions, workLog);
+  const compressedSuggestions = compressWorkLogSuggestions(layeredSuggestions);
 
   if (compressedSuggestions.length === 0) {
     return c.json({
       ok: true,
       generated: 0,
       suggestions: [],
-      message: "변경 사항을 제안으로 변환할 수 없습니다."
+      message: "변경 사항이 있더라도 현재 레이어링 규칙상 경력/프로젝트 후보로 승격되지 않았습니다."
     });
   }
 

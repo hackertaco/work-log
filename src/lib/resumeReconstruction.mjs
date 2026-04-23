@@ -57,6 +57,11 @@ import {
   extractDecisionPointsFromSnippets,
   buildDecisionContext,
 } from "./resumeDecisionExtractor.mjs";
+import {
+  buildEvidenceBundles,
+  personSignalsFromBundles,
+  projectExperienceCandidatesFromBundles,
+} from "./resumeLayeredSignals.mjs";
 
 const OPENAI_URL =
   process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
@@ -202,6 +207,36 @@ export function isResumeStale(resume, workLogEntries) {
   }
 
   return { isStale: false, latestLogDate, checkpointDate };
+}
+
+/**
+ * Build layered projection hints for the reconstruction prompt.
+ * These hints are derived from shared evidence bundles so the LLM sees
+ * the intended separation between project-scale experience facts and
+ * person/strength signals before synthesizing resume text.
+ *
+ * @param {object[]} workLogEntries
+ * @returns {{ projectHints: string[], personSignalHints: string[] }}
+ */
+export function buildLayeredProjectionHints(workLogEntries) {
+  const bundles = buildEvidenceBundles(Array.isArray(workLogEntries) ? workLogEntries : []);
+  const projectCandidates = projectExperienceCandidatesFromBundles(bundles);
+  const personSignals = personSignalsFromBundles(bundles).filter((signal) => signal.surfaced);
+
+  return {
+    projectHints: projectCandidates.slice(0, 6).map((candidate) => {
+      const dates = candidate.activeDates.length > 1
+        ? `${candidate.activeDates[0]} to ${candidate.activeDates[candidate.activeDates.length - 1]}`
+        : (candidate.activeDates[0] || "recent");
+      return `${candidate.repo}: ${candidate.totalCommits} commits across ${dates}. ${candidate.summary}`;
+    }),
+    personSignalHints: personSignals.slice(0, 5).map((signal) => {
+      const examples = signal.evidenceExamples.length > 0
+        ? ` 예: ${signal.evidenceExamples.join(" / ")}`
+        : "";
+      return `${signal.label}: score=${signal.score}, repetition=${signal.repetition}, confidence=${signal.confidence}.${examples}`;
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +600,19 @@ function buildReconstructionUserMessage({ pdfText, workLogEntries, currentResume
       parts.push("");
       parts.push("=== REPO NARRATIVE HINTS ===");
       repoHints.forEach((hint) => parts.push(`- ${hint}`));
+    }
+
+    const layeredHints = buildLayeredProjectionHints(recent);
+    if (layeredHints.projectHints.length > 0) {
+      parts.push("");
+      parts.push("=== PROJECT-SCALE EXPERIENCE HINTS ===");
+      layeredHints.projectHints.forEach((hint) => parts.push(`- ${hint}`));
+    }
+    if (layeredHints.personSignalHints.length > 0) {
+      parts.push("");
+      parts.push("=== PERSON / STRENGTH SIGNAL HINTS ===");
+      parts.push("(Use these for summary/identity tone, not as raw duplicate experience bullets)");
+      layeredHints.personSignalHints.forEach((hint) => parts.push(`- ${hint}`));
     }
 
     // ── 4. Decision reasoning context from sessions ──────────────────────────
