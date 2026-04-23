@@ -2,34 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { fileExists, writeJson } from "./utils.mjs";
-
-const STRENGTH_RULES = [
-  {
-    id: "reliability",
-    label: "Reliability engineering",
-    patterns: [/fix/i, /guard/i, /error/i, /crash/i, /resume/i, /retry/i, /stability/i, /안정/i, /예외/i]
-  },
-  {
-    id: "product_judgment",
-    label: "Product judgment",
-    patterns: [/ux/i, /ui/i, /flow/i, /rollout/i, /리브랜딩/i, /운영/i, /가시성/i]
-  },
-  {
-    id: "system_thinking",
-    label: "System thinking",
-    patterns: [/pipeline/i, /state/i, /causal/i, /architecture/i, /loop/i, /구조/i, /파이프라인/i]
-  },
-  {
-    id: "debugging",
-    label: "Debugging",
-    patterns: [/debug/i, /trace/i, /diagn/i, /sentry/i, /qa/i, /gps/i, /cache/i]
-  },
-  {
-    id: "tooling",
-    label: "Developer tooling",
-    patterns: [/install/i, /mcp/i, /hooks/i, /automation/i, /tool/i, /codex/i, /claude/i]
-  }
-];
+import {
+  buildEvidenceBundles,
+  personSignalsFromBundles,
+  projectExperienceCandidatesFromBundles,
+} from "./resumeLayeredSignals.mjs";
 
 const TECH_RULES = [
   { label: "React / Next.js", patterns: [/web/i, /getstaticprops/i, /router/i, /dialog/i, /lottie/i, /ui/i] },
@@ -65,10 +42,13 @@ export async function readProfileSummary(config, options = {}) {
 export function summarizeProfile(days, options = {}) {
   const windowDays = normalizeWindowDays(options.windowDays);
   const repoMap = new Map();
-  const strengthScores = new Map();
   const techScores = new Map();
   const aiReviewLines = [];
   const workingStyleLines = [];
+  const evidenceBundles = buildEvidenceBundles(days);
+  const projectCandidates = projectExperienceCandidatesFromBundles(evidenceBundles);
+  const personSignals = personSignalsFromBundles(evidenceBundles);
+  const surfacedPersonSignals = personSignals.filter((item) => item.surfaced);
 
   for (const day of days) {
     const groups = day.projectGroups || {};
@@ -95,31 +75,21 @@ export function summarizeProfile(days, options = {}) {
     aiReviewLines.push(...aiReview);
     workingStyleLines.push(...workingStyleSignals);
 
-    scorePatterns(STRENGTH_RULES, [...subjects, ...aiReview, ...workingStyleSignals], strengthScores);
     scorePatterns(TECH_RULES, subjects, techScores);
   }
 
-  const strengths = rankMap(strengthScores).slice(0, 5);
+  const strengths = surfacedPersonSignals
+    .slice(0, 5)
+    .map((item) => ({ label: item.label, score: item.score, confidence: item.confidence }));
   const techSignals = rankMap(techScores).slice(0, 6);
-  const projectArcs = [...repoMap.values()]
-    .sort((a, b) => b.totalCommits - a.totalCommits)
-    .map((project) => ({
-      repo: project.repo,
-      category: project.category,
-      totalCommits: project.totalCommits,
-      activeDates: [...project.activeDates].sort(),
-      summary: summarizeProjectArc(project)
-    }))
+  const projectArcs = mergeProjectArcs(projectCandidates, repoMap)
     .slice(0, 8);
 
-  const workStyle = inferWorkStyle([...aiReviewLines, ...workingStyleLines], strengths);
+  const workStyle = inferWorkStyleFromSignals(surfacedPersonSignals, [...aiReviewLines, ...workingStyleLines]);
   const narrativeAxes = deriveNarrativeAxes(strengths, projectArcs);
   const identitySignals = deriveIdentitySignals({
-    days,
-    strengths,
+    personSignals: surfacedPersonSignals,
     workStyle,
-    workingStyleLines,
-    aiReviewLines
   });
   const resumeDraft = deriveResumeDraft({
     strengths,
@@ -137,6 +107,7 @@ export function summarizeProfile(days, options = {}) {
     dayCount: days.length,
     windowDays: windowDays ?? null,
     strengths,
+    personSignals,
     techSignals,
     projectArcs,
     workStyle,
@@ -194,20 +165,21 @@ function summarizeProjectArc(project) {
   return "반복적인 개선이 누적되며 역할과 방향성이 드러나는 장기 프로젝트.";
 }
 
-function inferWorkStyle(aiReviewLines, strengths) {
+function inferWorkStyleFromSignals(personSignals, aiReviewLines) {
   const joined = aiReviewLines.join(" ");
   const style = [];
+  const labels = new Set((personSignals || []).map((item) => item.label));
 
-  if (joined || strengths.some((item) => item.label === "Reliability engineering")) {
+  if (joined || labels.has("Reliability engineering")) {
     style.push("예외 상황과 운영 리스크를 먼저 줄이는 안정화 중심 성향.");
   }
-  if (strengths.some((item) => item.label === "System thinking")) {
+  if (labels.has("System thinking")) {
     style.push("개별 버그보다 흐름과 구조를 같이 보며 문제를 푸는 편.");
   }
-  if (strengths.some((item) => item.label === "Product judgment")) {
+  if (labels.has("Product judgment")) {
     style.push("사용자 경험과 운영 가시성을 함께 고려해 제품 판단을 내리는 편.");
   }
-  if (/(기대치와 실제 결과의 간극|잡음을 줄여 판단 비용|전체 흐름과 구조|완성도 기준|리스크를 먼저)/.test(joined)) {
+  if (labels.has("Debugging") || /(기대치와 실제 결과의 간극|잡음을 줄여 판단 비용|전체 흐름과 구조|완성도 기준|리스크를 먼저)/.test(joined)) {
     style.push("대화와 정리 과정을 통해 기준을 명확히 하고 팀의 판단 비용을 낮추는 편.");
   }
 
@@ -235,64 +207,44 @@ function deriveNarrativeAxes(strengths, projectArcs) {
   return axes.slice(0, 3);
 }
 
-function deriveIdentitySignals({ days, strengths, workStyle, workingStyleLines, aiReviewLines }) {
-  const totalDays = Math.max(days.length, 1);
-  const corpus = [
-    ...workingStyleLines,
-    ...aiReviewLines,
-    ...days.flatMap((day) => day.highlights?.businessOutcomes || []),
-    ...days.flatMap((day) => day.highlights?.keyChanges || [])
-  ].join(" ");
+function deriveIdentitySignals({ personSignals, workStyle }) {
+  const labels = new Set((personSignals || []).map((item) => item.label));
+  const signals = [];
 
-  const candidates = [
-    {
+  if (labels.has("Product judgment")) {
+    signals.push({
       id: "expectation-alignment",
       label: "Expectation Alignment",
-      description: "기대치와 실제 결과의 간극을 먼저 줄이려는 성향.",
-      score:
-        _countMatches(corpus, /(기대치|정렬|설문|로드맵|현실적 목표|간극)/g) +
-        (workStyle.some((item) => /기준을 명확히/.test(item)) ? 2 : 0)
-    },
-    {
+      description: "기대치와 실제 진행 흐름의 어긋남을 먼저 줄이려는 성향.",
+      confidence: 0.82,
+    });
+  }
+  if (labels.has("Reliability engineering") || labels.has("Debugging")) {
+    signals.push({
       id: "noise-reduction",
       label: "Noise Reduction",
       description: "잡음을 줄여 판단 비용과 운영 피로를 낮추려는 성향.",
-      score:
-        _countMatches(corpus, /(노이즈|잡음|필터|가시성|운영 신호|판단 비용)/g) +
-        (strengths.some((item) => item.label === "Reliability engineering") ? 2 : 0)
-    },
-    {
+      confidence: 0.84,
+    });
+  }
+  if (labels.has("System thinking")) {
+    signals.push({
       id: "systems-framing",
       label: "Systems Framing",
       description: "개별 수정이 아니라 전체 흐름과 구조를 함께 보며 문제를 푸는 성향.",
-      score:
-        _countMatches(corpus, /(구조|흐름|재구성|재정비|파이프라인|블루프린트|system)/g) +
-        (strengths.some((item) => item.label === "System thinking") ? 2 : 0)
-    },
-    {
+      confidence: 0.85,
+    });
+  }
+  if (workStyle.some((item) => /기준을 명확히/.test(item))) {
+    signals.push({
       id: "quality-bar",
       label: "Quality Bar Raising",
       description: "말과 기준을 먼저 정리하고 결과물의 완성도와 일관성을 끌어올리는 성향.",
-      score:
-        _countMatches(corpus, /(품질|일관성|완성도|자연스럽|브랜드|quality)/g) +
-        (workStyle.some((item) => /제품 판단/.test(item)) ? 1 : 0)
-    },
-    {
-      id: "operator-empathy",
-      label: "Operator Empathy",
-      description: "사용자 경험뿐 아니라 운영자가 실제로 겪는 부담까지 줄이려는 성향.",
-      score: _countMatches(corpus, /(운영|가시성|사용자 경험|현장|대응 효율)/g)
-    }
-  ]
-    .filter((candidate) => candidate.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 4)
-    .map((candidate) => ({
-      ...candidate,
-      confidence: Number(Math.min(0.95, 0.35 + (candidate.score / (totalDays * 3))).toFixed(2))
-    }));
+      confidence: 0.73,
+    });
+  }
 
-  return candidates;
+  return signals.slice(0, 4);
 }
 
 function deriveResumeDraft({ strengths, workStyle, narrativeAxes, coreProjects }) {
@@ -341,9 +293,30 @@ function translateStrengthLabel(label) {
   return map[label] || label;
 }
 
-function _countMatches(text, regex) {
-  const matches = String(text || "").match(regex);
-  return matches ? matches.length : 0;
+function mergeProjectArcs(projectCandidates, repoMap) {
+  const candidates = Array.isArray(projectCandidates) ? projectCandidates : [];
+  const candidateRepos = new Set(candidates.map((item) => item.repo));
+  const fallbackArcs = [...repoMap.values()]
+    .filter((project) => !candidateRepos.has(project.repo))
+    .sort((a, b) => b.totalCommits - a.totalCommits)
+    .map((project) => ({
+      repo: project.repo,
+      category: project.category,
+      totalCommits: project.totalCommits,
+      activeDates: [...project.activeDates].sort(),
+      summary: summarizeProjectArc(project),
+    }));
+
+  return [
+    ...candidates.map((project) => ({
+      repo: project.repo,
+      category: project.category,
+      totalCommits: project.totalCommits,
+      activeDates: project.activeDates,
+      summary: project.summary,
+    })),
+    ...fallbackArcs,
+  ];
 }
 
 function scorePatterns(rules, texts, store) {

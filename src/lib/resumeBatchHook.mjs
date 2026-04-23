@@ -72,6 +72,7 @@ import { extractResumeUpdatesFromWorkLog } from "./resumeWorkLogExtract.mjs";
 import { mergeWorkLogIntoResume } from "./resumeWorkLogMerge.mjs";
 import { diffResume } from "./resumeDiff.mjs";
 import { diffToSuggestions } from "./resumeDiffToSuggestions.mjs";
+import { filterSuggestionsWithLayeringRules } from "./resumeLayeredSignals.mjs";
 import {
   computeDeltaRatio,
   exceedsDeltaThreshold
@@ -244,7 +245,10 @@ export async function runResumeCandidateHook(date, workLog) {
   }
 
   // ── Step 7: Convert diff to pending SuggestionItems ────────────────────────
-  const rawSuggestions = diffToSuggestions(diff, date);
+  const rawSuggestions = filterSuggestionsWithLayeringRules(
+    diffToSuggestions(diff, date),
+    workLog
+  );
 
   if (rawSuggestions.length === 0) {
     console.info(`${tag} Diff produced no actionable suggestions`);
