@@ -190,7 +190,7 @@ export function ResumePage() {
           <div style={{ marginBottom: '20px' }}>
             <HealthCheckCard
               healthCheck={healthCheck}
-              title="지금 어디까지 준비됐는지"
+              title="지금 work meaning에서 어디까지 이어졌는지"
               onAction={(action) => navigate(action.href)}
             />
           </div>
@@ -242,7 +242,7 @@ function LoadingScreen() {
   return (
     <div class="rs-fullscreen">
       <div class="resume-spinner" aria-label="불러오는 중" />
-      <p class="resume-state-msg">이력서 불러오는 중…</p>
+      <p class="resume-state-msg">Resume projection 불러오는 중…</p>
       <style>{`
         .rs-fullscreen {
           min-height: 100vh;

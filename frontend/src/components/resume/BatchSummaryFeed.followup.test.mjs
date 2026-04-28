@@ -14,7 +14,7 @@ describe('BatchSummaryFeed — missing_metric follow-up', () => {
       'should read follow-up data from the latest candidate action'
     );
     assert.ok(
-      source.includes('Missing metric follow-up'),
+      source.includes('추가로 확인할 것') || source.includes('Meaning follow-up') || source.includes('Missing metric follow-up'),
       'should label the follow-up panel for missing metric recovery'
     );
   });
@@ -29,7 +29,7 @@ describe('BatchSummaryFeed — missing_metric follow-up', () => {
       'should render follow-up action links'
     );
     assert.ok(
-      source.includes('채팅에서 수치 정리하기') || source.includes('이력서 채팅 열기'),
+      source.includes('채팅에서 수치 정리하기') || source.includes('이력서 채팅 열기') || source.includes('Meaning Chat 열기') || source.includes('채팅으로 이어서 정리하기'),
       'should include a chat-oriented recovery CTA'
     );
   });

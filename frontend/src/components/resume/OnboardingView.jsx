@@ -54,9 +54,9 @@ export function OnboardingView({ onComplete, healthCheck = null, onHealthAction 
         {/* Header */}
         <div class="onboarding-header">
           <div class="onboarding-logo">WL</div>
-          <h1 class="onboarding-title">이력서 시작하기</h1>
+          <h1 class="onboarding-title">Resume projection 시작하기</h1>
           <p class="onboarding-subtitle">
-            LinkedIn 프로필과 기존 PDF를 연결하면 기본 이력서를 만들고, 이후 기록/제안/채팅 흐름이 열립니다.
+            Work Meaning V1은 먼저 일의 의미를 읽는 데 집중합니다. 여기서는 나중에 resume로 이어가기 위한 projection 설정만 준비합니다.
           </p>
         </div>
 

@@ -246,9 +246,9 @@ export function PdfUploadOnboarding({ onComplete, linkedinProfile = null, onBack
             </button>
           )}
           <div class={styles.logo}>WL</div>
-          <h1 class={styles.title}>이력서 불러오기</h1>
+          <h1 class={styles.title}>Resume projection 불러오기</h1>
           <p class={styles.subtitle}>
-            기존 이력서 PDF를 업로드하면 편집 가능한 기본 이력서를 바로 만들 수 있습니다.
+            기존 이력서 PDF를 업로드하면 나중에 work meaning을 resume로 이어갈 기본 projection 레이어를 준비할 수 있습니다.
           </p>
         </div>
 

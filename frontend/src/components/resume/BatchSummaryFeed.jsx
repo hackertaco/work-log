@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'preact/hooks';
+import { WorklogButton, WorklogCard, WorklogLinkButton, WorklogSectionHeader } from '../worklog/Primitives.jsx';
 
 const DISCARD_REASON_OPTIONS = [
   { code: 'too_vague', label: '너무 모호함' },
@@ -20,31 +21,29 @@ export function BatchSummaryFeed({
   const followUp = summary?.candidateGeneration?.lastAction?.followUp ?? null;
 
   const sourceStats = useMemo(() => ([
-    { label: 'Commits', value: summary?.sourceCounts?.gitCommits ?? 0 },
-    { label: 'Slack', value: summary?.sourceCounts?.slackContexts ?? 0 },
-    { label: 'Sessions', value: summary?.sourceCounts?.sessions ?? 0 },
-    { label: 'Shell', value: summary?.sourceCounts?.shellCommands ?? 0 },
+    { label: '커밋', value: summary?.sourceCounts?.git커밋 ?? 0 },
+    { label: '슬랙', value: summary?.sourceCounts?.slackContexts ?? 0 },
+    { label: '세션', value: summary?.sourceCounts?.sessions ?? 0 },
+    { label: '쉘', value: summary?.sourceCounts?.shellCommands ?? 0 },
   ]), [summary]);
 
   if (!summary) return null;
 
   return (
-    <section class="worklog-batch-summary">
-      <header class="worklog-batch-summary__header">
-        <div>
-          <p class="ds-kicker worklog-section-kicker">Batch Summary</p>
-          <h2 class="worklog-batch-summary__title">오늘 수집된 근거와 이력서 후보</h2>
-          <p class="worklog-batch-summary__subtitle">
-            {summary.date} 기록에서 무엇이 수집됐고, 이력서 후보가 어떻게 처리됐는지 바로 확인합니다.
-          </p>
-        </div>
-        <div class="worklog-batch-summary__status">
-          <StatusPill kind={summary?.candidateGeneration?.status}>
-            {summary?.candidateGeneration?.message || '이번 배치 결과를 정리했습니다.'}
-          </StatusPill>
-          <DraftStatus draft={summary?.draft} />
-        </div>
-      </header>
+    <WorklogCard className="worklog-batch-summary" tone="soft">
+      <WorklogSectionHeader
+        kicker="업데이트 요약"
+        title="오늘 모인 근거와 정리 결과"
+        subtitle={`${summary.date} 기록에서 무엇이 모였고, 어떤 변화가 정리됐는지 바로 확인합니다.`}
+        aside={
+          <div class="worklog-batch-summary__status">
+            <StatusPill kind={summary?.candidateGeneration?.status}>
+              {summary?.candidateGeneration?.message || '이번 배치 결과를 정리했습니다.'}
+            </StatusPill>
+            <DraftStatus draft={summary?.draft} />
+          </div>
+        }
+      />
 
       <div class="worklog-batch-summary__stats">
         {sourceStats.map((item) => (
@@ -57,12 +56,12 @@ export function BatchSummaryFeed({
 
       <div class="worklog-batch-summary__body">
         <article class="worklog-batch-summary__panel">
-          <p class="worklog-batch-summary__panel-kicker">후보 생성 결과</p>
-          <h3>이번 배치에서 {summary?.candidateGeneration?.generated ?? 0}개 제안됨</h3>
+          <p class="worklog-batch-summary__panel-kicker">정리 결과</p>
+          <h3>이번 업데이트에서 {summary?.candidateGeneration?.generated ?? 0}개 변화 후보가 잡혔습니다</h3>
           <ul class="worklog-batch-summary__meta">
-            <li>교체된 기존 대기 후보: {summary?.candidateGeneration?.superseded ?? 0}개</li>
+            <li>대기 중이던 기존 후보 교체: {summary?.candidateGeneration?.superseded ?? 0}개</li>
             {typeof summary?.candidateGeneration?.deltaRatio === 'number' ? (
-              <li>변경 비율: {(summary.candidateGeneration.deltaRatio * 100).toFixed(1)}%</li>
+              <li>변화 비율: {(summary.candidateGeneration.deltaRatio * 100).toFixed(1)}%</li>
             ) : null}
           </ul>
           {summary?.emptyState ? (
@@ -71,13 +70,13 @@ export function BatchSummaryFeed({
               <p>{summary.emptyState.body}</p>
             </div>
           ) : (
-            <p class="worklog-batch-summary__hint">바로 아래 후보를 검토하거나 채팅에서 더 다듬을 수 있어요.</p>
+            <p class="worklog-batch-summary__hint">아래 후보를 바로 검토하거나, 채팅으로 더 다듬을 수 있습니다.</p>
           )}
         </article>
 
         <article class="worklog-batch-summary__panel">
           <p class="worklog-batch-summary__panel-kicker">후보 미리보기</p>
-          <h3>바로 검토 가능한 항목</h3>
+          <h3>지금 바로 검토할 수 있는 후보</h3>
 
           {actionError ? (
             <p class="worklog-batch-summary__error">{actionError}</p>
@@ -97,28 +96,31 @@ export function BatchSummaryFeed({
                     </div>
                     <p class="worklog-batch-summary__candidate-copy">{item.description}</p>
                     <div class="worklog-batch-summary__candidate-actions">
-                      <button
+                      <WorklogButton
                         type="button"
-                        class="worklog-inline-action"
+                        variant="secondary"
+                        className="worklog-inline-action"
                         disabled={isBusy}
                         onClick={() => onApprove?.(item.id)}
                       >
                         {isBusy ? '처리 중…' : '승인'}
-                      </button>
-                      <button
+                      </WorklogButton>
+                      <WorklogButton
                         type="button"
-                        class="worklog-inline-action worklog-inline-action--secondary"
+                        variant="quiet"
+                        className="worklog-inline-action worklog-inline-action--secondary"
                         disabled={isBusy}
                         onClick={() => setDiscardTargetId(discardOpen ? null : item.id)}
                       >
                         버리기
-                      </button>
-                      <a
-                        class="worklog-inline-action worklog-inline-action--secondary"
+                      </WorklogButton>
+                      <WorklogLinkButton
+                        variant="quiet"
+                        className="worklog-inline-action worklog-inline-action--secondary"
                         href={`/resume/chat?candidateId=${encodeURIComponent(item.id)}`}
                       >
                         채팅으로 다듬기
-                      </a>
+                      </WorklogLinkButton>
                     </div>
                     {discardOpen ? (
                       <div class="worklog-batch-summary__reason-list">
@@ -144,8 +146,8 @@ export function BatchSummaryFeed({
             </div>
           ) : (
             <div class="worklog-batch-summary__empty">
-              <strong>지금 바로 검토할 후보는 없습니다.</strong>
-              <p>대신 왜 후보가 없었는지, 초안이 생성 중인지 위 카드에서 바로 확인할 수 있습니다.</p>
+              <strong>지금 바로 검토할 후보는 없습니다</strong>
+              <p>대신 왜 후보가 없었는지, 아직 정리 중인 항목이 있는지는 위에서 바로 확인할 수 있습니다.</p>
             </div>
           )}
         </article>
@@ -155,7 +157,7 @@ export function BatchSummaryFeed({
         <article class="worklog-batch-summary__follow-up">
           <div class="worklog-batch-summary__follow-up-head">
             <div>
-              <p class="worklog-batch-summary__panel-kicker">Missing metric follow-up</p>
+              <p class="worklog-batch-summary__panel-kicker">추가로 확인할 것</p>
               <h3>{followUp.title}</h3>
             </div>
             {followUp.note ? (
@@ -173,13 +175,14 @@ export function BatchSummaryFeed({
           {Array.isArray(followUp.actions) && followUp.actions.length ? (
             <div class="worklog-batch-summary__follow-up-actions">
               {followUp.actions.map((action) => (
-                <a
+                <WorklogLinkButton
                   key={`${action.kind}-${action.href}`}
-                  class="worklog-inline-action worklog-inline-action--link"
+                  variant="secondary"
+                  className="worklog-inline-action worklog-inline-action--link"
                   href={action.href}
                 >
                   {action.label}
-                </a>
+                </WorklogLinkButton>
               ))}
             </div>
           ) : null}
@@ -187,10 +190,9 @@ export function BatchSummaryFeed({
       ) : null}
 
       <div class="worklog-batch-summary__footer">
-        <a class="worklog-back-link worklog-back-link--secondary" href="/resume/chat">이력서 채팅 열기</a>
-        <a class="worklog-back-link worklog-back-link--secondary" href="/resume">이력서 편집 열기</a>
+        <WorklogLinkButton variant="secondary" className="worklog-back-link worklog-back-link--secondary" href="/resume/chat">채팅으로 이어서 정리하기</WorklogLinkButton>
       </div>
-    </section>
+    </WorklogCard>
   );
 }
 
@@ -200,12 +202,12 @@ function StatusPill({ kind, children }) {
 
 function DraftStatus({ draft }) {
   const text = draft?.status === 'completed'
-    ? '초안 생성 완료'
+    ? '정리 초안 완료'
     : draft?.status === 'failed'
-      ? '초안 생성 실패'
+      ? '정리 초안 실패'
       : draft?.status === 'pending'
-        ? '초안 생성 중'
-        : '초안 미생성';
+        ? '정리 초안 생성 중'
+        : '정리 초안 없음';
 
   return <span class="worklog-batch-summary__draft">{text}</span>;
 }

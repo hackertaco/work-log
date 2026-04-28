@@ -14,7 +14,6 @@ const DISCARD_REASON_SET = new Set(CANDIDATE_DISCARD_REASON_CODES);
 
 const FOLLOW_UP_ACTIONS = Object.freeze([
   { kind: "open_chat", label: "채팅에서 수치 정리하기", href: "/resume/chat" },
-  { kind: "open_resume", label: "이력서 편집 열기", href: "/resume" },
 ]);
 
 /**

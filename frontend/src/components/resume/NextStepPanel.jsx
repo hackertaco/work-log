@@ -10,7 +10,7 @@ export function NextStepPanel({ healthCheck, onDismiss, onAction }) {
           <p class="resume-next-step-panel__eyebrow">SETUP COMPLETE</p>
           <h2>기본 준비가 끝났습니다. 이제 다음 한 걸음만 고르면 됩니다.</h2>
           <p>
-            가장 빠른 흐름은 “오늘 기록 생성 → 후보 확인 → 필요하면 채팅으로 다듬기”입니다.
+            가장 빠른 흐름은 “오늘 의미 업데이트 → 장기 프로젝트와 사람 신호 확인 → 필요하면 더 깊게 보기”입니다.
           </p>
         </div>
         <button type="button" class="resume-next-step-panel__close" onClick={onDismiss}>닫기</button>
@@ -23,7 +23,7 @@ export function NextStepPanel({ healthCheck, onDismiss, onAction }) {
       />
 
       <div class="resume-next-step-panel__examples">
-        <strong>채팅에서 이렇게 시작할 수 있어요</strong>
+        <strong>깊게 들어가면 이런 질문을 할 수 있어요</strong>
         <ul>
           {healthCheck.chatExamples.map((item) => (
             <li key={item}>{item}</li>
