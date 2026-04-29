@@ -8,8 +8,8 @@
  */
 export function ResumeShell({ children, pendingCount = 0, activePage = 'resume' }) {
   const pageLabel = {
-    chat: 'RESUME CHAT',
-  }[activePage] ?? 'RESUME EDITOR';
+    chat: 'MEANING CHAT',
+  }[activePage] ?? 'OPTIONAL PROJECTION';
 
   return (
     <div class="resume-shell">
@@ -30,18 +30,18 @@ export function ResumeShell({ children, pendingCount = 0, activePage = 'resume' 
             )}
           </div>
           <nav class="resume-nav">
-            <a href="/" class="resume-nav-link">업무 로그</a>
+            <a href="/" class="resume-nav-link">Work Meaning</a>
             <a
               href="/resume"
               class={`resume-nav-link${activePage === 'resume' ? ' resume-nav-link--active' : ''}`}
             >
-              이력서 편집
+              나중에 이어보기
             </a>
             <a
               href="/resume/chat"
               class={`resume-nav-link${activePage === 'chat' ? ' resume-nav-link--active' : ''}`}
             >
-              이력서 채팅
+              Meaning Chat
             </a>
             <button class="resume-nav-print" onClick={() => window.print()}>
               인쇄 / PDF 저장
