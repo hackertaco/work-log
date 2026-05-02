@@ -1727,3 +1727,34 @@
     grid-auto-flow: row;
   }
 }
+
+
+.worklog-user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.worklog-user-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(70, 91, 212, 0.10);
+  background: rgba(255,255,255,0.64);
+  color: #667085;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.worklog-user-logout {
+  border: 0;
+  background: transparent;
+  color: #5b6fb5;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0;
+}

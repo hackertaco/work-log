@@ -45,6 +45,29 @@ Optional env vars:
 - `SLACK_USER_ID`
 - `SLACK_CHANNEL_IDS` comma-separated channel IDs
 
+## Controlled Multi-User Access
+
+This app now supports invite-only multi-user operation without a database.
+
+Set `WORK_LOG_USERS_JSON` to a JSON array of users:
+
+```bash
+WORK_LOG_USERS_JSON='[
+  {"id":"alice","name":"Alice","token":"alice-secret-token"},
+  {"id":"bob","name":"Bob","token":"bob-secret-token"}
+]'
+```
+
+Behavior:
+- Each token maps to one `userId`
+- Local worklog data is isolated under `data/users/{userId}/...` and `vault/users/{userId}/...`
+- Resume/blob state is isolated under `users/{userId}/resume/...`
+- There is no self-serve signup yet; users must be pre-registered by an operator
+
+Compatibility:
+- If `WORK_LOG_USERS_JSON` is not set, the app falls back to the legacy single-user `RESUME_TOKEN` flow
+- The legacy single-user flow continues to use the default namespace
+
 ## Session Privacy
 
 Session logs are disabled by default. On shared machines or shared Claude/Codex storage, the logs do not provide a reliable person identifier, so automatic attribution is unsafe.

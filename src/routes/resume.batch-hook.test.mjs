@@ -37,6 +37,8 @@ let readResumeDataFn          = async () => null;
 let readSuggestionsDataFn     = async () => ({ schemaVersion: 1, updatedAt: new Date().toISOString(), suggestions: [] });
 let saveSuggestionsDataFn     = async () => ({ url: "https://blob/resume/suggestions.json" });
 let saveSnapshotFn            = async () => ({ snapshotKey: "resume/snapshots/2026-03-27T12-00-00.000Z.json", url: "https://blob/snap" });
+let saveChatDraftFn           = async () => ({ url: "https://blob/resume/chat-draft.json" });
+let saveChatDraftContextFn    = async () => ({ url: "https://blob/resume/chat-draft-context.json" });
 
 // resumeSnapshotDelta stubs (shared blob layer)
 let listSnapshotsFn           = async () => [];
@@ -84,15 +86,12 @@ mock.module("../lib/blob.mjs", {
     saveDisplayAxes:             async () => ({ url: "https://blob/resume/display-axes.json" }),
     readDisplayAxes:             async () => null,
     DISPLAY_AXES_PATHNAME:       "resume/display-axes.json",
-    saveChatDraft:               async () => ({ url: "https://blob/resume/chat-draft.json" }),
+    saveChatDraft:               (...args) => saveChatDraftFn(...args),
     readChatDraft:               async () => null,
-    saveChatDraftContext:        async () => ({ url: "https://blob/resume/chat-draft-context.json" }),
+    saveChatDraftContext:        (...args) => saveChatDraftContextFn(...args),
     readChatDraftContext:        async () => null,
     CHAT_DRAFT_PATHNAME:         "resume/chat-draft.json",
-    CHAT_DRAFT_CONTEXT_PATHNAME: "resume/chat-draft-context.json",
-    saveSession:                 async () => ({ url: "blob://session" }),
-    readSession:                 async () => null,
-    deleteSession:               async () => {},
+    CHAT_DRAFT_CONTEXT_PATHNAME: "resume/chat-draft-context.json"
   }
 });
 
@@ -467,6 +466,37 @@ describe("runResumeCandidateHook — Step 10 batch checkpoint snapshot", () => {
     assert.equal(saveSnapshotCallCount, 0, "saveSnapshot must NOT be called when pipeline errors");
 
     clearEnv();
+  });
+
+  test("background draft save runs inside the provided user context", async () => {
+    setEnv();
+
+    const { getCurrentUserId } = await import("../lib/requestContext.mjs");
+    let observedDraftUser = null;
+    let observedContextUser = null;
+
+    readResumeDataFn         = async () => SAMPLE_RESUME;
+    readExtractCacheFn       = async () => ({});
+    mergeWorkLogIntoResumeFn = () => SAMPLE_RESUME;
+    diffResumeFn             = () => ({ isEmpty: true });
+    saveChatDraftFn = async () => {
+      observedDraftUser = getCurrentUserId();
+      return { url: "https://blob/resume/chat-draft.json" };
+    };
+    saveChatDraftContextFn = async () => {
+      observedContextUser = getCurrentUserId();
+      return { url: "https://blob/resume/chat-draft-context.json" };
+    };
+
+    await runResumeCandidateHook("2026-03-27", {}, { userId: "alice" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(observedDraftUser, "alice");
+    assert.equal(observedContextUser, "alice");
+
+    clearEnv();
+    saveChatDraftFn = async () => ({ url: "https://blob/resume/chat-draft.json" });
+    saveChatDraftContextFn = async () => ({ url: "https://blob/resume/chat-draft-context.json" });
   });
 
   test("snapshot is NOT saved when suggestions write fails (error return)", async () => {

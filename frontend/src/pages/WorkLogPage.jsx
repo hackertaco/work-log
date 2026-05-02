@@ -1,17 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { navigate } from '../App.jsx';
-import { BatchSummaryFeed } from '../components/resume/BatchSummaryFeed.jsx';
-import {
-  WorklogButton,
-  WorklogCard,
-  WorklogMetaLine,
-  WorklogMiniSection,
-  WorklogSectionHeader,
-  WorklogStatTile,
-  WORKLOG_PRIMITIVES_CSS,
-} from '../components/worklog/Primitives.jsx';
-import { useResumeHealthCheck } from '../hooks/useResumeHealthCheck.js';
-import { buildWorklogShareSentence, deriveStoryTitle, rankImpactTexts, sanitizeWorklogCopy, sanitizeWorklogList, splitCompactStoryHighlights } from '../lib/worklogCopy.js';
+import { useAuthSession } from '../hooks/useAuthSession.js';
 import './worklog.css';
 
 const SEOUL_DATE = new Intl.DateTimeFormat('en-CA', {
@@ -51,7 +39,7 @@ const TECH_SIGNAL_COPY = {
   },
   TypeScript: {
     label: '타입 안정성',
-    description: '타입, 스키마, 구조 명세를 다룬 작업 구성',
+    description: '타입, 스키마, 구조 명세를 다룬 작업 비중',
   },
   'Maps / Location': {
     label: '지도·위치',
@@ -97,9 +85,6 @@ export function WorkLogPage() {
   const [profileWindow, setProfileWindow] = useState('all');
   const [status, setStatus] = useState('불러오는 중...');
   const [error, setError] = useState('');
-  const [batchSummary, setBatchSummary] = useState(null);
-  const [batchActionError, setBatchActionError] = useState('');
-  const [busyCandidateId, setBusyCandidateId] = useState(null);
   const [isBooting, setIsBooting] = useState(true);
   const [isRunningBatch, setIsRunningBatch] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -107,7 +92,7 @@ export function WorkLogPage() {
   const archiveRef = useRef(null);
   const lastBatchRunAtRef = useRef(0);
   const BATCH_THROTTLE_MS = 8000;
-  const { healthCheck, refresh: refreshHealthCheck } = useResumeHealthCheck();
+  const { authenticated, userId, logout } = useAuthSession();
 
   useEffect(() => {
     void bootstrap();
@@ -198,7 +183,7 @@ export function WorkLogPage() {
     }
   }
 
-  async function runBatchForDate(targetDate) {
+  async function handleRunBatch() {
     const now = Date.now();
     const remaining = BATCH_THROTTLE_MS - (now - lastBatchRunAtRef.current);
     if (isRunningBatch || remaining > 0) {
@@ -209,14 +194,13 @@ export function WorkLogPage() {
     lastBatchRunAtRef.current = now;
     setIsRunningBatch(true);
     setError('');
-    setBatchActionError('');
-    setStatus(`${targetDate} 배치 실행 중...`);
+    setStatus(`${dateInput} 배치 실행 중...`);
 
     try {
       const response = await fetch('/api/run-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: targetDate }),
+        body: JSON.stringify({ date: dateInput }),
       });
 
       if (handleAuthFailure(response)) return;
@@ -230,8 +214,6 @@ export function WorkLogPage() {
       setDateInput(payload.date);
       selectedDateRef.current = payload.date;
       setStatus(`${payload.date} 배치 완료`);
-      setBatchSummary(payload.batchSummary || null);
-      void refreshHealthCheck();
 
       const daysRes = await fetch('/api/days');
       const nextDays = daysRes.ok ? await daysRes.json() : days;
@@ -248,10 +230,6 @@ export function WorkLogPage() {
     }
   }
 
-  async function handleRunBatch() {
-    await runBatchForDate(dateInput);
-  }
-
   const stories = dayPayload?.highlights?.storyThreads || [];
   const leadStory = stories[0] || null;
   const secondaryStories = stories.slice(1);
@@ -259,19 +237,7 @@ export function WorkLogPage() {
   const companyProjects = dayPayload?.projectGroups?.company || [];
   const openSourceProjects = dayPayload?.projectGroups?.opensource || [];
   const breakdownSegments = buildWorkEstimateSegments(dayPayload);
-  const shareSentence = dayPayload?.highlights?.shareableSentence || buildWorklogShareSentence({
-    outcomes: [...(dayPayload?.highlights?.businessOutcomes || []), leadStory?.outcome, leadStory?.impact],
-    whyItMatters: [...(dayPayload?.highlights?.whyItMatters || []), leadStory?.why, leadStory?.impact],
-    changes: [...(dayPayload?.highlights?.keyChanges || []), leadStory?.keyChange, leadStory?.decision],
-  });
-  const hasTodayMeaning = days.includes(SEOUL_DATE);
-  const shouldShowTodayMeaningPrompt = !isBooting && !hasTodayMeaning;
-
-  useEffect(() => {
-    if (healthCheck?.batchSummary) {
-      setBatchSummary(healthCheck.batchSummary);
-    }
-  }, [healthCheck?.batchSummary]);
+  const shareSentence = dayPayload?.highlights?.shareableSentence || buildShareSentence(dayPayload, leadStory);
 
   function handleDateInput(event) {
     setDateInput(event.currentTarget.value);
@@ -288,95 +254,40 @@ export function WorkLogPage() {
     }
   }
 
-  async function handleCandidateApprove(candidateId) {
-    await updateCandidateStatus(candidateId, 'approved');
-  }
-
-  async function handleCandidateDiscard(candidateId, reasonCode) {
-    await updateCandidateStatus(candidateId, 'discarded', { reasonCode });
-  }
-
-  async function updateCandidateStatus(candidateId, nextStatus, extra = {}) {
-    setBusyCandidateId(candidateId);
-    setBatchActionError('');
-
-    try {
-      const res = await fetch(`/api/resume/candidates/${encodeURIComponent(candidateId)}`, {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: nextStatus, ...extra }),
-      });
-
-      if (res.status === 401 || res.status === 403) {
-        navigate(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
-        return;
-      }
-
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(payload.error || `후보 상태를 저장하지 못했습니다. HTTP ${res.status}`);
-      }
-
-      setBatchSummary((prev) => {
-        if (!prev) return prev;
-        const nextLastAction = payload?.followUp
-          ? {
-              candidateId,
-              status: nextStatus,
-              actedAt: new Date().toISOString(),
-              discardReasonCode: extra.reasonCode ?? null,
-              discardNote: typeof extra.note === 'string' ? extra.note.trim() : null,
-              followUp: payload.followUp,
-            }
-          : prev?.candidateGeneration?.lastAction ?? null;
-
-        return {
-          ...prev,
-          candidateGeneration: {
-            ...(prev.candidateGeneration || {}),
-            ...(nextLastAction ? { lastAction: nextLastAction } : {}),
-          },
-          candidatePreview: (prev.candidatePreview || []).filter((item) => item.id !== candidateId),
-        };
-      });
-      void refreshHealthCheck();
-    } catch (err) {
-      setBatchActionError(err.message || '후보 상태를 저장하지 못했습니다.');
-    } finally {
-      setBusyCandidateId(null);
-    }
-  }
-
   return (
     <div class="worklog-page">
       <main class="worklog-shell">
         <section class="worklog-hero">
           <div class="worklog-hero-copy">
-            <p class="ds-kicker worklog-eyebrow">요약 보기</p>
-            <h1>오늘 바뀐 것과 이어지는 흐름</h1>
+            <p class="ds-kicker worklog-eyebrow">EDITORIAL DESK</p>
+            <h1>Work Log</h1>
             <p class="worklog-lede">
-              커밋과 작업 흔적을 바탕으로 오늘의 변화, 이어지는 프로젝트, 반복되는 패턴을 함께 정리합니다.
+              하루 동안 남긴 커밋과 판단을 한 장의 편집면처럼 읽는 개인 업무 저널.
             </p>
           </div>
 
           <div class="worklog-actions">
-            <p class="ds-kicker worklog-actions-kicker">오늘 보기</p>
+            {authenticated && userId ? (
+              <div class="worklog-user-row">
+                <span class="worklog-user-badge">사용자 · {userId}</span>
+                <button type="button" class="worklog-user-logout" onClick={() => logout('/login')}>로그아웃</button>
+              </div>
+            ) : null}
+            <p class="ds-kicker worklog-actions-kicker">Control Desk</p>
             <div class="worklog-action-grid">
               <div class="worklog-action-group">
-                <label class="worklog-field-label" for="date-input">생성 날짜</label>
+                <label class="worklog-field-label" for="date-input">Generate</label>
                 <input
                   id="date-input"
                   type="date"
                   value={dateInput}
                   onInput={handleDateInput}
                   onChange={handleDateInput}
-                  disabled={isRunningBatch}
                 />
               </div>
 
               <div class="worklog-action-group">
-                <label class="worklog-field-label" for="archive-select">기록 둘러보기</label>
+                <label class="worklog-field-label" for="archive-select">Browse</label>
                 <div class="worklog-archive-picker" ref={archiveRef}>
                   <button
                     id="archive-select"
@@ -385,7 +296,7 @@ export function WorkLogPage() {
                     aria-haspopup="listbox"
                     aria-expanded={archiveOpen ? 'true' : 'false'}
                     onClick={() => setArchiveOpen((open) => !open)}
-                    disabled={!days.length || isRunningBatch}
+                    disabled={!days.length}
                   >
                     <span>{selectedDate || '날짜 선택'}</span>
                   </button>
@@ -402,7 +313,6 @@ export function WorkLogPage() {
                         class="worklog-archive-option"
                         role="option"
                         onClick={() => void loadDay(day)}
-                        disabled={isRunningBatch}
                       >
                         {day}
                       </button>
@@ -412,9 +322,10 @@ export function WorkLogPage() {
               </div>
             </div>
             <div class="worklog-action-row">
-              <WorklogButton type="button" onClick={handleRunBatch} disabled={isRunningBatch}>
-                {isRunningBatch ? '의미를 다시 정리하는 중…' : '오늘 의미 업데이트'}
-              </WorklogButton>
+              <button class="worklog-primary-action" type="button" onClick={handleRunBatch} disabled={isRunningBatch}>
+                {isRunningBatch ? 'Generating...' : 'Generate Record'}
+              </button>
+              <a class="worklog-back-link worklog-back-link--secondary" href="/resume">Living Resume</a>
             </div>
           </div>
         </section>
@@ -427,21 +338,10 @@ export function WorkLogPage() {
             </div>
           </div>
 
-          {shouldShowTodayMeaningPrompt ? (
-            <>
-              <TodayMeaningSetupCard
-                latestDate={days[0] || null}
-                isRunningBatch={isRunningBatch}
-                onGenerateToday={() => void runBatchForDate(SEOUL_DATE)}
-              />
-              <div class="worklog-divider" />
-            </>
-          ) : null}
-
           {isBooting ? <StateMessage message="업무로그를 불러오는 중..." /> : null}
 
           {!isBooting && !days.length ? (
-            <StateMessage message="아직 정리된 work log가 없습니다. 오늘 기록을 한 번 생성하면 커밋과 근거가 쌓이기 시작합니다." />
+            <StateMessage message="아직 생성된 업무로그가 없습니다." />
           ) : null}
 
           {!isBooting && dayPayload?.missing ? (
@@ -451,15 +351,64 @@ export function WorkLogPage() {
           {!isBooting && dayPayload && !dayPayload.missing ? (
             <div class="worklog-view">
               <section class="worklog-stat-bar">
-                <StatCard label="오늘 커밋" value={dayPayload.counts?.gitCommits || 0} primary />
-                <StatCard label="회사 작업" value={dayPayload.counts?.companyCommits || 0} />
-                <StatCard label="개인/오픈소스" value={dayPayload.counts?.openSourceCommits || 0} />
-                <StatCard label="정리 날짜" value={dayPayload.date} />
+                <StatCard label="총 커밋" value={dayPayload.counts?.gitCommits || 0} primary />
+                <StatCard label="회사" value={dayPayload.counts?.companyCommits || 0} />
+                <StatCard label="오픈소스" value={dayPayload.counts?.openSourceCommits || 0} />
+                <StatCard label="기준 날짜" value={dayPayload.date} />
               </section>
 
               <div class="worklog-divider" />
 
-              <section class="worklog-primary-meaning">
+              <section class="worklog-story-layout">
+                {leadStory ? (
+                  <article class="worklog-lead-story">
+                    <div class="worklog-story-meta">
+                      <p class="ds-kicker worklog-section-kicker">Lead Story</p>
+                      <span class="worklog-story-repo-text">{leadStory.repo || storyRepos[0] || 'repo 정보 없음'}</span>
+                    </div>
+                    <h2 class="worklog-story-title">{leadStory.outcome}</h2>
+                    <p class="worklog-lead-deck">
+                      {leadStory.impact || leadStory.why || leadStory.keyChange || '오늘의 핵심 변화가 아직 정리되지 않았습니다.'}
+                    </p>
+                    {leadStory.decision ? (
+                      <div class="worklog-lead-aside">
+                        <span class="worklog-story-label">Judgment</span>
+                        <p>{leadStory.decision}</p>
+                      </div>
+                    ) : null}
+                    <div class="worklog-lead-notes">
+                      <LeadStoryFact label="Key change" value={leadStory.keyChange || '없음'} />
+                      <LeadStoryFact label="Why it matters" value={leadStory.why || '없음'} />
+                    </div>
+                  </article>
+                ) : null}
+
+                <div class="worklog-story-column">
+                  {secondaryStories.length ? secondaryStories.map((story, index) => (
+                    <article key={`${story.outcome}-${index}`} class="worklog-compact-story">
+                      <div class="worklog-story-meta">
+                        <p class="ds-kicker worklog-section-kicker">Story {index + 2}</p>
+                        <span class="worklog-story-repo-text">{story.repo || storyRepos[index + 1] || 'repo 정보 없음'}</span>
+                      </div>
+                      <h3 class="worklog-compact-title">{story.outcome}</h3>
+                      <div class="worklog-story-grid worklog-story-grid--compact">
+                        <StoryLine label="Key change" value={story.keyChange || '없음'} compact />
+                        <StoryLine label="Impact" value={story.impact || '없음'} compact />
+                        <StoryLine label="Why it matters" value={story.why || '없음'} compact />
+                        {story.decision ? <StoryLine label="Judgment" value={story.decision} compact /> : null}
+                      </div>
+                    </article>
+                  )) : (
+                    <article class="worklog-compact-story worklog-compact-story-empty">
+                      <p>추가 story 없음</p>
+                    </article>
+                  )}
+                </div>
+              </section>
+
+              <div class="worklog-divider" />
+
+              <section class="worklog-notes-layout worklog-notes-layout--feature">
                 <AIJudgmentCard
                   sentence={shareSentence}
                   outcomes={dayPayload.highlights?.businessOutcomes}
@@ -472,101 +421,32 @@ export function WorkLogPage() {
 
               <div class="worklog-divider" />
 
-              <section class="worklog-secondary-grid">
-                <SnapshotCard
-                  profile={profile}
-                  profileWindow={profileWindow}
-                  onWindowChange={setProfileWindow}
-                />
+              <section class="worklog-insight-layout">
                 <TodayBreakdownCard
                   dayPayload={dayPayload}
                   segments={breakdownSegments}
                   total={dayPayload.counts?.gitCommits || 0}
                 />
+                <SnapshotCard
+                  profile={profile}
+                  profileWindow={profileWindow}
+                  onWindowChange={setProfileWindow}
+                />
               </section>
 
               <div class="worklog-divider" />
-
-              <section class="worklog-story-layout">
-                {leadStory ? (
-                  <article class="worklog-lead-story">
-                    <div class="worklog-story-meta">
-                      <p class="ds-kicker worklog-section-kicker">대표 변화</p>
-                      <span class="worklog-story-repo-text">{leadStory.repo || storyRepos[0] || '저장소 정보 없음'}</span>
-                    </div>
-                    <h2 class="worklog-story-title">{deriveStoryTitle({ outcome: leadStory.outcome, impact: leadStory.impact, why: leadStory.why, keyChange: leadStory.keyChange, repo: leadStory.repo || storyRepos[0] })}</h2>
-                    <p class="worklog-lead-deck">
-                      {sanitizeWorklogCopy(leadStory.impact || leadStory.why || leadStory.keyChange || '오늘의 핵심 변화가 아직 정리되지 않았습니다.', { maxLength: 160 })}
-                    </p>
-                    {leadStory.decision ? (
-                      <div class="worklog-lead-aside">
-                        <span class="worklog-story-label">판단</span>
-                        <p>{leadStory.decision}</p>
-                      </div>
-                    ) : null}
-                    <div class="worklog-lead-notes">
-                      <LeadStoryFact label="핵심 변화" value={leadStory.keyChange || '없음'} />
-                      <LeadStoryFact label="의미" value={leadStory.why || '없음'} />
-                    </div>
-                  </article>
-                ) : null}
-
-                <div class="worklog-story-column">
-                  {secondaryStories.length ? secondaryStories.map((story, index) => (
-                    <article key={`${story.outcome}-${index}`} class="worklog-compact-story">
-                      <div class="worklog-story-meta">
-                        <p class="ds-kicker worklog-section-kicker">추가 변화 {index + 2}</p>
-                        <span class="worklog-story-repo-text">{story.repo || storyRepos[index + 1] || '저장소 정보 없음'}</span>
-                      </div>
-                      <h3 class="worklog-compact-title">{deriveStoryTitle({ outcome: story.outcome, impact: story.impact, why: story.why, keyChange: story.keyChange, repo: story.repo || storyRepos[index + 1] })}</h3>
-                      <div class="worklog-story-grid worklog-story-grid--compact">
-                        <CompactStoryHighlights label="핵심 변화" value={story.keyChange} />
-                        <StoryLine label="영향" value={sanitizeWorklogCopy(story.impact || '없음', { maxLength: 96 })} compact />
-                        <StoryLine label="의미" value={sanitizeWorklogCopy(story.why || '없음', { maxLength: 96 })} compact />
-                        {story.decision ? <StoryLine label="판단" value={sanitizeWorklogCopy(story.decision, { maxLength: 96 })} compact /> : null}
-                      </div>
-                    </article>
-                  )) : (
-                    <article class="worklog-compact-story worklog-compact-story-empty">
-                      <p>추가로 정리할 변화가 없습니다.</p>
-                    </article>
-                  )}
-                </div>
-              </section>
-
-              <div class="worklog-divider" />
-
-              {batchSummary ? (
-                <>
-                  <details class="worklog-batch-disclosure" open={Boolean(batchSummary?.candidateGeneration?.lastAction?.followUp)}>
-                    <summary class="worklog-batch-disclosure__summary">
-                      방금 정리한 업데이트 자세히 보기
-                    </summary>
-                    <div class="worklog-batch-disclosure__body">
-                      <BatchSummaryFeed
-                        summary={batchSummary}
-                        busyCandidateId={busyCandidateId}
-                        actionError={batchActionError}
-                        onApprove={handleCandidateApprove}
-                        onDiscard={handleCandidateDiscard}
-                      />
-                    </div>
-                  </details>
-                  <div class="worklog-divider" />
-                </>
-              ) : null}
 
               <section class="worklog-project-links">
                 <p>
-                  <strong>회사 작업</strong> · {companyProjects.length} 개 저장소 ·{' '}
-                  {sumCommitCount(companyProjects)} 개 커밋 ·{' '}
+                  <strong>회사 프로젝트</strong> · {companyProjects.length} repo ·{' '}
+                  {sumCommitCount(companyProjects)} commits ·{' '}
                   <a href={`/projects?date=${encodeURIComponent(dayPayload.date)}&group=company`}>
                     상세 보기
                   </a>
                 </p>
                 <p>
-                  <strong>개인/오픈소스 작업</strong> · {openSourceProjects.length} 개 저장소 ·{' '}
-                  {sumCommitCount(openSourceProjects)} 개 커밋 ·{' '}
+                  <strong>오픈소스 프로젝트</strong> · {openSourceProjects.length} repos ·{' '}
+                  {sumCommitCount(openSourceProjects)} commits ·{' '}
                   <a href={`/projects?date=${encodeURIComponent(dayPayload.date)}&group=opensource`}>
                     상세 보기
                   </a>
@@ -576,7 +456,6 @@ export function WorkLogPage() {
           ) : null}
         </section>
       </main>
-    <style>{WORKLOG_PRIMITIVES_CSS}</style>
     </div>
   );
 }
@@ -600,81 +479,47 @@ function StateMessage({ message }) {
   );
 }
 
-function TodayMeaningSetupCard({ latestDate, isRunningBatch, onGenerateToday }) {
-  return (
-    <WorklogCard tone="soft" className="worklog-gap-card">
-      <CardHeader
-        kicker="오늘 아직 비어 있음"
-        title="오늘 기록의 의미가 아직 정리되지 않았습니다"
-        subtitle={
-          latestDate
-            ? `마지막으로 정리된 날짜는 ${latestDate}입니다. 오늘 기록을 생성하면 오늘의 핵심, 이어지는 프로젝트 흐름, 반복되는 작업 패턴이 함께 갱신됩니다.`
-            : '오늘 기록을 생성하면 오늘의 핵심과 이어지는 흐름을 한 번에 정리할 수 있습니다.'
-        }
-      />
-      <div class="worklog-action-row worklog-action-row--inline">
-        <WorklogButton type="button" onClick={onGenerateToday} disabled={isRunningBatch}>
-          {isRunningBatch ? '의미를 다시 정리하는 중…' : '오늘 의미 업데이트'}
-        </WorklogButton>
-      </div>
-    </WorklogCard>
-  );
-}
-
 function StatCard({ label, value, primary = false }) {
   const isNumeric = typeof value === 'number';
   return (
-    <WorklogStatTile
-      label={label}
-      value={value}
-      primary={primary}
-      text={!isNumeric || label === '정리 날짜'}
-    />
+    <article class={`worklog-stat-card${primary ? ' is-primary' : ''}${!isNumeric ? ' is-text' : ''}${label === '기준 날짜' ? ' is-date' : ''}`}>
+      <p class="worklog-stat-label">{label}</p>
+      <p class="worklog-stat-value">{value}</p>
+    </article>
   );
 }
 
 function StoryLine({ label, value, compact = false, lead = false }) {
   return (
-    <WorklogMetaLine label={label} value={value} compact={compact || lead} />
-  );
-}
-
-function CompactStoryHighlights({ label, value }) {
-  const highlights = splitCompactStoryHighlights(value);
-
-  if (!highlights.length) {
-    return <StoryLine label={label} value="없음" compact />;
-  }
-
-  if (highlights.length === 1 && highlights[0].length <= 120) {
-    return <StoryLine label={label} value={highlights[0]} compact />;
-  }
-
-  const visible = highlights.slice(0, 3);
-  const remaining = highlights.length - visible.length;
-
-  return (
-    <div class="worklog-story-highlights">
-      <span class="wl-meta-label">{label}</span>
-      <ul class="worklog-story-highlight-list">
-        {visible.map((item, index) => (
-          <li key={`${label}-${index}`}>{item}</li>
-        ))}
-      </ul>
-      {remaining > 0 ? <p class="worklog-story-highlight-more">외 {remaining}개 변화</p> : null}
+    <div class={`worklog-story-line${compact ? ' is-compact' : ''}${lead ? ' is-lead' : ''}`}>
+      <span class="worklog-story-label">{label}</span>
+      <p>{value}</p>
     </div>
   );
 }
 
 function LeadStoryFact({ label, value }) {
   return (
-    <WorklogMetaLine label={label} value={value} />
+    <div class="worklog-lead-fact">
+      <span class="worklog-story-label">{label}</span>
+      <p>{value}</p>
+    </div>
   );
 }
 
 function CardHeader({ kicker, title, subtitle, aside = null, titleAside = null }) {
   return (
-    <WorklogSectionHeader kicker={kicker} title={title} subtitle={subtitle} aside={aside} titleAside={titleAside} />
+    <header class="worklog-card-header">
+      <div>
+        <p class="ds-kicker worklog-section-kicker">{kicker}</p>
+        <div class="worklog-card-title-row">
+          <h3 class="worklog-card-title">{title}</h3>
+          {titleAside}
+        </div>
+        {subtitle ? <p class="ds-panel-subtitle worklog-panel-subtitle">{subtitle}</p> : null}
+      </div>
+      {aside}
+    </header>
   );
 }
 
@@ -683,7 +528,7 @@ function InfoCard({ kicker, title, subtitle, items, variant = 'list', maxItems }
   const visibleItems = typeof maxItems === 'number' ? list.slice(0, maxItems) : list;
 
   return (
-    <WorklogCard tone="soft">
+    <article class="ds-card worklog-info-card">
       <CardHeader kicker={kicker} title={title} subtitle={subtitle} />
       {variant === 'prose' ? (
         <div class="worklog-prose-list">
@@ -698,32 +543,30 @@ function InfoCard({ kicker, title, subtitle, items, variant = 'list', maxItems }
           ))}
         </ul>
       )}
-    </WorklogCard>
+    </article>
   );
 }
 
 function AIJudgmentCard({ sentence, outcomes, whyItMatters, keyChanges, aiReview, workingStyleSignals }) {
-  const rankedOutcomes = rankImpactTexts((outcomes || []).map((item) => sanitizeWorklogCopy(item, { maxLength: 110 })));
+  const rankedOutcomes = rankImpactTexts(outcomes);
   const extraOutcomes = rankedOutcomes.slice(1, 3);
-  const whyLines = rankImpactTexts((whyItMatters || []).map((item) => sanitizeWorklogCopy(item, { maxLength: 110 }))).slice(0, 2);
-  const changes = sanitizeWorklogList(keyChanges, { maxItems: 4, maxLength: 110 });
-  const notes = sanitizeWorklogList(aiReview, { maxItems: 4, maxLength: 110 });
-  const signals = sanitizeWorklogList(workingStyleSignals, { maxItems: 4, maxLength: 96 });
-
-  const visibleChanges = changes.length ? changes : ['아직 핵심 작업 정리가 없습니다.'];
-  const visibleNotes = notes.length ? notes : ['아직 평가 메모가 없습니다.'];
-  const visibleSignals = signals.length ? signals : ['아직 일하는 방식 신호가 없습니다.'];
+  const whyLines = rankImpactTexts(whyItMatters).slice(0, 2);
+  const changes = Array.isArray(keyChanges) && keyChanges.length ? keyChanges : ['아직 핵심 작업 정리가 없습니다.'];
+  const notes = Array.isArray(aiReview) && aiReview.length ? aiReview : ['아직 평가 메모가 없습니다.'];
+  const signals = Array.isArray(workingStyleSignals) && workingStyleSignals.length
+    ? workingStyleSignals
+    : ['아직 일하는 방식 신호가 없습니다.'];
 
   return (
-    <WorklogCard tone="primary" className="worklog-judgment-card">
+    <article class="ds-card worklog-info-card worklog-judgment-card">
       <CardHeader
-        kicker="오늘의 핵심"
-        title="오늘 가장 의미 있었던 변화"
-        subtitle="무엇이 바뀌었는지와 그 과정에서 어떤 판단이 드러났는지를 한 번에 읽을 수 있게 정리했습니다."
+        kicker="AI Judgment"
+        title="오늘의 작업과 판단"
+        subtitle="무엇을 했는지와, 그 과정에서 어떤 판단 패턴이 드러났는지를 한 카드에서 읽습니다."
       />
       <div class="worklog-judgment-hero">
-        <p class="worklog-worknotes-label">오늘 한 줄 요약</p>
-        <p class="worklog-judgment-line">{sentence || '오늘의 핵심을 아직 한 문장으로 정리하지 못했습니다.'}</p>
+        <p class="worklog-worknotes-label">한 줄 요약</p>
+        <p class="worklog-judgment-line">{sentence || '오늘의 핵심을 한 문장으로 아직 정리하지 못했습니다.'}</p>
         {extraOutcomes.length ? (
           <ul class="worklog-list worklog-list--compact">
             {extraOutcomes.map((item, index) => (
@@ -737,31 +580,31 @@ function AIJudgmentCard({ sentence, outcomes, whyItMatters, keyChanges, aiReview
       </div>
       <div class="worklog-judgment-layout">
         <section class="worklog-judgment-column">
-          <p class="worklog-worknotes-label">오늘 바뀐 것</p>
+          <p class="worklog-worknotes-label">오늘 한 일</p>
           <ul class="worklog-list worklog-list--compact">
-            {visibleChanges.map((item, index) => (
+            {changes.map((item, index) => (
               <li key={`work-change-${index}`}>{item}</li>
             ))}
           </ul>
         </section>
         <section class="worklog-judgment-column worklog-judgment-column--analysis">
-          <p class="worklog-worknotes-label">해석</p>
+          <p class="worklog-worknotes-label">AI의 판단</p>
           <div class="worklog-prose-list">
-            {visibleNotes.map((item, index) => (
+            {notes.map((item, index) => (
               <p key={`work-note-${index}`} class="worklog-prose-item worklog-prose-item--dense">{item}</p>
             ))}
           </div>
           <div class="worklog-judgment-signal-block">
-            <p class="worklog-worknotes-label">드러난 패턴</p>
+            <p class="worklog-worknotes-label">드러난 작업 방식</p>
             <ul class="worklog-list worklog-list--compact">
-              {visibleSignals.map((item, index) => (
+              {signals.map((item, index) => (
                 <li key={`work-signal-${index}`}>{item}</li>
               ))}
             </ul>
           </div>
         </section>
       </div>
-    </WorklogCard>
+    </article>
   );
 }
 
@@ -771,11 +614,11 @@ function TodayBreakdownCard({ dayPayload, segments, total }) {
     : 'conic-gradient(#e5e7eb 0% 100%)';
 
   return (
-    <WorklogCard className="worklog-insight-card">
+    <article class="ds-card worklog-info-card worklog-insight-card">
       <CardHeader
-        kicker="작업 구성"
-        title="오늘 작업 구성"
-        subtitle="커밋 수와 대표 변화를 함께 반영해 오늘의 작업 분포를 요약합니다."
+        kicker="Work Share Estimate"
+        title="작업 비중 추정"
+        subtitle="커밋 수와 대표 스토리를 함께 반영해 오늘의 분포를 요약합니다."
       />
 
       <div class="worklog-breakdown-layout">
@@ -783,7 +626,7 @@ function TodayBreakdownCard({ dayPayload, segments, total }) {
           <div class="worklog-donut" style={{ background: gradient }}>
             <div class="worklog-donut-hole">
               <strong>{total}</strong>
-              <span>커밋</span>
+              <span>commits</span>
             </div>
           </div>
         </div>
@@ -795,37 +638,32 @@ function TodayBreakdownCard({ dayPayload, segments, total }) {
                 <span class="worklog-breakdown-dot" style={{ background: segment.color }} />
                 <strong>{segment.label}</strong>
               </div>
-              <p>{segment.count} 개 커밋 · {segment.percent}%</p>
+              <p>{segment.count} commits · {segment.percent}%</p>
             </div>
           ))}
         </div>
       </div>
-    </WorklogCard>
+    </article>
   );
 }
 
 function SnapshotCard({ profile, profileWindow, onWindowChange }) {
-  const identityDraft = profile?.resumeDraft || { headline: '', summary: '', strengthLabels: [] };
+  const resumeDraft = profile?.resumeDraft || { headline: '', summary: '', strengthLabels: [] };
   const strengths = (profile?.strengths || []).slice(0, 3).map((item) => {
     const copy = STRENGTH_COPY[item.label] || { label: item.label };
     return copy.label;
   });
-  const personSignalCards = (profile?.personSignals || []).slice(0, 4).map((item) => {
-    const copy = STRENGTH_COPY[item.label] || { label: item.label, description: item.description || '' };
-    return { label: copy.label, description: item.description || copy.description || '', score: item.score ?? item.confidence ?? '' };
-  });
   const workStyle = (profile?.workStyle || []).slice(0, 3);
-  const projectArcs = (profile?.projectArcs || []).slice(0, 3);
-  const strengthCards = (personSignalCards.length ? personSignalCards : (profile?.strengths || []).slice(0, 4).map((item) => {
+  const strengthCards = (profile?.strengths || []).slice(0, 4).map((item) => {
     const copy = STRENGTH_COPY[item.label] || { label: item.label, description: '' };
     return { label: copy.label, description: copy.description || '', score: item.score };
-  }));
+  });
 
   return (
-    <WorklogCard className="worklog-insight-card">
+    <article class="ds-card worklog-info-card worklog-insight-card">
       <header class="worklog-snapshot-header">
         <div class="worklog-snapshot-meta-row">
-          <p class="ds-kicker worklog-section-kicker">누적 스냅샷</p>
+          <p class="ds-kicker worklog-section-kicker">Current Snapshot</p>
           <div class="worklog-toggle-group" role="tablist" aria-label="snapshot window">
             {[
               { id: '7', label: '최근 7일' },
@@ -843,24 +681,24 @@ function SnapshotCard({ profile, profileWindow, onWindowChange }) {
             ))}
           </div>
         </div>
-        <h3 class="worklog-card-title">지금까지 쌓인 흐름</h3>
+        <h3 class="worklog-card-title">이력서로 이어지는 현재 스냅샷</h3>
         <p class="ds-panel-subtitle worklog-panel-subtitle">
           {profile?.dayCount
-            ? `${profile.dayCount}일치 기록을 바탕으로 지금 어떤 흐름이 이어지고 있는지 압축했습니다.`
+            ? `${profile.dayCount}일치 기록을 바탕으로 지금 이력서에 남을 핵심만 추렸습니다.`
             : '아직 누적 스냅샷이 없습니다.'}
         </p>
       </header>
 
       <div class="worklog-snapshot-grid">
-        <SnapshotSection title="한 줄 소개" items={[]} emptyText="">
-          {identityDraft.headline || identityDraft.summary ? (
-            <div class="worklog-identity-draft">
-              {identityDraft.headline ? <p class="worklog-identity-draft-headline">{identityDraft.headline}</p> : null}
-              {identityDraft.summary ? <p class="worklog-identity-draft-body">{identityDraft.summary}</p> : null}
+        <SnapshotSection title="요약 초안" items={[]} emptyText="">
+          {resumeDraft.headline || resumeDraft.summary ? (
+            <div class="worklog-resume-draft">
+              {resumeDraft.headline ? <p class="worklog-resume-draft-headline">{resumeDraft.headline}</p> : null}
+              {resumeDraft.summary ? <p class="worklog-resume-draft-body">{resumeDraft.summary}</p> : null}
             </div>
-          ) : <p class="worklog-snapshot-empty">아직 한 줄 소개를 만들 만큼 데이터가 충분하지 않습니다.</p>}
+          ) : <p class="worklog-snapshot-empty">아직 요약 초안을 만들 데이터가 부족합니다.</p>}
         </SnapshotSection>
-        <SnapshotSection title="반복되는 강점" items={[]} emptyText="">
+        <SnapshotSection title="주요 강점" items={[]} emptyText="">
           {strengthCards.length ? (
             <div class="worklog-strength-card-grid">
               {strengthCards.map((item) => (
@@ -875,29 +713,19 @@ function SnapshotCard({ profile, profileWindow, onWindowChange }) {
                 </article>
               ))}
             </div>
-          ) : <p class="worklog-snapshot-empty">아직 뚜렷하게 반복된 작업 패턴이 없습니다.</p>}
+          ) : <p class="worklog-snapshot-empty">아직 누적 강점이 없습니다.</p>}
         </SnapshotSection>
-        <SnapshotSection title="이어지는 프로젝트" items={[]} emptyText="">
-          {projectArcs.length ? (
-            <ul class="worklog-list">
-              {projectArcs.map((project) => (
-                <li key={project.repo}>
-                  <strong>{project.repo}</strong> · {project.summary}
-                </li>
-              ))}
-            </ul>
-          ) : <p class="worklog-snapshot-empty">아직 길게 이어지는 프로젝트 흐름이 선명하지 않습니다.</p>}
-        </SnapshotSection>
-        <SnapshotSection title="요약 라벨" items={identityDraft.strengthLabels || []} emptyText="아직 요약할 수 있는 라벨이 없습니다." />
-        <SnapshotSection title="반복되는 작업 방식" items={workStyle} emptyText="아직 반복되는 작업 방식이 선명하지 않습니다." tone="sentence" />
+        <SnapshotSection title="강점 후보" items={resumeDraft.strengthLabels || []} emptyText="아직 강점 후보가 없습니다." />
+        <SnapshotSection title="이력서에 남는 작업 방식" items={workStyle} emptyText="아직 누적 작업 성향이 없습니다." tone="sentence" />
       </div>
-    </WorklogCard>
+    </article>
   );
 }
 
 function SnapshotSection({ title, items, emptyText, tone = 'chip', children }) {
   return (
-    <WorklogMiniSection title={title} empty={emptyText}>
+    <section class="worklog-snapshot-section">
+      <p class="worklog-snapshot-title">{title}</p>
       {children ? children : (
         items.length ? (
           tone === 'chip' ? (
@@ -909,12 +737,13 @@ function SnapshotSection({ title, items, emptyText, tone = 'chip', children }) {
               {items.map((item) => <li key={item}>{item}</li>)}
             </ul>
           )
-        ) : null
+        ) : (
+          <p class="worklog-snapshot-empty">{emptyText}</p>
+        )
       )}
-    </WorklogMiniSection>
+    </section>
   );
 }
-
 
 function buildWorkEstimateSegments(dayPayload) {
   const counts = dayPayload?.counts || {};
@@ -926,8 +755,8 @@ function buildWorkEstimateSegments(dayPayload) {
   const storyCategories = deriveStoryCategories(dayPayload);
 
   const raw = [
-    { key: 'company', label: '회사 작업', count: company, color: '#334155' },
-    { key: 'opensource', label: '개인/오픈소스', count: openSource, color: '#6366f1' },
+    { key: 'company', label: '회사 프로젝트', count: company, color: '#334155' },
+    { key: 'opensource', label: '오픈소스', count: openSource, color: '#6366f1' },
     { key: 'other', label: '기타', count: other, color: '#d1d5db' },
   ].filter((item) => item.count > 0);
 
@@ -978,14 +807,122 @@ function deriveStoryCategories(dayPayload) {
   const allProjects = [...(groups.company || []), ...(groups.opensource || []), ...(groups.other || [])];
   const byRepo = new Map(allProjects.map((project) => [project.repo, project.category || 'other']));
   const stories = dayPayload?.highlights?.storyThreads || [];
-  const repoFallback = deriveStoryRepos(dayPayload);
 
   return stories
-    .map((story, index) => story.repo || repoFallback[index] || null)
+    .map((story, index) => story.repo || deriveStoryRepos(dayPayload)[index] || null)
     .map((repo) => byRepo.get(repo) || null)
     .filter(Boolean);
 }
 
+function buildTodaySnapshot(dayPayload) {
+  const texts = collectTodayTexts(dayPayload);
+  return {
+    strengths: rankTodaySignals(TODAY_STRENGTH_RULES, texts, STRENGTH_COPY).slice(0, 3),
+    techSignals: rankTodaySignals(TODAY_TECH_RULES, texts, TECH_SIGNAL_COPY).slice(0, 3),
+  };
+}
+
+function collectTodayTexts(dayPayload) {
+  const projectTexts = (dayPayload?.projects || []).flatMap((project) =>
+    (project.commits || []).map((commit) => commit.subject).filter(Boolean)
+  );
+  return [
+    ...(dayPayload?.highlights?.keyChanges || []),
+    ...(dayPayload?.highlights?.commitAnalysis || []),
+    ...(dayPayload?.highlights?.aiReview || []),
+    ...projectTexts,
+  ];
+}
+
+function rankTodaySignals(rules, texts, copyMap) {
+  const scores = new Map();
+
+  for (const text of texts) {
+    const normalized = String(text || '');
+    for (const rule of rules) {
+      if (rule.patterns.some((pattern) => pattern.test(normalized))) {
+        scores.set(rule.label, (scores.get(rule.label) || 0) + 1);
+      }
+    }
+  }
+
+  return [...scores.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([label]) => copyMap[label]?.label || label);
+}
+
+function buildShareSentence(dayPayload, leadStory) {
+  const outcome = pickStrongestText([
+    ...(dayPayload?.highlights?.businessOutcomes || []),
+    leadStory?.outcome,
+    leadStory?.impact,
+  ]);
+  const why = pickStrongestText([
+    ...(dayPayload?.highlights?.whyItMatters || []),
+    leadStory?.why,
+    leadStory?.impact,
+  ], [outcome]);
+  const change = pickStrongestText([
+    ...(dayPayload?.highlights?.keyChanges || []),
+    leadStory?.keyChange,
+    leadStory?.decision,
+  ], [outcome, why]);
+  const outcomeLine = normalizeSentence(outcome);
+  const whyLine = normalizeSentence(why);
+  const changeLine = normalizeSentence(change);
+
+  if (outcomeLine && whyLine) {
+    return `${outcomeLine} 덕분에 ${toSentenceBody(whyLine)}.`;
+  }
+  if (changeLine && outcomeLine) {
+    return `${changeLine} 그 결과 ${toSentenceBody(outcomeLine)}.`;
+  }
+  return outcomeLine || changeLine || '';
+}
+
+function normalizeSentence(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return '';
+  return `${trimmed.replace(/[.!?]\s*$/, '')}.`;
+}
+
+function toSentenceBody(text) {
+  return String(text || '').trim().replace(/[.!?]\s*$/, '');
+}
+
+function pickStrongestText(items, exclude = []) {
+  const excluded = new Set(exclude.map((item) => String(item || '').trim()).filter(Boolean));
+  return rankImpactTexts(items).find((item) => !excluded.has(String(item || '').trim())) || '';
+}
+
+function rankImpactTexts(items) {
+  return [...new Set((Array.isArray(items) ? items : [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean))]
+    .sort((left, right) => scoreImpactText(right) - scoreImpactText(left));
+}
+
+function scoreImpactText(text) {
+  const normalized = String(text || '').toLowerCase();
+  let score = 0;
+
+  if (/(줄였|감소|방지|막았|개선|높였|증가|복구|안정|정확|누락|오류|리스크|전환|성능|속도|impact|reduce|improve|prevent|increase|stability|error|risk)/.test(normalized)) {
+    score += 5;
+  }
+  if (/(고객|운영|결제|예약|체크인|환불|merchant|payment|refund|admission|cs)/.test(normalized)) {
+    score += 3;
+  }
+  if (/\d|%/.test(normalized)) {
+    score += 2;
+  }
+
+  score += Math.min(normalized.length / 24, 4);
+
+  if (normalized.length < 14) score -= 2;
+  if (normalized.length > 120) score -= 1;
+
+  return score;
+}
 
 async function fetchProfileSummary(windowKey, onAuthFailure = null) {
   const query = windowKey && windowKey !== 'all' ? `?window=${windowKey}` : '';

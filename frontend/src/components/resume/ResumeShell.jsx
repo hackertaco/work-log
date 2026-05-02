@@ -1,3 +1,5 @@
+import { useAuthSession } from '../../hooks/useAuthSession.js';
+
 /**
  * ResumeShell — resume surfaces shared page shell.
  *
@@ -7,6 +9,7 @@
  *   activePage    — 'resume' | 'chat'
  */
 export function ResumeShell({ children, pendingCount = 0, activePage = 'resume' }) {
+  const { authenticated, userId, logout } = useAuthSession();
   const pageLabel = {
     chat: 'MEANING CHAT',
   }[activePage] ?? 'OPTIONAL PROJECTION';
@@ -43,9 +46,15 @@ export function ResumeShell({ children, pendingCount = 0, activePage = 'resume' 
             >
               Meaning Chat
             </a>
+            {authenticated && userId ? <span class="resume-user-badge">사용자 · {userId}</span> : null}
             <button class="resume-nav-print" onClick={() => window.print()}>
               인쇄 / PDF 저장
             </button>
+            {authenticated ? (
+              <button class="resume-nav-logout" onClick={() => logout('/login')}>
+                로그아웃
+              </button>
+            ) : null}
           </nav>
         </div>
       </header>
@@ -128,7 +137,8 @@ export const SHELL_CSS = `
   }
 
   .resume-nav-link,
-  .resume-nav-print {
+  .resume-nav-print,
+  .resume-nav-logout {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -152,13 +162,27 @@ export const SHELL_CSS = `
   }
 
   .resume-nav-link:hover,
-  .resume-nav-print:hover {
+  .resume-nav-print:hover,
+  .resume-nav-logout:hover {
     background: rgba(255, 255, 255, 0.94);
     box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
   }
 
   .resume-nav-link--active:hover {
     background: rgba(24, 32, 52, 0.92);
+  }
+
+  .resume-user-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 9px 13px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: rgba(255, 255, 255, 0.56);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
   }
 
   .resume-main {

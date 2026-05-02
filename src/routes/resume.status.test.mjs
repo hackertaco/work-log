@@ -24,14 +24,17 @@ import { Hono } from "hono";
 // Each test can reassign `checkResumeExistsFn` to control what the mock returns.
 
 let checkResumeExistsFn = async () => ({ exists: false });
+let checkResumeExistsCalls = [];
+let readResumeDataFn = async () => null;
+let readResumeDataCalls = [];
 
 // ─── Module-level mocks (must be declared before `await import(…)`) ──────────
 
 mock.module("../lib/blob.mjs", {
   namedExports: {
-    checkResumeExists:            (...args) => checkResumeExistsFn(...args),
+    checkResumeExists:            (...args) => { checkResumeExistsCalls.push(args); return checkResumeExistsFn(...args); },
     saveResumeData:               async () => ({ url: "https://blob/resume/data.json" }),
-    readResumeData:               async () => null,
+    readResumeData:               async (...args) => { readResumeDataCalls.push(args); return readResumeDataFn(...args); },
     readSuggestionsData:          async () => ({ schemaVersion: 1, updatedAt: new Date().toISOString(), suggestions: [] }),
     saveSuggestionsData:          async () => ({ url: "https://blob/resume/suggestions.json" }),
     saveDailyBullets:             async () => ({ url: "https://blob/resume/bullets/test.json" }),
@@ -355,4 +358,41 @@ test("/resume page route - serves the SPA page for authenticated users", async (
   assert.equal(res.status, 200);
   const text = await res.text();
   assert.match(text, /Resume SPA loaded/);
+});
+
+
+test("GET /api/resume/status passes authenticated userId into blob check", async () => {
+  process.env.WORK_LOG_USERS_JSON = JSON.stringify([{ id: "alice", token: "alice-token" }]);
+  checkResumeExistsCalls = [];
+  checkResumeExistsFn = async () => ({ exists: false });
+
+  const app = new Hono();
+  app.use("/api/resume/*", cookieAuth());
+  app.route("/api/resume", resumeRouter);
+
+  const headers = new Headers();
+  headers.set("cookie", "resume_token=alice-token");
+  const res = await app.fetch(new Request("http://localhost/api/resume/status", { headers }));
+
+  assert.equal(res.status, 200);
+  assert.equal(checkResumeExistsCalls[0][0], "alice");
+  delete process.env.WORK_LOG_USERS_JSON;
+});
+
+test("GET /api/resume passes authenticated userId into blob read", async () => {
+  process.env.WORK_LOG_USERS_JSON = JSON.stringify([{ id: "alice", token: "alice-token" }]);
+  readResumeDataCalls = [];
+  readResumeDataFn = async () => null;
+
+  const app = new Hono();
+  app.use("/api/resume/*", cookieAuth());
+  app.route("/api/resume", resumeRouter);
+
+  const headers = new Headers();
+  headers.set("cookie", "resume_token=alice-token");
+  const res = await app.fetch(new Request("http://localhost/api/resume", { headers }));
+
+  assert.equal(res.status, 404);
+  assert.equal(readResumeDataCalls[0][0], "alice");
+  delete process.env.WORK_LOG_USERS_JSON;
 });

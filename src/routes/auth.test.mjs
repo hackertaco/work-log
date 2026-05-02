@@ -241,3 +241,22 @@ test("POST /auth/logout - IPv6 loopback does not set Secure flag on cleared cook
   assert.ok(setCookie, "Set-Cookie header must be present on logout");
   assert.ok(!setCookie.includes("Secure"), "IPv6 loopback should not have Secure flag");
 });
+
+
+test("GET /auth/me - returns authenticated user info when cookie matches", async () => {
+  const app = buildApp("secret-token");
+  const res = await app.fetch(new Request("http://localhost/auth/me", {
+    headers: { cookie: "resume_token=secret-token" }
+  }));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body, { authenticated: true, userId: "default" });
+});
+
+test("GET /auth/me - returns unauthenticated when cookie missing", async () => {
+  const app = buildApp("secret-token");
+  const res = await app.fetch(new Request("http://localhost/auth/me"));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body, { authenticated: false, userId: "default" });
+});

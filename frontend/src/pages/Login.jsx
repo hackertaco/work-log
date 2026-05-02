@@ -24,7 +24,7 @@ function getNextPath() {
  *
  * /login 페이지 — 환경변수로 설정된 고정 토큰을 입력해
  * /auth/login 엔드포인트로 POST 요청을 보내고,
- * 성공 시 세션 쿠키가 설정된다.
+ * 성공 시 사용자 세션 쿠키가 설정된다.
  *
  * 인증 후 이동 경로:
  *   - URL에 ?next=<path> 파라미터가 있으면 해당 경로로 이동
@@ -77,7 +77,7 @@ export function LoginPage() {
         <div class={styles.header}>
           <div class={styles.logo}>WL</div>
           <h1 class={styles.title}>Work Log</h1>
-          <p class={styles.subtitle}>이력서를 수정하고 제안을 반영하려면 로그인해 주세요</p>
+          <p class={styles.subtitle}>초대받은 사용자 토큰으로 로그인합니다</p>
         </div>
 
         {/* Form */}
@@ -122,7 +122,7 @@ export function LoginPage() {
 
         {/* Hint */}
         <p class={styles.hint}>
-          팀에서 받은 액세스 코드를 입력하면 바로 이어서 편집할 수 있습니다.
+          관리자가 발급한 사용자 토큰으로 로그인합니다
         </p>
       </div>
     </div>

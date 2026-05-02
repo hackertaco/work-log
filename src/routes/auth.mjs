@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 
 import { findAuthUserByToken } from "../lib/authUsers.mjs";
+import { resolveRequestUser } from "../middleware/auth.mjs";
 
 const COOKIE_NAME = "resume_token";
 const USER_COOKIE_NAME = "worklog_user";
@@ -79,6 +80,13 @@ authRouter.post("/login", async (c) => {
   c.header("Set-Cookie", buildSetCookieHeader(user.token, COOKIE_MAX_AGE, host), { append: true });
   c.header("Set-Cookie", buildUserCookieHeader(user.id, COOKIE_MAX_AGE, host), { append: true });
   return c.json({ ok: true, userId: user.id });
+});
+
+authRouter.get("/me", (c) => {
+  const user = resolveRequestUser(c);
+  const cookie = c.req.header("cookie") ?? "";
+  const authenticated = /resume_token=/.test(cookie) && Boolean(user?.id && user.id !== "default" ? user.id : user?.id);
+  return c.json({ authenticated: Boolean(user?.id && /resume_token=/.test(cookie)), userId: user?.id ?? null });
 });
 
 /**
