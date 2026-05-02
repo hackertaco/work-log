@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 
+import { findAuthUserByToken } from "../lib/authUsers.mjs";
+
 const COOKIE_NAME = "resume_token";
+const USER_COOKIE_NAME = "worklog_user";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
 
 function isLocalDevelopmentHost(host = "") {
@@ -21,6 +24,12 @@ function buildSetCookieHeader(value, maxAge, host) {
   const isLocalhost = isLocalDevelopmentHost(host);
   const secure = isLocalhost ? "" : "; Secure";
   return `${COOKIE_NAME}=${value}; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
+}
+
+function buildUserCookieHeader(userId, maxAge, host) {
+  const isLocalhost = isLocalDevelopmentHost(host);
+  const secure = isLocalhost ? "" : "; Secure";
+  return `${USER_COOKIE_NAME}=${userId}; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
 }
 
 /**
@@ -44,9 +53,9 @@ export const authRouter = new Hono();
  * On failure, returns 401.
  */
 authRouter.post("/login", async (c) => {
-  const resumeToken = process.env.RESUME_TOKEN;
-  if (!resumeToken) {
-    return c.json({ error: "Server misconfiguration: RESUME_TOKEN not set" }, 500);
+  const users = process.env.WORK_LOG_USERS_JSON || process.env.RESUME_TOKEN || process.env.RESUME_AUTH_TOKEN;
+  if (!users) {
+    return c.json({ error: "Server misconfiguration: authentication not configured" }, 500);
   }
 
   let body;
@@ -61,14 +70,15 @@ authRouter.post("/login", async (c) => {
     return c.json({ error: "token field is required" }, 400);
   }
 
-  // Constant-time comparison to prevent timing attacks
-  if (!timingSafeEqual(token, resumeToken)) {
+  const user = findAuthUserByToken(token);
+  if (!user || !timingSafeEqual(token, user.token)) {
     return c.json({ error: "Invalid token" }, 401);
   }
 
   const host = c.req.header("host") ?? "";
-  c.header("Set-Cookie", buildSetCookieHeader(resumeToken, COOKIE_MAX_AGE, host));
-  return c.json({ ok: true });
+  c.header("Set-Cookie", buildSetCookieHeader(user.token, COOKIE_MAX_AGE, host), { append: true });
+  c.header("Set-Cookie", buildUserCookieHeader(user.id, COOKIE_MAX_AGE, host), { append: true });
+  return c.json({ ok: true, userId: user.id });
 });
 
 /**
@@ -79,7 +89,8 @@ authRouter.post("/login", async (c) => {
  */
 authRouter.post("/logout", (c) => {
   const host = c.req.header("host") ?? "";
-  c.header("Set-Cookie", buildClearCookieHeader(host));
+  c.header("Set-Cookie", buildClearCookieHeader(host), { append: true });
+  c.header("Set-Cookie", `${USER_COOKIE_NAME}=; HttpOnly${isLocalDevelopmentHost(host) ? "" : "; Secure"}; SameSite=Strict; Path=/; Max-Age=0`, { append: true });
   return c.json({ ok: true });
 });
 

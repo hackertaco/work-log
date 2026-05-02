@@ -71,6 +71,8 @@
 
 import { Hono } from "hono";
 
+import { resolveRequestUser } from "../middleware/auth.mjs";
+
 import {
   checkResumeExists,
   saveResumeData,
@@ -207,6 +209,10 @@ import { filterSuggestionsWithLayeringRules } from "../lib/resumeLayeredSignals.
 
 export const resumeRouter = new Hono();
 
+function getRequestUserId(c) {
+  return resolveRequestUser(c)?.id || "default";
+}
+
 // ─── GET /api/resume ──────────────────────────────────────────────────────────
 
 /**
@@ -222,8 +228,9 @@ export const resumeRouter = new Hono();
  *   HTTP 502  { "error": "...", "detail": "..." }
  */
 resumeRouter.get("/", async (c) => {
+  const userId = getRequestUserId(c);
   try {
-    const data = await readResumeData();
+    const data = await readResumeData(userId);
 
     if (!data) {
       // No resume yet — user needs to go through bootstrap onboarding.
@@ -260,8 +267,9 @@ resumeRouter.get("/", async (c) => {
  *   HTTP 502  { "error": "Failed to check resume status", "detail": "..." }
  */
 resumeRouter.get("/status", async (c) => {
+  const userId = getRequestUserId(c);
   try {
-    const result = await checkResumeExists();
+    const result = await checkResumeExists(userId);
     return c.json(result);
   } catch (err) {
     console.error("[resume/status] Blob check failed:", err);
@@ -404,6 +412,7 @@ function describePdfExtractionFailure(err) {
  *   HTTP 502  — Vercel Blob save failed
  */
 resumeRouter.post("/upload", async (c) => {
+  const userId = getRequestUserId(c);
   // ── 1. Parse multipart body ────────────────────────────────────────────────
   let body;
   try {
@@ -482,7 +491,7 @@ resumeRouter.post("/upload", async (c) => {
   // ── 7. Save raw PDF binary to Vercel Blob ─────────────────────────────────
   let saveResult;
   try {
-    saveResult = await savePdfRaw(pdfBuffer);
+    saveResult = await savePdfRaw(pdfBuffer, userId);
     console.info(
       `[resume/upload] PDF stored in Vercel Blob` +
       ` name="${pdfFile.name ?? "resume.pdf"}"` +
@@ -498,7 +507,7 @@ resumeRouter.post("/upload", async (c) => {
 
   return c.json({
     ok: true,
-    pathname: PDF_RAW_PATHNAME,
+    pathname: pathForUser(PDF_RAW_PATHNAME, userId),
     url: saveResult.url,
     size: pdfBuffer.length
   });
@@ -539,6 +548,7 @@ resumeRouter.post("/upload", async (c) => {
  *   HTTP 502  — Vercel Blob save failed
  */
 resumeRouter.post("/bootstrap", async (c) => {
+  const userId = getRequestUserId(c);
   // ── 1. Parse multipart body ────────────────────────────────────────────────
   let body;
   try {
@@ -615,7 +625,7 @@ resumeRouter.post("/bootstrap", async (c) => {
   // Non-critical: if it fails, bootstrap continues without the raw binary.
   // The extracted text is still saved later for reconstruction fallback.
   try {
-    await savePdfRaw(pdfBuffer);
+    await savePdfRaw(pdfBuffer, userId);
     console.info("[resume/bootstrap] Raw PDF binary stored in Vercel Blob");
   } catch (err) {
     console.warn("[resume/bootstrap] Failed to store raw PDF binary (non-fatal):", err.message ?? String(err));
@@ -681,7 +691,7 @@ resumeRouter.post("/bootstrap", async (c) => {
 
   // ── 9. Save resume JSON to Vercel Blob ────────────────────────────────────
   try {
-    await saveResumeData(blobDocument);
+    await saveResumeData(blobDocument, userId);
   } catch (err) {
     console.error("[resume/bootstrap] Blob save failed:", err);
     return c.json(
@@ -694,7 +704,7 @@ resumeRouter.post("/bootstrap", async (c) => {
   // Stored non-critically: if it fails, bootstrap still succeeds.
   if (pdfText) {
     try {
-      await savePdfText(pdfText);
+      await savePdfText(pdfText, userId);
       console.info("[resume/bootstrap] PDF text saved to Vercel Blob");
     } catch (err) {
       console.warn("[resume/bootstrap] Failed to save PDF text (non-fatal):", err.message);
@@ -708,7 +718,7 @@ resumeRouter.post("/bootstrap", async (c) => {
   // the main resume document as strength_keywords[]).
   try {
     const kwDoc = initStrengthKeywordsFromBootstrap(bootstrapResult.strengthKeywords);
-    await saveStrengthKeywords(kwDoc);
+    await saveStrengthKeywords(kwDoc, userId);
     console.info(
       `[resume/bootstrap] Strength keywords saved (${kwDoc.keywords.length} keyword(s))`
     );
@@ -744,7 +754,7 @@ resumeRouter.post("/bootstrap", async (c) => {
           updatedAt: new Date().toISOString(),
           suggestions: newSuggestions
         };
-        await saveSuggestionsData(suggestionsDoc);
+        await saveSuggestionsData(suggestionsDoc, userId);
         console.info(
           `[resume/bootstrap] Generated ${newSuggestions.length} LinkedIn gap suggestion(s)`
         );

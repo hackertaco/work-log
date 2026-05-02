@@ -76,8 +76,8 @@ const _savedHooks = [];
  * @param {string} date     YYYY-MM-DD batch date
  * @param {Array}  commits  Raw commit objects returned by collectGitCommits
  */
-export function emitCommitCollected(date, commits) {
-  _bus.emit(WORK_LOG_EVENTS.COMMIT_COLLECTED, { date, commits });
+export function emitCommitCollected(date, commits, userId = "default") {
+  _bus.emit(WORK_LOG_EVENTS.COMMIT_COLLECTED, { date, commits, userId });
 }
 
 /**
@@ -86,8 +86,8 @@ export function emitCommitCollected(date, commits) {
  * @param {string} date      YYYY-MM-DD batch date
  * @param {Array}  contexts  Slack context objects returned by collectSlackContexts
  */
-export function emitSlackCollected(date, contexts) {
-  _bus.emit(WORK_LOG_EVENTS.SLACK_COLLECTED, { date, contexts });
+export function emitSlackCollected(date, contexts, userId = "default") {
+  _bus.emit(WORK_LOG_EVENTS.SLACK_COLLECTED, { date, contexts, userId });
 }
 
 /**
@@ -97,8 +97,8 @@ export function emitSlackCollected(date, contexts) {
  * @param {string} date      YYYY-MM-DD batch date
  * @param {Array}  sessions  Combined codex + claude session objects
  */
-export function emitSessionCollected(date, sessions) {
-  _bus.emit(WORK_LOG_EVENTS.SESSION_COLLECTED, { date, sessions });
+export function emitSessionCollected(date, sessions, userId = "default") {
+  _bus.emit(WORK_LOG_EVENTS.SESSION_COLLECTED, { date, sessions, userId });
 }
 
 // ── Hook registry: WORK_LOG_SAVED ────────────────────────────────────────────────
@@ -166,8 +166,8 @@ export function offWorkLogSaved(handler) {
  * @param {object} workLog  Daily summary document (output of buildSummary)
  * @returns {Promise<import("./resumeBatchHook.mjs").CandidateHookResult>}
  */
-export async function emitWorkLogSaved(date, workLog) {
-  _bus.emit(WORK_LOG_EVENTS.WORK_LOG_SAVED, { date });
+export async function emitWorkLogSaved(date, workLog, userId = "default") {
+  _bus.emit(WORK_LOG_EVENTS.WORK_LOG_SAVED, { date, userId });
 
   if (_savedHooks.length === 0) {
     return { skipped: true, skipReason: "no_hooks_registered", generated: 0, superseded: 0, cacheHit: false };
@@ -178,7 +178,7 @@ export async function emitWorkLogSaved(date, workLog) {
 
   for (const hook of _savedHooks) {
     try {
-      lastResult = await hook(date, workLog);
+      lastResult = await hook(date, workLog, userId);
     } catch (err) {
       const msg = err?.message ?? String(err);
       console.warn(`[workLogEventBus] Hook threw unexpectedly (non-fatal): ${msg}`);
@@ -204,7 +204,7 @@ export async function registerResumeBatchHook() {
 
   const { runResumeCandidateHook } = await import("./resumeBatchHook.mjs");
 
-  const hook = async (date, workLog) => runResumeCandidateHook(date, workLog);
+  const hook = async (date, workLog, userId = "default") => runResumeCandidateHook(date, workLog, { userId });
   hook._isResumeBatchHook = true;
   _savedHooks.push(hook);
 }
@@ -317,9 +317,9 @@ export function registerGranularTriggers(batchRunner, options = {}) {
   ];
 
   for (const eventName of granularEvents) {
-    const listener = ({ date }) => {
+    const listener = ({ date, userId = "default" }) => {
       if (!date) return;
-      _scheduleBackgroundBatch(date, eventName, debounceMs);
+      _scheduleBackgroundBatch(date, eventName, debounceMs, userId);
     };
     _bus.on(eventName, listener);
     _granularListeners.push({ event: eventName, listener });
@@ -338,22 +338,23 @@ export function registerGranularTriggers(batchRunner, options = {}) {
  * @param {number} debounceMs  Debounce window in ms
  * @private
  */
-function _scheduleBackgroundBatch(date, eventName, debounceMs) {
+function _scheduleBackgroundBatch(date, eventName, debounceMs, userId = "default") {
   // Track which sources triggered for this date
-  if (!_pendingSources.has(date)) {
-    _pendingSources.set(date, new Set());
+  const pendingKey = `${userId}:${date}`;
+  if (!_pendingSources.has(pendingKey)) {
+    _pendingSources.set(`${userId}:${date}`, new Set());
   }
-  _pendingSources.get(date).add(eventName);
+  _pendingSources.get(pendingKey).add(eventName);
 
   // Clear existing timer for this date (debounce reset)
-  if (_debouncedTimers.has(date)) {
-    clearTimeout(_debouncedTimers.get(date));
+  if (_debouncedTimers.has(pendingKey)) {
+    clearTimeout(_debouncedTimers.get(pendingKey));
   }
 
   const timer = setTimeout(() => {
-    _debouncedTimers.delete(date);
-    const sources = _pendingSources.get(date);
-    _pendingSources.delete(date);
+    _debouncedTimers.delete(pendingKey);
+    const sources = _pendingSources.get(pendingKey);
+    _pendingSources.delete(pendingKey);
 
     if (!_batchRunner) return;
 
@@ -363,7 +364,7 @@ function _scheduleBackgroundBatch(date, eventName, debounceMs) {
         ` (sources: ${sourceList})`
     );
 
-    _batchRunner(date).catch((err) => {
+    _batchRunner(date, { userId }).catch((err) => {
       console.warn(
         `[workLogEventBus] Background batch for ${date} failed (non-fatal):`,
         err?.message ?? String(err)
@@ -371,7 +372,7 @@ function _scheduleBackgroundBatch(date, eventName, debounceMs) {
     });
   }, debounceMs);
 
-  _debouncedTimers.set(date, timer);
+  _debouncedTimers.set(pendingKey, timer);
 }
 
 /**
@@ -411,6 +412,6 @@ export function isGranularTriggersActive() {
  * @param {string} date  YYYY-MM-DD
  * @returns {Set<string>|undefined}
  */
-export function _getPendingSources(date) {
-  return _pendingSources.get(date);
+export function _getPendingSources(date, userId = "default") {
+  return _pendingSources.get(`${userId}:${date}`);
 }

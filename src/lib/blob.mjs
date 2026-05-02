@@ -20,6 +20,8 @@
 
 import { list, put, del, get } from "@vercel/blob";
 import { migrateResumeDocument } from "./resumeMigration.mjs";
+import { DEFAULT_USER_ID, sanitizeUserId } from "./authUsers.mjs";
+import { getCurrentUserId } from "./requestContext.mjs";
 
 /** Pathname for the living-resume JSON document inside Vercel Blob. */
 export const RESUME_DATA_PATHNAME = "resume/data.json";
@@ -157,6 +159,15 @@ export const QUALITY_TRACKING_PATHNAME = "resume/quality-tracking.json";
  */
 export const LINKEDIN_IMPORT_PATHNAME = "resume/linkedin-import.json";
 
+
+export function pathForUser(pathname, userId = undefined) {
+  const normalizedUserId = sanitizeUserId(userId ?? getCurrentUserId());
+  if (!pathname || normalizedUserId === DEFAULT_USER_ID || pathname.startsWith(`users/${normalizedUserId}/`)) {
+    return pathname;
+  }
+  return `users/${normalizedUserId}/${pathname}`;
+}
+
 /**
  * Check whether the resume document exists in Vercel Blob.
  *
@@ -165,16 +176,17 @@ export const LINKEDIN_IMPORT_PATHNAME = "resume/linkedin-import.json";
  *
  * @returns {Promise<{ exists: false } | { exists: true, url: string, uploadedAt: string, size: number }>}
  */
-export async function checkResumeExists() {
+export async function checkResumeExists(userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   const { blobs } = await list({
-    prefix: RESUME_DATA_PATHNAME,
+    prefix: pathForUser(RESUME_DATA_PATHNAME, userId),
     limit: 1,
     ...(token ? { token } : {})
   });
 
-  const match = blobs.find((b) => b.pathname === RESUME_DATA_PATHNAME);
+  const scopedPath = pathForUser(RESUME_DATA_PATHNAME, userId);
+  const match = blobs.find((b) => b.pathname === scopedPath);
 
   if (!match) {
     return { exists: false };
@@ -197,11 +209,11 @@ export async function checkResumeExists() {
  * @param {object} data  Structured resume document (RESUME_SCHEMA_VERSION)
  * @returns {Promise<{ url: string }>}
  */
-export async function saveResumeData(data) {
+export async function saveResumeData(data, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(data, null, 2);
 
-  const result = await put(RESUME_DATA_PATHNAME, json, {
+  const result = await put(pathForUser(RESUME_DATA_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -219,8 +231,8 @@ export async function saveResumeData(data) {
  *
  * @returns {Promise<object|null>}
  */
-export async function readResumeData() {
-  const raw = await readPrivateJsonBlob(RESUME_DATA_PATHNAME);
+export async function readResumeData(userId = DEFAULT_USER_ID) {
+  const raw = await readPrivateJsonBlob(RESUME_DATA_PATHNAME, userId);
   if (!raw) return null;
   // Ensure all items carry a valid _source provenance tag.
   // migrateResumeDocument is idempotent and returns the same reference when
@@ -243,11 +255,11 @@ export async function readResumeData() {
  * @param {object} data  Suggestions document
  * @returns {Promise<{ url: string }>}
  */
-export async function saveSuggestionsData(data) {
+export async function saveSuggestionsData(data, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(data, null, 2);
 
-  const result = await put(SUGGESTIONS_PATHNAME, json, {
+  const result = await put(pathForUser(SUGGESTIONS_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -265,8 +277,8 @@ export async function saveSuggestionsData(data) {
  *
  * @returns {Promise<{ schemaVersion: number, updatedAt: string, suggestions: object[] }>}
  */
-export async function readSuggestionsData() {
-  const data = await readPrivateJsonBlob(SUGGESTIONS_PATHNAME);
+export async function readSuggestionsData(userId = DEFAULT_USER_ID) {
+  const data = await readPrivateJsonBlob(SUGGESTIONS_PATHNAME, userId);
   if (!data) {
     return { schemaVersion: 1, updatedAt: new Date().toISOString(), suggestions: [] };
   }
@@ -364,8 +376,8 @@ export async function readLatestBatchSummary() {
  * @param {string} date  ISO date string YYYY-MM-DD
  * @returns {string}     e.g. "resume/bullets/2025-03-26.json"
  */
-export function bulletsPathnameForDate(date) {
-  return `${DAILY_BULLETS_PREFIX}${date}.json`;
+export function bulletsPathnameForDate(date, userId = undefined) {
+  return pathForUser(`${DAILY_BULLETS_PREFIX}${date}.json`, userId);
 }
 
 /**
@@ -398,9 +410,9 @@ export function bulletsPathnameForDate(date) {
  * @param {object} data  DailyBulletsDocument
  * @returns {Promise<{ url: string }>}
  */
-export async function saveDailyBullets(date, data) {
+export async function saveDailyBullets(date, data, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const pathname = bulletsPathnameForDate(date);
+  const pathname = bulletsPathnameForDate(date, userId);
   const json = JSON.stringify(data, null, 2);
 
   const result = await put(pathname, json, {
@@ -422,9 +434,9 @@ export async function saveDailyBullets(date, data) {
  * @param {string} date  ISO date string YYYY-MM-DD
  * @returns {Promise<object|null>}  DailyBulletsDocument or null
  */
-export async function readDailyBullets(date) {
-  const pathname = bulletsPathnameForDate(date);
-  return readPrivateJsonBlob(pathname);
+export async function readDailyBullets(date, userId = DEFAULT_USER_ID) {
+  const pathname = bulletsPathnameForDate(date, userId);
+  return readPrivateJsonBlob(pathname, userId);
 }
 
 /**
@@ -434,18 +446,19 @@ export async function readDailyBullets(date) {
  *
  * @returns {Promise<string[]>}
  */
-export async function listBulletDates() {
+export async function listBulletDates(userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   const { blobs } = await list({
-    prefix: DAILY_BULLETS_PREFIX,
+    prefix: pathForUser(DAILY_BULLETS_PREFIX, userId),
     ...(token ? { token } : {})
   });
 
   return blobs
     .map((b) => {
       // pathname looks like "resume/bullets/2025-03-26.json"
-      const filename = b.pathname.slice(DAILY_BULLETS_PREFIX.length);
+      const prefix = pathForUser(DAILY_BULLETS_PREFIX, userId);
+      const filename = b.pathname.slice(prefix.length);
       return filename.replace(/\.json$/, "");
     })
     .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
@@ -463,9 +476,9 @@ export async function listBulletDates() {
  * @param {string} date  ISO date string YYYY-MM-DD
  * @returns {Promise<void>}
  */
-export async function deleteDailyBullets(date) {
+export async function deleteDailyBullets(date, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const pathname = bulletsPathnameForDate(date);
+  const pathname = bulletsPathnameForDate(date, userId);
 
   const { blobs } = await list({
     prefix: pathname,
@@ -495,9 +508,9 @@ export async function deleteDailyBullets(date) {
  * @param {string} [reason="explicit"] Human-readable reason for invalidation
  * @returns {Promise<void>}
  */
-export async function invalidateDailyBullets(date, reason = "explicit") {
+export async function invalidateDailyBullets(date, reason = "explicit", userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const pathname = bulletsPathnameForDate(date);
+  const pathname = bulletsPathnameForDate(date, userId);
 
   // Locate the existing document.
   let match;
@@ -568,10 +581,10 @@ export async function invalidateDailyBullets(date, reason = "explicit") {
  * @param {string} text  Plain text extracted from the PDF (from pdf-parse)
  * @returns {Promise<{ url: string }>}
  */
-export async function savePdfText(text) {
+export async function savePdfText(text, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
-  const result = await put(PDF_TEXT_PATHNAME, text, {
+  const result = await put(pathForUser(PDF_TEXT_PATHNAME, userId), text, {
     access: "private",
     contentType: "text/plain; charset=utf-8",
     addRandomSuffix: false,
@@ -589,8 +602,8 @@ export async function savePdfText(text) {
  *
  * @returns {Promise<string|null>}
  */
-export async function readPdfText() {
-  return readPrivateTextBlob(PDF_TEXT_PATHNAME);
+export async function readPdfText(userId = DEFAULT_USER_ID) {
+  return readPrivateTextBlob(PDF_TEXT_PATHNAME, userId);
 }
 
 // ─── Raw PDF binary storage ────────────────────────────────────────────────────
@@ -604,10 +617,10 @@ export async function readPdfText() {
  * @param {Buffer} buffer  Raw PDF binary buffer
  * @returns {Promise<{ url: string }>}
  */
-export async function savePdfRaw(buffer) {
+export async function savePdfRaw(buffer, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
-  const result = await put(PDF_RAW_PATHNAME, buffer, {
+  const result = await put(pathForUser(PDF_RAW_PATHNAME, userId), buffer, {
     access: "private",
     contentType: "application/pdf",
     addRandomSuffix: false,
@@ -625,16 +638,17 @@ export async function savePdfRaw(buffer) {
  *
  * @returns {Promise<{ url: string, uploadedAt: string, size: number } | null>}
  */
-export async function checkPdfRawExists() {
+export async function checkPdfRawExists(userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   const { blobs } = await list({
-    prefix: PDF_RAW_PATHNAME,
+    prefix: pathForUser(PDF_RAW_PATHNAME, userId),
     limit: 1,
     ...(token ? { token } : {})
   });
 
-  const match = blobs.find((b) => b.pathname === PDF_RAW_PATHNAME);
+  const scopedPath = pathForUser(PDF_RAW_PATHNAME, userId);
+  const match = blobs.find((b) => b.pathname === scopedPath);
   if (!match) return null;
 
   return {
@@ -659,11 +673,11 @@ export async function checkPdfRawExists() {
  * @param {object} axesDoc  Keyword cluster axes document
  * @returns {Promise<{ url: string }>}
  */
-export async function saveKeywordClusterAxes(axesDoc) {
+export async function saveKeywordClusterAxes(axesDoc, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(axesDoc, null, 2);
 
-  const result = await put(KEYWORD_CLUSTER_AXES_PATHNAME, json, {
+  const result = await put(pathForUser(KEYWORD_CLUSTER_AXES_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -681,8 +695,8 @@ export async function saveKeywordClusterAxes(axesDoc) {
  *
  * @returns {Promise<object|null>}  Keyword cluster axes document or null
  */
-export async function readKeywordClusterAxes() {
-  return readPrivateJsonBlob(KEYWORD_CLUSTER_AXES_PATHNAME);
+export async function readKeywordClusterAxes(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(KEYWORD_CLUSTER_AXES_PATHNAME, userId);
 }
 
 // ─── Display axes storage ─────────────────────────────────────────────────────
@@ -705,11 +719,11 @@ export async function readKeywordClusterAxes() {
  * @param {object} axesDoc  Display axes document
  * @returns {Promise<{ url: string }>}
  */
-export async function saveDisplayAxes(axesDoc) {
+export async function saveDisplayAxes(axesDoc, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(axesDoc, null, 2);
 
-  const result = await put(DISPLAY_AXES_PATHNAME, json, {
+  const result = await put(pathForUser(DISPLAY_AXES_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -729,8 +743,8 @@ export async function saveDisplayAxes(axesDoc) {
  *
  * @returns {Promise<object|null>}  DisplayAxesDocument or null
  */
-export async function readDisplayAxes() {
-  return readPrivateJsonBlob(DISPLAY_AXES_PATHNAME);
+export async function readDisplayAxes(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(DISPLAY_AXES_PATHNAME, userId);
 }
 
 // ─── Reconstruction marker ──────────────────────────────────────────────────────
@@ -744,14 +758,14 @@ export async function readDisplayAxes() {
  * @param {string} [reason="explicit"]  Human-readable reason for the rebuild request
  * @returns {Promise<void>}
  */
-export async function markResumeForReconstruction(reason = "explicit") {
+export async function markResumeForReconstruction(reason = "explicit", userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const marker = JSON.stringify({
     markedAt: new Date().toISOString(),
     reason: String(reason)
   });
 
-  await put(RECONSTRUCTION_MARKER_PATHNAME, marker, {
+  await put(pathForUser(RECONSTRUCTION_MARKER_PATHNAME, userId), marker, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -768,17 +782,18 @@ export async function markResumeForReconstruction(reason = "explicit") {
  *
  * @returns {Promise<void>}
  */
-export async function clearReconstructionMarker() {
+export async function clearReconstructionMarker(userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   // Locate the marker to get its URL (del() needs the full URL).
   const { blobs } = await list({
-    prefix: RECONSTRUCTION_MARKER_PATHNAME,
+    prefix: pathForUser(RECONSTRUCTION_MARKER_PATHNAME, userId),
     limit: 1,
     ...(token ? { token } : {})
   });
 
-  const match = blobs.find((b) => b.pathname === RECONSTRUCTION_MARKER_PATHNAME);
+  const scopedPath = pathForUser(RECONSTRUCTION_MARKER_PATHNAME, userId);
+  const match = blobs.find((b) => b.pathname === scopedPath);
   if (!match) return; // Nothing to clear.
 
   try {
@@ -794,16 +809,17 @@ export async function clearReconstructionMarker() {
  *
  * @returns {Promise<{ needsRebuild: false } | { needsRebuild: true, markedAt: string, reason: string }>}
  */
-export async function checkReconstructionMarker() {
+export async function checkReconstructionMarker(userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   const { blobs } = await list({
-    prefix: RECONSTRUCTION_MARKER_PATHNAME,
+    prefix: pathForUser(RECONSTRUCTION_MARKER_PATHNAME, userId),
     limit: 1,
     ...(token ? { token } : {})
   });
 
-  const match = blobs.find((b) => b.pathname === RECONSTRUCTION_MARKER_PATHNAME);
+  const scopedPath = pathForUser(RECONSTRUCTION_MARKER_PATHNAME, userId);
+  const match = blobs.find((b) => b.pathname === scopedPath);
   if (!match) return { needsRebuild: false };
 
   // Fetch marker content for reason / timestamp.
@@ -837,9 +853,9 @@ export async function checkReconstructionMarker() {
  * @param {string} isoTimestamp  e.g. "2025-03-27T12:00:00.000Z"
  * @returns {string}             e.g. "resume/snapshots/2025-03-27T12-00-00.000Z.json"
  */
-export function snapshotPathnameFor(isoTimestamp) {
+export function snapshotPathnameFor(isoTimestamp, userId = undefined) {
   const safe = isoTimestamp.replace(/:/g, "-");
-  return `${SNAPSHOTS_PREFIX}${safe}.json`;
+  return pathForUser(`${SNAPSHOTS_PREFIX}${safe}.json`, userId);
 }
 
 /**
@@ -862,10 +878,10 @@ export function snapshotPathnameFor(isoTimestamp) {
  * @param {{ label?: string, trigger?: string, triggeredBy?: string }} [meta]  Optional metadata
  * @returns {Promise<{ snapshotKey: string, url: string }>}
  */
-export async function saveSnapshot(resumeDoc, meta = {}) {
+export async function saveSnapshot(resumeDoc, meta = {}, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const now = new Date().toISOString();
-  const pathname = snapshotPathnameFor(now);
+  const pathname = snapshotPathnameFor(now, userId);
 
   const envelope = {
     schemaVersion: 1,
@@ -901,16 +917,16 @@ export async function saveSnapshot(resumeDoc, meta = {}) {
  *
  * @returns {Promise<Array<{ snapshotKey: string, url: string, uploadedAt: string, size: number }>>}
  */
-export async function listSnapshots() {
+export async function listSnapshots(userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   const { blobs } = await list({
-    prefix: SNAPSHOTS_PREFIX,
+    prefix: pathForUser(SNAPSHOTS_PREFIX, userId),
     ...(token ? { token } : {})
   });
 
   return blobs
-    .filter((b) => b.pathname.startsWith(SNAPSHOTS_PREFIX) && b.pathname.endsWith(".json"))
+    .filter((b) => b.pathname.startsWith(pathForUser(SNAPSHOTS_PREFIX, userId)) && b.pathname.endsWith(".json"))
     .map((b) => ({
       snapshotKey: b.pathname,
       url: b.url,
@@ -929,8 +945,8 @@ export async function listSnapshots() {
  * @param {string} snapshotKey  e.g. "resume/snapshots/2025-03-27T12-00-00.000Z.json"
  * @returns {Promise<object|null>}  Snapshot envelope or null
  */
-export async function readSnapshotByKey(snapshotKey) {
-  return readPrivateJsonBlob(snapshotKey);
+export async function readSnapshotByKey(snapshotKey, userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(snapshotKey, userId);
 }
 
 // ─── LinkedIn import storage ─────────────────────────────────────────────────
@@ -949,7 +965,7 @@ export async function readSnapshotByKey(snapshotKey) {
  * @param {string} source       "linkedin_pdf" | "linkedin_zip"
  * @returns {Promise<{ url: string }>}
  */
-export async function saveLinkedInImport(profileData, source) {
+export async function saveLinkedInImport(profileData, source, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   const envelope = {
@@ -959,7 +975,7 @@ export async function saveLinkedInImport(profileData, source) {
     data: profileData
   };
 
-  const result = await put(LINKEDIN_IMPORT_PATHNAME, JSON.stringify(envelope, null, 2), {
+  const result = await put(pathForUser(LINKEDIN_IMPORT_PATHNAME, userId), JSON.stringify(envelope, null, 2), {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -977,8 +993,8 @@ export async function saveLinkedInImport(profileData, source) {
  *
  * @returns {Promise<{ schemaVersion: number, importedAt: string, source: string, data: object }|null>}
  */
-export async function readLinkedInImport() {
-  return readPrivateJsonBlob(LINKEDIN_IMPORT_PATHNAME);
+export async function readLinkedInImport(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(LINKEDIN_IMPORT_PATHNAME, userId);
 }
 
 /**
@@ -989,16 +1005,17 @@ export async function readLinkedInImport() {
  *
  * @returns {Promise<void>}
  */
-export async function clearLinkedInImport() {
+export async function clearLinkedInImport(userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   const { blobs } = await list({
-    prefix: LINKEDIN_IMPORT_PATHNAME,
+    prefix: pathForUser(LINKEDIN_IMPORT_PATHNAME, userId),
     limit: 1,
     ...(token ? { token } : {})
   });
 
-  const match = blobs.find((b) => b.pathname === LINKEDIN_IMPORT_PATHNAME);
+  const scopedPath = pathForUser(LINKEDIN_IMPORT_PATHNAME, userId);
+  const match = blobs.find((b) => b.pathname === scopedPath);
   if (!match) return;
 
   try {
@@ -1028,11 +1045,11 @@ export async function clearLinkedInImport() {
  * @param {import("./resumeTypes.mjs").StrengthKeywordsDocument} doc
  * @returns {Promise<{ url: string }>}
  */
-export async function saveStrengthKeywords(doc) {
+export async function saveStrengthKeywords(doc, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(doc, null, 2);
 
-  const result = await put(STRENGTH_KEYWORDS_PATHNAME, json, {
+  const result = await put(pathForUser(STRENGTH_KEYWORDS_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -1056,8 +1073,8 @@ export async function saveStrengthKeywords(doc) {
  *
  * @returns {Promise<import("./resumeTypes.mjs").StrengthKeywordsDocument>}
  */
-export async function readStrengthKeywords() {
-  const data = await readPrivateJsonBlob(STRENGTH_KEYWORDS_PATHNAME);
+export async function readStrengthKeywords(userId = DEFAULT_USER_ID) {
+  const data = await readPrivateJsonBlob(STRENGTH_KEYWORDS_PATHNAME, userId);
   if (!data) {
     // Return initialized empty document — no storage yet (pre-bootstrap state).
     return {
@@ -1070,21 +1087,21 @@ export async function readStrengthKeywords() {
   return data;
 }
 
-async function readPrivateJsonBlob(pathname) {
-  const response = await getPrivateBlob(pathname);
+async function readPrivateJsonBlob(pathname, userId = DEFAULT_USER_ID) {
+  const response = await getPrivateBlob(pathname, userId);
   if (!response) return null;
   return new Response(response.stream).json();
 }
 
-async function readPrivateTextBlob(pathname) {
+async function readPrivateTextBlob(pathname, userId = DEFAULT_USER_ID) {
   const response = await getPrivateBlob(pathname);
   if (!response) return null;
   return new Response(response.stream).text();
 }
 
-async function getPrivateBlob(pathname) {
+async function getPrivateBlob(pathname, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  return get(pathname, {
+  return get(pathForUser(pathname, userId), {
     access: "private",
     ...(token ? { token } : {})
   });
@@ -1098,11 +1115,11 @@ async function getPrivateBlob(pathname) {
  * @param {object} doc — QualityTrackingDocument (see resumeBulletSimilarity.mjs)
  * @returns {Promise<{ url: string }>}
  */
-export async function saveQualityTracking(doc) {
+export async function saveQualityTracking(doc, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(doc, null, 2);
 
-  const result = await put(QUALITY_TRACKING_PATHNAME, json, {
+  const result = await put(pathForUser(QUALITY_TRACKING_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -1121,8 +1138,8 @@ export async function saveQualityTracking(doc) {
  *
  * @returns {Promise<object>} — QualityTrackingDocument
  */
-export async function readQualityTracking() {
-  const data = await readPrivateJsonBlob(QUALITY_TRACKING_PATHNAME);
+export async function readQualityTracking(userId = DEFAULT_USER_ID) {
+  const data = await readPrivateJsonBlob(QUALITY_TRACKING_PATHNAME, userId);
   if (!data) {
     return {
       schemaVersion: 1,
@@ -1143,11 +1160,11 @@ const IDENTIFIED_STRENGTHS_PATHNAME = "resume/identified-strengths.json";
  * @param {object} doc — StrengthsDocument (see resumeStrengths.mjs)
  * @returns {Promise<{ url: string }>}
  */
-export async function saveIdentifiedStrengths(doc) {
+export async function saveIdentifiedStrengths(doc, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(doc, null, 2);
 
-  const result = await put(IDENTIFIED_STRENGTHS_PATHNAME, json, {
+  const result = await put(pathForUser(IDENTIFIED_STRENGTHS_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -1165,8 +1182,8 @@ export async function saveIdentifiedStrengths(doc) {
  *
  * @returns {Promise<object|null>}
  */
-export async function readIdentifiedStrengths() {
-  return readPrivateJsonBlob(IDENTIFIED_STRENGTHS_PATHNAME);
+export async function readIdentifiedStrengths(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(IDENTIFIED_STRENGTHS_PATHNAME, userId);
 }
 
 // ─── Narrative Axes Blob ────────────────────────────────────────────────────
@@ -1179,11 +1196,11 @@ const NARRATIVE_AXES_PATHNAME = "resume/narrative-axes.json";
  * @param {object} doc — NarrativeAxesResult (see resumeTypes.mjs)
  * @returns {Promise<{ url: string }>}
  */
-export async function saveNarrativeAxes(doc) {
+export async function saveNarrativeAxes(doc, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(doc, null, 2);
 
-  const result = await put(NARRATIVE_AXES_PATHNAME, json, {
+  const result = await put(pathForUser(NARRATIVE_AXES_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -1201,8 +1218,8 @@ export async function saveNarrativeAxes(doc) {
  *
  * @returns {Promise<object|null>}
  */
-export async function readNarrativeAxes() {
-  return readPrivateJsonBlob(NARRATIVE_AXES_PATHNAME);
+export async function readNarrativeAxes(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(NARRATIVE_AXES_PATHNAME, userId);
 }
 
 // ─── Narrative Threading Blob ───────────────────────────────────────────────
@@ -1215,11 +1232,11 @@ const NARRATIVE_THREADING_PATHNAME = "resume/narrative-threading.json";
  * @param {object} doc — NarrativeThreadingResult (see resumeTypes.mjs)
  * @returns {Promise<{ url: string }>}
  */
-export async function saveNarrativeThreading(doc) {
+export async function saveNarrativeThreading(doc, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(doc, null, 2);
 
-  const result = await put(NARRATIVE_THREADING_PATHNAME, json, {
+  const result = await put(pathForUser(NARRATIVE_THREADING_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -1237,8 +1254,8 @@ export async function saveNarrativeThreading(doc) {
  *
  * @returns {Promise<object|null>}
  */
-export async function readNarrativeThreading() {
-  return readPrivateJsonBlob(NARRATIVE_THREADING_PATHNAME);
+export async function readNarrativeThreading(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(NARRATIVE_THREADING_PATHNAME, userId);
 }
 
 // ─── Chat draft (chat-based resume refinement bootstrap) ────────────────────
@@ -1258,11 +1275,11 @@ export const CHAT_DRAFT_PATHNAME = "resume/chat-draft.json";
  * @param {object} draft  ResumeDraft document
  * @returns {Promise<{ url: string }>}
  */
-export async function saveChatDraft(draft) {
+export async function saveChatDraft(draft, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(draft, null, 2);
 
-  const result = await put(CHAT_DRAFT_PATHNAME, json, {
+  const result = await put(pathForUser(CHAT_DRAFT_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -1280,8 +1297,8 @@ export async function saveChatDraft(draft) {
  *
  * @returns {Promise<object|null>}
  */
-export async function readChatDraft() {
-  return readPrivateJsonBlob(CHAT_DRAFT_PATHNAME);
+export async function readChatDraft(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(CHAT_DRAFT_PATHNAME, userId);
 }
 
 // ─── Chat draft context (full context with evidence pool) ───────────────────
@@ -1308,11 +1325,11 @@ export const CHAT_DRAFT_CONTEXT_PATHNAME = "resume/chat-draft-context.json";
  * @param {object} context  DraftContext document (schemaVersion: 1)
  * @returns {Promise<{ url: string }>}
  */
-export async function saveChatDraftContext(context) {
+export async function saveChatDraftContext(context, userId = DEFAULT_USER_ID) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   const json = JSON.stringify(context, null, 2);
 
-  const result = await put(CHAT_DRAFT_CONTEXT_PATHNAME, json, {
+  const result = await put(pathForUser(CHAT_DRAFT_CONTEXT_PATHNAME, userId), json, {
     access: "private",
     contentType: "application/json; charset=utf-8",
     addRandomSuffix: false,
@@ -1330,8 +1347,8 @@ export async function saveChatDraftContext(context) {
  *
  * @returns {Promise<object|null>}
  */
-export async function readChatDraftContext() {
-  return readPrivateJsonBlob(CHAT_DRAFT_CONTEXT_PATHNAME);
+export async function readChatDraftContext(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(CHAT_DRAFT_CONTEXT_PATHNAME, userId);
 }
 
 // ─── Section bridges (transition text between resume sections) ──────────────

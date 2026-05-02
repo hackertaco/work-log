@@ -134,6 +134,7 @@ export function WorkLogPage() {
         fetchProfileSummary('all'),
       ]);
 
+      if (handleAuthFailure(daysRes)) return;
       if (!daysRes.ok) {
         throw new Error(`업무로그 목록을 불러오지 못했습니다. HTTP ${daysRes.status}`);
       }
@@ -178,6 +179,7 @@ export function WorkLogPage() {
 
     try {
       const response = await fetch(`/api/day/${encodeURIComponent(date)}`);
+      if (handleAuthFailure(response)) return;
       if (!response.ok) {
         throw new Error(`일별 업무로그를 불러오지 못했습니다. HTTP ${response.status}`);
       }
@@ -217,6 +219,7 @@ export function WorkLogPage() {
         body: JSON.stringify({ date: targetDate }),
       });
 
+      if (handleAuthFailure(response)) return;
       if (!response.ok) {
         throw new Error(`배치를 실행하지 못했습니다. HTTP ${response.status}`);
       }
@@ -276,7 +279,7 @@ export function WorkLogPage() {
 
   async function refreshProfile(windowKey) {
     try {
-      const nextProfile = await fetchProfileSummary(windowKey);
+      const nextProfile = await fetchProfileSummary(windowKey, handleAuthFailure);
       if (nextProfile) {
         setProfile(nextProfile);
       }
@@ -984,9 +987,10 @@ function deriveStoryCategories(dayPayload) {
 }
 
 
-async function fetchProfileSummary(windowKey) {
+async function fetchProfileSummary(windowKey, onAuthFailure = null) {
   const query = windowKey && windowKey !== 'all' ? `?window=${windowKey}` : '';
   const response = await fetch(`/api/profile${query}`);
+  if (typeof onAuthFailure === "function" && onAuthFailure(response)) return null;
   if (!response.ok) return null;
   return response.json();
 }

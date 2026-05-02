@@ -32,9 +32,9 @@ import {
   writeText
 } from "./utils.mjs";
 
-export async function runDailyBatch(inputDate) {
+export async function runDailyBatch(inputDate, options = {}) {
   const date = parseDateArg(inputDate);
-  const config = await loadConfig();
+  const config = await loadConfig({ userId: options.userId });
 
   await Promise.all([
     ensureDir(config.vaultDir),
@@ -57,10 +57,10 @@ export async function runDailyBatch(inputDate) {
   // waiting for the full summary to be built.
   //
   // These are fire-and-forget: the batch pipeline does not await them.
-  emitCommitCollected(date, gitData.commits);
-  if (config.includeSlack) emitSlackCollected(date, slackContexts);
+  emitCommitCollected(date, gitData.commits, config.userId);
+  if (config.includeSlack) emitSlackCollected(date, slackContexts, config.userId);
   if (config.includeSessionLogs) {
-    emitSessionCollected(date, [...codexSessions, ...claudeSessions]);
+    emitSessionCollected(date, [...codexSessions, ...claudeSessions], config.userId);
   }
 
   // ── PR/branch signal detection (Sub-AC 11b) ────────────────────────────────
@@ -130,7 +130,7 @@ export async function runDailyBatch(inputDate) {
   //   - If no hooks are registered, a neutral skipped result is returned.
   //   - Errors inside hooks are captured and returned; the batch always
   //     completes regardless of hook outcome.
-  const candidateHook = await emitWorkLogSaved(date, summary);
+  const candidateHook = await emitWorkLogSaved(date, summary, config.userId);
 
   let suggestionsDoc = null;
   try {

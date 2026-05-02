@@ -72,7 +72,6 @@ import { extractResumeUpdatesFromWorkLog } from "./resumeWorkLogExtract.mjs";
 import { mergeWorkLogIntoResume } from "./resumeWorkLogMerge.mjs";
 import { diffResume } from "./resumeDiff.mjs";
 import { diffToSuggestions } from "./resumeDiffToSuggestions.mjs";
-import { filterSuggestionsWithLayeringRules } from "./resumeLayeredSignals.mjs";
 import {
   computeDeltaRatio,
   exceedsDeltaThreshold
@@ -85,6 +84,7 @@ import {
   markDraftGenerationFailed,
   updateDraftGenerationProgress,
 } from "./draftGenerationState.mjs";
+import { runWithRequestContext } from "./requestContext.mjs";
 
 // ─── Public API ────────────────────────────────────────────────────────────────
 
@@ -123,8 +123,11 @@ import {
  * @param {object} workLog   Daily summary document (output of buildSummary)
  * @returns {Promise<CandidateHookResult>}
  */
-export async function runResumeCandidateHook(date, workLog) {
-  const tag = `[resumeBatchHook date="${date}"]`;
+export async function runResumeCandidateHook(date, workLog, options = {}) {
+  const userId = options.userId || "default";
+  const tag = `[resumeBatchHook date="${date}" user="${userId}"]`;
+
+  return runWithRequestContext({ userId }, async () => {
 
   // ── Guard: BLOB_READ_WRITE_TOKEN absent ─────────────────────────────────────
   // The hook requires Vercel Blob for both reading the resume and persisting
@@ -245,10 +248,7 @@ export async function runResumeCandidateHook(date, workLog) {
   }
 
   // ── Step 7: Convert diff to pending SuggestionItems ────────────────────────
-  const rawSuggestions = filterSuggestionsWithLayeringRules(
-    diffToSuggestions(diff, date),
-    workLog
-  );
+  const rawSuggestions = diffToSuggestions(diff, date);
 
   if (rawSuggestions.length === 0) {
     console.info(`${tag} Diff produced no actionable suggestions`);
@@ -358,6 +358,7 @@ export async function runResumeCandidateHook(date, workLog) {
     snapshotKey,
     draftGenerationTriggered: true
   };
+  });
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────────

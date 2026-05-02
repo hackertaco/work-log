@@ -40,11 +40,13 @@ test("POST /auth/login - valid token issues HttpOnly cookie and returns 200", as
   assert.equal(res.status, 200);
 
   const body = await res.json();
-  assert.deepEqual(body, { ok: true });
+  assert.deepEqual(body, { ok: true, userId: "default" });
 
   const setCookie = res.headers.get("Set-Cookie");
-  assert.ok(setCookie, "Set-Cookie header must be present");
-  assert.match(setCookie, /resume_token=secret-token/);
+  const rawCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [setCookie].filter(Boolean);
+  assert.ok(rawCookies.length > 0, "Set-Cookie header must be present");
+  assert.ok(rawCookies.some((cookie) => /resume_token=secret-token/.test(cookie)));
+  assert.ok(rawCookies.some((cookie) => /worklog_user=default/.test(cookie)));
   assert.match(setCookie, /HttpOnly/i);
   assert.match(setCookie, /SameSite=Strict/i);
   assert.match(setCookie, /Path=\//);
@@ -66,7 +68,8 @@ test("POST /auth/login - valid token on non-localhost adds Secure flag", async (
 
   assert.equal(res.status, 200);
   const setCookie = res.headers.get("Set-Cookie");
-  assert.match(setCookie, /Secure/i);
+  const rawCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [setCookie].filter(Boolean);
+  assert.ok(rawCookies.every((cookie) => /Secure/i.test(cookie)));
 });
 
 test("POST /auth/login - valid token on IPv6 loopback does not add Secure flag", async () => {
@@ -82,8 +85,9 @@ test("POST /auth/login - valid token on IPv6 loopback does not add Secure flag",
 
   assert.equal(res.status, 200);
   const setCookie = res.headers.get("Set-Cookie");
-  assert.ok(setCookie, "Set-Cookie header must be present");
-  assert.ok(!setCookie.includes("Secure"), "IPv6 loopback should not have Secure flag");
+  const rawCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [setCookie].filter(Boolean);
+  assert.ok(rawCookies.length > 0, "Set-Cookie header must be present");
+  assert.ok(rawCookies.every((cookie) => !cookie.includes("Secure")), "IPv6 loopback should not have Secure flag");
 });
 
 test("POST /auth/login - invalid token returns 401", async () => {
@@ -162,7 +166,7 @@ test("POST /auth/login - RESUME_TOKEN not set returns 500", async () => {
 
   assert.equal(res.status, 500);
   const body = await res.json();
-  assert.match(body.error, /RESUME_TOKEN/);
+  assert.match(body.error, /authentication not configured/i);
 });
 
 // ─── POST /auth/logout ───────────────────────────────────────────────────────
@@ -183,10 +187,12 @@ test("POST /auth/logout - clears cookie and returns 200", async () => {
   assert.deepEqual(body, { ok: true });
 
   const setCookie = res.headers.get("Set-Cookie");
-  assert.ok(setCookie, "Set-Cookie header must be present on logout");
-  assert.match(setCookie, /resume_token=/);
-  assert.match(setCookie, /Max-Age=0/);
-  assert.match(setCookie, /HttpOnly/i);
+  const rawCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [setCookie].filter(Boolean);
+  assert.ok(rawCookies.length > 0, "Set-Cookie header must be present on logout");
+  assert.ok(rawCookies.some((cookie) => /resume_token=/.test(cookie)));
+  assert.ok(rawCookies.some((cookie) => /worklog_user=/.test(cookie)));
+  assert.ok(rawCookies.every((cookie) => /Max-Age=0/.test(cookie)));
+  assert.ok(rawCookies.every((cookie) => /HttpOnly/i.test(cookie)));
 });
 
 test("POST /auth/logout - returns 200 even without existing cookie", async () => {
@@ -216,7 +222,8 @@ test("POST /auth/logout - non-localhost sets Secure flag on cleared cookie", asy
 
   assert.equal(res.status, 200);
   const setCookie = res.headers.get("Set-Cookie");
-  assert.match(setCookie, /Secure/i);
+  const rawCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [setCookie].filter(Boolean);
+  assert.ok(rawCookies.every((cookie) => /Secure/i.test(cookie)));
 });
 
 test("POST /auth/logout - IPv6 loopback does not set Secure flag on cleared cookie", async () => {

@@ -23,7 +23,11 @@
  *   app.use("/api/resume/*", cookieAuth());
  */
 
+import { DEFAULT_USER_ID, findAuthUserByToken, getAuthUsers } from "../lib/authUsers.mjs";
+import { runWithRequestContext } from "../lib/requestContext.mjs";
+
 export const COOKIE_NAME = "resume_token";
+export const USER_COOKIE_NAME = "worklog_user";
 const LOGIN_PATH = "/login";
 
 /**
@@ -73,22 +77,26 @@ function timingSafeEqual(a, b) {
  */
 export function cookieAuth() {
   return async (c, next) => {
-    const expectedToken = process.env.RESUME_TOKEN;
-
-    if (!expectedToken) {
-      // Fail closed — RESUME_TOKEN must be set before using this middleware.
+    if (getAuthUsers().length === 0) {
       return c.json({ error: "Server authentication not configured" }, 500);
     }
 
     const cookieHeader = c.req.header("cookie") ?? "";
     const cookies = parseCookies(cookieHeader);
     const token = cookies[COOKIE_NAME] ?? "";
+    const user = findAuthUserByToken(token);
 
-    if (timingSafeEqual(token, expectedToken)) {
-      // Valid cookie — continue to the next handler.
-      await next();
+    if (user && timingSafeEqual(token, user.token)) {
+      if (typeof c.set === "function") {
+        c.set("authUser", user);
+        c.set("userId", user.id);
+      }
+      await runWithRequestContext({ userId: user.id }, async () => {
+        await next();
+      });
       return;
     }
+
 
     // Unauthenticated request — choose the appropriate response.
     const pathname = new URL(c.req.url).pathname;
@@ -117,19 +125,38 @@ export function cookieAuth() {
  */
 export function bearerAuth() {
   return async (c, next) => {
-    const expectedToken = process.env.RESUME_TOKEN ?? process.env.RESUME_AUTH_TOKEN;
-
-    if (!expectedToken) {
+    if (getAuthUsers().length === 0) {
       return c.json({ error: "Server authentication not configured" }, 500);
     }
 
     const authHeader = c.req.header("Authorization") ?? "";
     const [scheme, token] = authHeader.split(" ");
+    const user = findAuthUserByToken(token);
 
-    if (scheme !== "Bearer" || !token || !timingSafeEqual(token, expectedToken)) {
+    if (scheme !== "Bearer" || !token || !user || !timingSafeEqual(token, user.token)) {
       return c.json({ error: "Unauthorized" }, 401);
     }
 
-    await next();
+    if (typeof c.set === "function") {
+      c.set("authUser", user);
+      c.set("userId", user.id);
+    }
+
+    await runWithRequestContext({ userId: user.id }, async () => {
+      await next();
+    });
   };
+}
+
+
+export function resolveRequestUser(c) {
+  if (typeof c.get === "function") {
+    const authUser = c.get("authUser");
+    if (authUser?.id) return authUser;
+  }
+
+  const cookieHeader = c?.req?.header?.("cookie") ?? "";
+  const cookies = parseCookies(cookieHeader);
+  const token = cookies[COOKIE_NAME] ?? "";
+  return findAuthUserByToken(token) || { id: DEFAULT_USER_ID };
 }

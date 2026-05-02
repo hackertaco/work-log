@@ -2,12 +2,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { expandHome, fileExists, projectRoot } from "./utils.mjs";
+import { sanitizeUserId } from "./authUsers.mjs";
+import { getCurrentUserId } from "./requestContext.mjs";
+import { scopeLocalDir } from "./userWorkspace.mjs";
 
 const configPath = path.join(projectRoot, "work-log.config.json");
 let envLoaded = false;
 
-export async function loadConfig() {
+export async function loadConfig(options = {}) {
   await loadEnvFiles();
+
+  const userId = sanitizeUserId(options.userId ?? getCurrentUserId());
 
   const defaults = {
     codexSessionsDir: "~/.codex/sessions",
@@ -27,7 +32,8 @@ export async function loadConfig() {
     loaded = JSON.parse(await fs.readFile(configPath, "utf8"));
   }
 
-  const merged = { ...defaults, ...loaded };
+  const userOverrides = loaded?.users && typeof loaded.users === "object" ? loaded.users[userId] || {} : {};
+  const merged = { ...defaults, ...loaded, ...userOverrides };
   return {
     ...merged,
     includeSessionLogs: resolveBoolean(
@@ -42,8 +48,9 @@ export async function loadConfig() {
     codexSessionsDir: resolveProjectPath(merged.codexSessionsDir),
     claudeProjectsDir: resolveProjectPath(merged.claudeProjectsDir),
     shellHistoryFile: resolveProjectPath(merged.shellHistoryFile),
-    vaultDir: resolveProjectPath(merged.vaultDir),
-    dataDir: resolveProjectPath(merged.dataDir),
+    userId,
+    vaultDir: scopeLocalDir(resolveProjectPath(merged.vaultDir), userId),
+    dataDir: scopeLocalDir(resolveProjectPath(merged.dataDir), userId),
     repoRoots: merged.repoRoots.map(resolveProjectPath)
   };
 }

@@ -31,3 +31,14 @@ test("/resume/analysis serves the SPA shell for authenticated users", async () =
   assert.equal(res.status, 200);
   assert.match(res.headers.get("content-type") || "", /text\/html/i);
 });
+
+
+test("work log APIs now require auth", async () => {
+  process.env.RESUME_TOKEN = "test-token";
+  const app = createApp();
+
+  const res = await app.fetch(new Request("http://localhost/api/days"));
+
+  assert.equal(res.status, 401);
+  assert.match(res.headers.get("content-type") || "", /application\/json/i);
+});

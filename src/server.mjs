@@ -16,7 +16,7 @@ import {
   emitSessionCollected,
   WORK_LOG_EVENTS
 } from "./lib/workLogEventBus.mjs";
-import { cookieAuth } from "./middleware/auth.mjs";
+import { cookieAuth, resolveRequestUser } from "./middleware/auth.mjs";
 import { buildProfileSummary, readProfileSummary } from "./lib/profile.mjs";
 import { fileExists } from "./lib/utils.mjs";
 import { authRouter } from "./routes/auth.mjs";
@@ -45,6 +45,12 @@ export function createApp() {
   app.use("/resume/*", cookieAuth());
   // Resume API routes: cookieAuth returns 401 JSON for unauthenticated callers.
   app.use("/api/resume/*", cookieAuth());
+  // Worklog API routes are also user-scoped and must not leak the default workspace.
+  app.use("/api/days", cookieAuth());
+  app.use("/api/day/*", cookieAuth());
+  app.use("/api/profile", cookieAuth());
+  app.use("/api/run-batch", cookieAuth());
+
   // LinkedIn import routes (/api/linkedin/import): protected by cookie auth.
   // LinkedIn data collection is part of the resume onboarding flow and must
   // be behind the same auth boundary as the resume API.
@@ -58,25 +64,29 @@ export function createApp() {
 
   // ---------- API routes ----------
   app.get("/api/days", async (c) => {
-    return c.json(await readAvailableDays());
+    const user = resolveRequestUser(c);
+    return c.json(await readAvailableDays(user.id));
   });
 
   app.get("/api/day/:date", async (c) => {
+    const user = resolveRequestUser(c);
     const date = c.req.param("date");
-    return c.json(await readDailySummary(date));
+    return c.json(await readDailySummary(date, user.id));
   });
 
   app.get("/api/profile", async (c) => {
+    const user = resolveRequestUser(c);
     const rawWindow = c.req.query("window");
     const windowDays = rawWindow === "all" || !rawWindow
       ? null
       : Number(rawWindow);
-    return c.json(await readOrBuildProfile(windowDays));
+    return c.json(await readOrBuildProfile(windowDays, user.id));
   });
 
   app.post("/api/run-batch", async (c) => {
+    const user = resolveRequestUser(c);
     const body = await c.req.json().catch(() => ({}));
-    const result = await runDailyBatch(body?.date);
+    const result = await runDailyBatch(body?.date, { userId: user.id });
     return c.json(result);
   });
 
@@ -114,7 +124,8 @@ export function createApp() {
       if (!body?.workLog) {
         return c.json({ error: "workLog is required for work_log_saved events" }, 400);
       }
-      const hookResult = await emitWorkLogSaved(date, body.workLog);
+      const user = resolveRequestUser(c);
+      const hookResult = await emitWorkLogSaved(date, body.workLog, user.id);
       return c.json({ triggered: true, event: eventType, date, hookResult });
     }
 
@@ -124,15 +135,18 @@ export function createApp() {
     // multiple events for the same date into a single batch run that builds
     // the full workLog summary and triggers resumeBatchHook.
     if (eventType === WORK_LOG_EVENTS.COMMIT_COLLECTED) {
-      emitCommitCollected(date, body?.commits ?? []);
+      const user = resolveRequestUser(c);
+      emitCommitCollected(date, body?.commits ?? [], user.id);
       return c.json({ triggered: true, event: eventType, date, backgroundBatchScheduled: true });
     }
     if (eventType === WORK_LOG_EVENTS.SLACK_COLLECTED) {
-      emitSlackCollected(date, body?.contexts ?? []);
+      const user = resolveRequestUser(c);
+      emitSlackCollected(date, body?.contexts ?? [], user.id);
       return c.json({ triggered: true, event: eventType, date, backgroundBatchScheduled: true });
     }
     if (eventType === WORK_LOG_EVENTS.SESSION_COLLECTED) {
-      emitSessionCollected(date, body?.sessions ?? []);
+      const user = resolveRequestUser(c);
+      emitSessionCollected(date, body?.sessions ?? [], user.id);
       return c.json({ triggered: true, event: eventType, date, backgroundBatchScheduled: true });
     }
 
@@ -188,8 +202,8 @@ export async function startServer(port = 4310, host = "localhost") {
 
 // ---------- Helpers ----------
 
-async function readAvailableDays() {
-  const config = await loadConfig();
+async function readAvailableDays(userId = "default") {
+  const config = await loadConfig({ userId });
   const dailyDir = path.join(config.dataDir, "daily");
   if (!(await fileExists(dailyDir))) return [];
   const entries = await fs.readdir(dailyDir);
@@ -200,8 +214,8 @@ async function readAvailableDays() {
     .reverse();
 }
 
-async function readDailySummary(date) {
-  const config = await loadConfig();
+async function readDailySummary(date, userId = "default") {
+  const config = await loadConfig({ userId });
   const filePath = path.join(config.dataDir, "daily", `${date}.json`);
   if (!(await fileExists(filePath))) {
     return { missing: true, date };
@@ -209,8 +223,8 @@ async function readDailySummary(date) {
   return JSON.parse(await fs.readFile(filePath, "utf8"));
 }
 
-async function readOrBuildProfile(windowDays = null) {
-  const config = await loadConfig();
+async function readOrBuildProfile(windowDays = null, userId = "default") {
+  const config = await loadConfig({ userId });
   if (windowDays) {
     return readProfileSummary(config, { windowDays });
   }
