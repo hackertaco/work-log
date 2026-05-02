@@ -83,10 +83,18 @@ authRouter.post("/login", async (c) => {
 });
 
 authRouter.get("/me", (c) => {
-  const user = resolveRequestUser(c);
   const cookie = c.req.header("cookie") ?? "";
-  const authenticated = /resume_token=/.test(cookie) && Boolean(user?.id && user.id !== "default" ? user.id : user?.id);
-  return c.json({ authenticated: Boolean(user?.id && /resume_token=/.test(cookie)), userId: user?.id ?? null });
+  const cookies = cookie
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const tokenPair = cookies.find((part) => part.startsWith(`${COOKIE_NAME}=`));
+  const token = tokenPair ? tokenPair.slice(COOKIE_NAME.length + 1).trim() : "";
+  const user = findAuthUserByToken(token);
+  return c.json({
+    authenticated: Boolean(user && token),
+    userId: user?.id ?? null,
+  });
 });
 
 /**

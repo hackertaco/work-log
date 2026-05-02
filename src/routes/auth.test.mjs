@@ -258,5 +258,16 @@ test("GET /auth/me - returns unauthenticated when cookie missing", async () => {
   const res = await app.fetch(new Request("http://localhost/auth/me"));
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.deepEqual(body, { authenticated: false, userId: "default" });
+  assert.deepEqual(body, { authenticated: false, userId: null });
+});
+
+
+test("GET /auth/me - returns unauthenticated after cleared cookies", async () => {
+  const app = buildApp("secret-token");
+  const res = await app.fetch(new Request("http://localhost/auth/me", {
+    headers: { cookie: "resume_token=; worklog_user=" }
+  }));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body, { authenticated: false, userId: null });
 });
