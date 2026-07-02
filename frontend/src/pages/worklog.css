@@ -95,17 +95,18 @@
   text-wrap: pretty;
 }
 
+/* shadcn Card: rounded-xl border bg-card shadow-sm */
 .worklog-actions {
   display: grid;
-  gap: 14px;
-  padding: 20px;
-  border-radius: 28px;
+  gap: 16px;
+  padding: 24px;
+  border-radius: var(--radius-card);
   align-self: start;
   position: relative;
   z-index: 2;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 255, 0.92));
-  border: 1px solid rgba(70, 91, 212, 0.10);
-  box-shadow: 0 16px 30px rgba(48, 75, 194, 0.06);
+  background: #fff;
+  border: 1px solid var(--border-input);
+  box-shadow: var(--shadow-xs);
 }
 
 .worklog-actions-kicker {
@@ -129,20 +130,32 @@
   gap: 6px;
 }
 
+/* shadcn Input/Select 공통 스펙: h-10, rounded-md, border-input, text-sm */
 .worklog-actions input,
 .worklog-actions select,
 .worklog-archive-trigger,
 .worklog-back-link {
   box-sizing: border-box;
   width: 100%;
-  border-radius: 999px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  min-height: 46px;
-  padding: 0 14px;
+  border-radius: var(--radius-field);
+  border: 1px solid var(--border-input);
+  min-height: 40px;
+  padding: 0 12px;
   font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.2;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.4;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.worklog-actions input:focus-visible,
+.worklog-actions select:focus-visible,
+.worklog-archive-trigger:focus-visible,
+.worklog-back-link:focus-visible,
+.worklog-primary-action:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: var(--focus-ring);
 }
 
 .worklog-back-link {
@@ -158,15 +171,47 @@
   width: 100%;
 }
 
+/* shadcn Button(default): bg-primary, hover:bg-primary/90, shadow-xs, font-medium */
 .worklog-primary-action {
-  color: #fff;
-  background: linear-gradient(135deg, #3557d6 0%, #2743ad 100%);
-  box-shadow: 0 10px 20px rgba(53, 87, 214, 0.22);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-field);
+  color: var(--primary-foreground);
+  background: var(--primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
+.worklog-primary-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 90%, #fff);
+}
+
+.worklog-primary-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* shadcn Button(outline): border bg-background, hover:bg-accent */
 .worklog-back-link--secondary {
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink-strong);
+  background: #fff;
+  font-weight: 500;
+  box-shadow: var(--shadow-xs);
+}
+
+.worklog-back-link--secondary:hover {
+  background: #f8fafc;
 }
 
 .worklog-actions input,
@@ -193,12 +238,8 @@
 .worklog-actions input:disabled,
 .worklog-archive-trigger:disabled,
 .worklog-archive-option:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
-}
-
-.worklog-archive-trigger:disabled {
-  background: rgba(255, 255, 255, 0.78);
 }
 
 .worklog-action-row--inline {
@@ -247,76 +288,65 @@
   position: relative;
 }
 
+/* shadcn SelectTrigger: h-10 rounded-md border-input, 열림 화살표는 muted */
 .worklog-archive-trigger {
   width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  border: 1px solid rgba(17, 24, 39, 0.1);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.96);
+  background: #fff;
   color: var(--ink);
-  height: 36px;
-  padding: 0 12px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.3;
-  box-shadow: none;
+  cursor: pointer;
 }
 
 .worklog-archive-trigger::after {
   content: '';
   width: 8px;
   height: 8px;
-  border-right: 1.5px solid rgba(17, 24, 39, 0.5);
-  border-bottom: 1.5px solid rgba(17, 24, 39, 0.5);
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
   transform: rotate(45deg) translateY(-1px);
   flex: 0 0 auto;
+  transition: transform 0.15s ease;
 }
 
 .worklog-archive-trigger[aria-expanded='true']::after {
   transform: rotate(225deg) translateY(-1px);
 }
 
-.worklog-archive-trigger:focus {
-  outline: none;
-  border-color: var(--line-strong);
-}
-
+/* shadcn SelectContent: rounded-lg border shadow-md, p-1 */
 .worklog-archive-menu {
   position: absolute;
-  top: calc(100% + var(--space-2));
+  top: calc(100% + var(--space-1));
   right: 0;
   min-width: 220px;
   max-height: 260px;
   overflow: auto;
-  padding: var(--space-2);
-  border: 1px solid rgba(70, 91, 212, 0.10);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 18px 30px rgba(34, 57, 151, 0.10);
+  padding: 4px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-popover);
+  background: #fff;
+  box-shadow: var(--shadow-popover);
   z-index: 30;
 }
 
+/* shadcn SelectItem: rounded-sm, text-sm, hover=accent bg */
 .worklog-archive-option {
   width: 100%;
   text-align: left;
   color: var(--ink);
   background: transparent;
   border: 0;
-  border-radius: 12px;
-  padding: var(--space-3);
-  font-size: 13px;
-  font-weight: 500;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
 }
 
 .worklog-archive-option:hover {
-  background: rgba(17, 24, 39, 0.05);
-}
-
-.worklog-archive-option + .worklog-archive-option {
-  margin-top: var(--space-1);
+  background: #f1f5f9;
 }
 
 .worklog-state {
@@ -1737,24 +1767,39 @@
   flex-wrap: wrap;
 }
 
+/* shadcn Badge(outline): rounded-md border, text-xs font-medium */
 .worklog-user-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(70, 91, 212, 0.10);
-  background: rgba(255,255,255,0.64);
-  color: #667085;
+  padding: 3px 10px;
+  border-radius: var(--radius-field);
+  border: 1px solid var(--border-input);
+  background: transparent;
+  color: var(--muted);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
+/* shadcn Button(ghost, sm): hover 시에만 배경 */
 .worklog-user-logout {
   border: 0;
+  border-radius: var(--radius-field);
   background: transparent;
-  color: #5b6fb5;
+  color: var(--muted);
   font-size: 12px;
-  font-weight: 700;
-  padding: 0;
+  font-weight: 500;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.worklog-user-logout:hover {
+  background: #f1f5f9;
+  color: var(--ink-strong);
+}
+
+.worklog-user-logout:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }

@@ -33,6 +33,20 @@
   --radius-lg: 20px;
   --radius-xl: 24px;
 
+  /* ─── shadcn(new-york) 정렬 토큰 — 폼 컨트롤·버튼·팝오버 공통 스펙 ───
+     기존 팔레트를 shadcn 의미 체계로 매핑한다. --primary 는 기존 --accent 를
+     그대로 쓰고, 액센트는 이 하나만 사용한다. */
+  --primary: #1e40af;
+  --primary-foreground: #ffffff;
+  --border-input: #e2e8f0;            /* shadcn --input (slate-200) */
+  --ring: #1e40af;
+  --focus-ring: 0 0 0 3px rgba(30, 64, 175, 0.22);  /* focus-visible: ring/50, 3px */
+  --radius-field: 8px;                /* shadcn rounded-md — 버튼·인풋·셀렉트 */
+  --radius-popover: 10px;             /* shadcn rounded-lg — 메뉴·팝오버 */
+  --radius-card: 14px;                /* shadcn rounded-xl — 카드 */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-popover: 0 4px 16px rgba(15, 23, 42, 0.10);
+
   --font-display: "Pretendard", "SUIT Variable", "Noto Sans KR", sans-serif;
 }
 
