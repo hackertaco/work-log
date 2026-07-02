@@ -5290,6 +5290,142 @@ resumeRouter.patch("/section-bridges/:from/:to", async (c) => {
 });
 
 /**
+ * Assemble the complete Vercel Blob document from a `BootstrapResult`.
+ *
+ * The document is intentionally flat at the top level so that the `GET /api/resume`
+ * response and the blob file have an identical shape — no unwrapping needed.
+ *
+ * Shape:
+ *   {
+ *     meta: { language, source, generatedAt, schemaVersion, pdf_name, linkedin_url },
+ *     contact: { name, email, phone, location, website, linkedin },
+ *     summary: string,
+ *     experience: [...],
+ *     education: [...],
+ *     skills: { technical, languages, tools },
+ *     projects: [...],
+ *     certifications: [...],
+ *     strength_keywords: [...],
+ *     display_axes: [...],
+ *   }
+ *
+ * @param {{ resumeData: object, strengthKeywords: string[], displayAxes: object[] }} result
+ * @param {{ pdfName: string, linkedinUrl: string|null }} meta
+ * @returns {object}
+ */
+function assembleBlobDocument({ resumeData, strengthKeywords, displayAxes }, { pdfName, linkedinUrl }) {
+  const rd = resumeData ?? {};
+
+  // Merge _sources: preserve any existing "user" overrides set by prior user edits.
+  // Any key not yet present defaults to "system".
+  // User edits always take priority over subsequent system merges.
+  const existingSources = rd._sources ?? {};
+  const mergedSources = {
+    summary: existingSources.summary ?? "system",
+    contact: existingSources.contact ?? "system",
+    skills: existingSources.skills ?? "system"
+  };
+
+  // Defensive source stamping: array items must carry a _source tag.
+  // normalizeBootstrapResult already sets _source via _preserveItemSource, but
+  // assembleBlobDocument is also called with buildEmptyScaffold output and with
+  // any future callers that may not pre-stamp items.  Items without an explicit
+  // _source receive "system" as the default — the correct value for LLM-generated
+  // content that has not yet been reviewed or modified by the user.
+  const stampSystem = (items) =>
+    (Array.isArray(items) ? items : []).map((item) =>
+      item && typeof item === "object"
+        ? { ...item, _source: item._source ?? "system" }
+        : item
+    );
+
+  return {
+    meta: {
+      ...(rd.meta ?? {}),
+      schemaVersion: (rd.meta?.schemaVersion) ?? 1,
+      pdf_name: pdfName,
+      linkedin_url: linkedinUrl ?? null
+    },
+    _sources: mergedSources,
+    contact: rd.contact ?? { name: "", email: null, phone: null, location: null, website: null, linkedin: null },
+    summary: rd.summary ?? "",
+    experience:     stampSystem(rd.experience),
+    education:      stampSystem(rd.education),
+    skills: rd.skills ?? { technical: [], languages: [], tools: [] },
+    projects:       stampSystem(rd.projects),
+    certifications: stampSystem(rd.certifications),
+    strength_keywords: Array.isArray(strengthKeywords) ? strengthKeywords : [],
+    display_axes: Array.isArray(displayAxes) ? displayAxes : []
+  };
+}
+
+/**
+ * Build a minimal empty scaffold when the LLM is unavailable.
+ * Populated from structured LinkedIn data when provided.
+ *
+ * @param {{ linkedinData: object|null, source: string }} opts
+ * @returns {{ resumeData: object, strengthKeywords: string[], displayAxes: object[] }}
+ */
+function buildEmptyScaffold({ linkedinData, source }) {
+  const ld = linkedinData ?? {};
+
+  const resumeData = {
+    meta: {
+      language: "en",
+      source: source ?? "pdf",
+      generatedAt: new Date().toISOString(),
+      schemaVersion: 1
+    },
+    _sources: {
+      summary: "system",
+      contact: "system",
+      skills: "system"
+    },
+    contact: {
+      name: String(ld.name ?? ""),
+      email: null,
+      phone: null,
+      location: ld.location ? String(ld.location) : null,
+      website: null,
+      linkedin: null
+    },
+    summary: String(ld.about ?? ""),
+    experience: (ld.experience ?? []).map((e) => ({
+      _source: "system",
+      company: String(e.company ?? ""),
+      title: String(e.title ?? ""),
+      start_date: null,
+      end_date: null,
+      location: null,
+      bullets: e.description ? [String(e.description)] : []
+    })),
+    education: (ld.education ?? []).map((e) => ({
+      _source: "system",
+      institution: String(e.school ?? ""),
+      degree: e.degree ? String(e.degree) : null,
+      field: e.field ? String(e.field) : null,
+      start_date: null,
+      end_date: null,
+      gpa: null
+    })),
+    skills: {
+      technical: [],
+      languages: [],
+      tools: Array.isArray(ld.skills) ? ld.skills.map(String) : []
+    },
+    projects: [],
+    certifications: []
+  };
+
+  const strengthKeywords = Array.isArray(ld.skills)
+    ? ld.skills.slice(0, 10).map(String)
+    : [];
+
+  return { resumeData, strengthKeywords, displayAxes: [] };
+}
+
+
+/**
  * DELETE /api/resume/section-bridges/:from/:to
  *
  * Remove a section bridge (user can dismiss a transition they don't want).

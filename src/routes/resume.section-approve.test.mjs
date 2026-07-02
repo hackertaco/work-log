@@ -375,19 +375,6 @@ mock.module("../lib/resumeEvidenceSearch.mjs", {
   }
 });
 
-mock.module("../lib/resumeAppealPoints.mjs", {
-  namedExports: {
-    mergeAndRankEvidence: () => [],
-    buildEvidenceContext: () => "",
-    generateAppealPoints: async () => ({
-      appealPoints: [],
-      dataGaps: [],
-      followUpQuestions: [],
-      evidenceUsed: [],
-    }),
-  }
-});
-
 // ─── Load router under test AFTER mocks are registered ───────────────────────
 
 const { resumeRouter } = await import("./resume.mjs");

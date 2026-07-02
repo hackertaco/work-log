@@ -108,7 +108,7 @@ describe('InlineSourceBadge — exports & structure', () => {
     assert.ok(source.includes('aria-label'), 'should have aria-label');
     assert.ok(source.includes('aria-expanded'), 'should have aria-expanded');
     assert.ok(source.includes('aria-haspopup'), 'should have aria-haspopup');
-    assert.ok(source.includes('role="tooltip"'), 'popover should have tooltip role');
+    assert.ok(source.includes('role="dialog"'), 'popover should have dialog role (contains interactive elements)');
   });
 
   test('shows relevance bar in popover', () => {

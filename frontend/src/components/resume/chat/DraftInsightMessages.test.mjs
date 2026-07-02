@@ -157,8 +157,8 @@ describe('DraftInsightMessages — sections rendering', () => {
 
   test('renders strength candidates section with count badge', () => {
     assert.ok(
-      source.includes('핵심 강점 후보'),
-      'should label section as 핵심 강점 후보'
+      source.includes('공통 강점 후보'),
+      'should label section as 공통 강점 후보'
     );
     assert.ok(
       source.includes('dim-count-badge'),
@@ -485,10 +485,10 @@ describe('DraftInsightMessages — integration contract', () => {
     );
   });
 
-  test('chat bubble max-width matches ResumeChatMessages (720px row)', () => {
+  test('chat bubble max-width matches ResumeChatMessages (920px row)', () => {
     assert.ok(
-      source.includes('max-width: 720px'),
-      'should constrain row width to 720px like chat messages'
+      source.includes('max-width: 920px'),
+      'should constrain row width to 920px like chat messages'
     );
   });
 

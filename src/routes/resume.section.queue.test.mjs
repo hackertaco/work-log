@@ -141,6 +141,7 @@ mock.module("../lib/resumeBootstrap.mjs", {
   namedExports: {
     bootstrapFromPdf: async () => ({ schemaVersion: 1, contact: {}, summary: "", experience: [], skills: {}, education: [], projects: [] }),
     pdfToResumeDocument: async () => ({ schemaVersion: 1 }),
+    generateResumeFromText: async () => ({ contact: { name: "Test" } }),
   }
 });
 
@@ -231,27 +232,25 @@ mock.module("../lib/profile.mjs", {
   namedExports: { buildProfile: async () => null }
 });
 
-mock.module("../lib/workLog.mjs", {
-  namedExports: { readWorkLogEntries: async () => [] }
-});
-
 mock.module("../lib/linkedinFileParser.mjs", {
   namedExports: { parseLinkedInProfileFile: async () => null }
 });
 
 mock.module("../lib/resumeReconstruction.mjs", {
   namedExports: {
-    reconstructResume:        async (resume) => resume,
-    reconstructResumePartial: async (resume) => resume,
+    gatherWorkLogBullets:          async () => [],
+    fullReconstructExtractCache:   async () => ({ total: 0, processed: 0, failed: 0, skipped: 0, dates: [] }),
+    generateSectionBridges:        async () => [],
+    validateResumeCoherence:       async () => ({ overallScore: 1, grade: "A", structuralFlow: 1, redundancy: 1, tonalConsistency: 1, issues: [], autoFixes: [] }),
+    runNarrativeThreadingPipeline: async () => ({ strengths: [], axes: [], sectionBridges: [], extractionResults: [], threading: { totalAnnotations: 0, groundedRatio: 0, strengthCoverage: {}, axisCoverage: {} }, groundingReport: {} }),
+    reconstructResumeFromSources:  async () => ({ contact: { name: "Test" } }),
+    mergeWithUserEdits:            (r) => r,
+    isResumeStale:                 () => false
   }
 });
 
 mock.module("../lib/resumeWorkLogExtract.mjs", {
-  namedExports: {
-    resumeWorkLogExtract: async () => ({}),
-    buildWorkLogDiff:     () => [],
-    applyDiffToResume:    (resume) => resume,
-  }
+  namedExports: { extractResumeUpdatesFromWorkLog: async () => ({}) }
 });
 
 mock.module("../lib/resumeStrengthKeywords.mjs", {
@@ -341,19 +340,6 @@ mock.module("../lib/resumeEvidenceSearch.mjs", {
     searchCommits:       async () => [],
     searchSlack:         async () => [],
     searchSessionMemory: async () => [],
-  }
-});
-
-mock.module("../lib/resumeAppealPoints.mjs", {
-  namedExports: {
-    mergeAndRankEvidence: () => [],
-    buildEvidenceContext: () => "",
-    generateAppealPoints: async () => ({
-      appealPoints: [],
-      dataGaps: [],
-      followUpQuestions: [],
-      evidenceUsed: [],
-    }),
   }
 });
 

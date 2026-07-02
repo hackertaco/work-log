@@ -167,7 +167,7 @@ describe('useResumeChat — source contract', () => {
 
   test('sends message history to API', () => {
     assert.ok(
-      hookSource.includes('history: messages.map'),
+      hookSource.includes('history: updatedMessages.map'),
       'should include message history in API request'
     );
   });

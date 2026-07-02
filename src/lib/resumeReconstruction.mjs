@@ -1871,8 +1871,11 @@ function _validateAndFilterStrengths(strengths, allEpisodes) {
 
   // Graceful degradation: when the pipeline found candidate strengths but none
   // crossed the 2-episode threshold, keep the strongest 1-episode patterns
-  // rather than surfacing an empty strengths section.
+  // rather than surfacing an empty strengths section. Strengths with no
+  // evidence at all stay excluded — degradation relaxes the threshold, not
+  // the requirement that a strength be grounded in at least one episode.
   return normalized
+    .filter((s) => Array.isArray(s.evidenceIds) && s.evidenceIds.length >= 1)
     .sort((a, b) => {
       const evidenceDiff = (b.evidenceIds?.length || 0) - (a.evidenceIds?.length || 0);
       if (evidenceDiff !== 0) return evidenceDiff;
