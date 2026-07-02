@@ -9,6 +9,18 @@ const SEOUL_DATE = new Intl.DateTimeFormat('en-CA', {
   day: '2-digit',
 }).format(new Date());
 
+/**
+ * 401/403 응답이면 /login 으로 리디렉션하고 true 를 반환한다.
+ * 호출부는 true 를 받으면 이후 처리를 중단해야 한다. (ResumePage 와 동일한 규약)
+ */
+function handleAuthFailure(response) {
+  if (response && (response.status === 401 || response.status === 403)) {
+    window.location.href = '/login';
+    return true;
+  }
+  return false;
+}
+
 const STRENGTH_COPY = {
   'Reliability engineering': {
     label: '안정성·운영 신뢰',
