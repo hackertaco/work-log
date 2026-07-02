@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { expandHome, fileExists, projectRoot } from "./utils.mjs";
-import { sanitizeUserId } from "./authUsers.mjs";
+import { getAuthUsers, sanitizeUserId } from "./authUsers.mjs";
 import { getCurrentUserId } from "./requestContext.mjs";
 import { scopeLocalDir } from "./userWorkspace.mjs";
 
@@ -32,8 +32,10 @@ export async function loadConfig(options = {}) {
     loaded = JSON.parse(await fs.readFile(configPath, "utf8"));
   }
 
-  const userOverrides = loaded?.users && typeof loaded.users === "object" ? loaded.users[userId] || {} : {};
-  const merged = { ...defaults, ...loaded, ...userOverrides };
+  const fileUserOverrides = materializeUserOverrides(loaded?.users && typeof loaded.users === "object" ? loaded.users[userId] || {} : {});
+  const envUser = getAuthUsers().find((user) => user.id === userId);
+  const envUserOverrides = materializeUserOverrides(envUser?.sources || {});
+  const merged = { ...defaults, ...loaded, ...fileUserOverrides, ...envUserOverrides };
   return {
     ...merged,
     includeSessionLogs: resolveBoolean(
@@ -51,7 +53,10 @@ export async function loadConfig(options = {}) {
     userId,
     vaultDir: scopeLocalDir(resolveProjectPath(merged.vaultDir), userId),
     dataDir: scopeLocalDir(resolveProjectPath(merged.dataDir), userId),
-    repoRoots: merged.repoRoots.map(resolveProjectPath)
+    repoRoots: merged.repoRoots.map(resolveProjectPath),
+    slackToken: merged.slackToken || process.env.SLACK_TOKEN || process.env.SLACK_USER_TOKEN || "",
+    slackUserId: merged.slackUserId || process.env.SLACK_USER_ID || process.env.WORK_LOG_SLACK_USER_ID || "",
+    slackChannelIds: normalizeStringArray(merged.slackChannelIds ?? parseCsv(process.env.SLACK_CHANNEL_IDS || process.env.WORK_LOG_SLACK_CHANNEL_IDS || ""))
   };
 }
 
@@ -94,4 +99,38 @@ function resolveBoolean(rawValue, fallback) {
 function resolveProjectPath(inputPath) {
   const expanded = expandHome(inputPath);
   return path.isAbsolute(expanded) ? expanded : path.resolve(projectRoot, expanded);
+}
+
+function materializeUserOverrides(raw) {
+  const input = raw && typeof raw === "object" ? raw : {};
+  const sources = input.sources && typeof input.sources === "object" ? input.sources : input;
+  const slack = sources.slack && typeof sources.slack === "object" ? sources.slack : {};
+
+  const overrides = { ...input };
+  delete overrides.sources;
+
+  if (sources.includeSlack !== undefined) overrides.includeSlack = sources.includeSlack;
+  if (sources.includeSessionLogs !== undefined) overrides.includeSessionLogs = sources.includeSessionLogs;
+  if (Array.isArray(sources.repoRoots)) overrides.repoRoots = sources.repoRoots;
+  if (Array.isArray(sources.includeRepos)) overrides.includeRepos = sources.includeRepos;
+  if (Array.isArray(sources.excludeRepos)) overrides.excludeRepos = sources.excludeRepos;
+
+  if (typeof slack.token === "string") overrides.slackToken = slack.token;
+  if (typeof slack.userId === "string") overrides.slackUserId = slack.userId;
+  if (Array.isArray(slack.channelIds)) overrides.slackChannelIds = slack.channelIds;
+
+  return overrides;
+}
+
+function parseCsv(raw) {
+  return String(raw || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function normalizeStringArray(values) {
+  return (Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
 }

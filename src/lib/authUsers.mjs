@@ -42,7 +42,7 @@ function parseUsersJson(raw) {
     const id = sanitizeUserId(item.id);
     if (seen.has(id)) continue;
     seen.add(id);
-    users.push({ id, token, name: typeof item.name === "string" ? item.name.trim() : undefined });
+    users.push({ id, token, name: typeof item.name === "string" ? item.name.trim() : undefined, sources: item.sources && typeof item.sources === "object" ? item.sources : undefined });
   }
 
   return users;

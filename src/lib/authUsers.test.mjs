@@ -28,10 +28,24 @@ test("getAuthUsers prefers WORK_LOG_USERS_JSON mapping", () => {
   ]);
 
   assert.deepEqual(getAuthUsers(), [
-    { id: "alice", token: "alice-token", name: undefined },
-    { id: "bob-kim", token: "bob-token", name: undefined },
+    { id: "alice", token: "alice-token", name: undefined, sources: undefined },
+    { id: "bob-kim", token: "bob-token", name: undefined, sources: undefined },
   ]);
-  assert.deepEqual(findAuthUserByToken("bob-token"), { id: "bob-kim", token: "bob-token", name: undefined });
+  assert.deepEqual(findAuthUserByToken("bob-token"), { id: "bob-kim", token: "bob-token", name: undefined, sources: undefined });
+
+  if (savedUsers === undefined) delete process.env.WORK_LOG_USERS_JSON; else process.env.WORK_LOG_USERS_JSON = savedUsers;
+});
+
+
+test("getAuthUsers preserves optional sources metadata", () => {
+  const savedUsers = process.env.WORK_LOG_USERS_JSON;
+  process.env.WORK_LOG_USERS_JSON = JSON.stringify([
+    { id: "alice", token: "alice-token", sources: { includeSlack: true, slack: { channelIds: ["C1"] } } }
+  ]);
+
+  const users = getAuthUsers();
+  assert.equal(users[0].sources.includeSlack, true);
+  assert.deepEqual(users[0].sources.slack.channelIds, ["C1"]);
 
   if (savedUsers === undefined) delete process.env.WORK_LOG_USERS_JSON; else process.env.WORK_LOG_USERS_JSON = savedUsers;
 });

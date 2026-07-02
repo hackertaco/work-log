@@ -57,3 +57,32 @@ test("loadConfig merges per-user overrides before scoping", async () => {
     assert.ok(config.repoRoots[0].endsWith(path.join("work-log", "custom-root")));
   });
 });
+
+
+test("loadConfig merges env user sources into effective config", async () => {
+  const savedUsers = process.env.WORK_LOG_USERS_JSON;
+  process.env.WORK_LOG_USERS_JSON = JSON.stringify([
+    {
+      id: "alice",
+      token: "alice-token",
+      sources: {
+        includeSlack: true,
+        includeSessionLogs: true,
+        repoRoots: ["./alice-root"],
+        slack: { token: "alice-slack-token", userId: "U123", channelIds: ["C1", "C2"] }
+      }
+    }
+  ]);
+
+  await withTempConfig({ dataDir: "./data", vaultDir: "./vault" }, async () => {
+    const config = await loadConfig({ userId: "alice" });
+    assert.equal(config.includeSlack, true);
+    assert.equal(config.includeSessionLogs, true);
+    assert.equal(config.slackToken, "alice-slack-token");
+    assert.equal(config.slackUserId, "U123");
+    assert.deepEqual(config.slackChannelIds, ["C1", "C2"]);
+    assert.ok(config.repoRoots[0].endsWith(path.join("work-log", "alice-root")));
+  });
+
+  if (savedUsers === undefined) delete process.env.WORK_LOG_USERS_JSON; else process.env.WORK_LOG_USERS_JSON = savedUsers;
+});

@@ -44,7 +44,7 @@ export async function runDailyBatch(inputDate, options = {}) {
   const [codexSessions, claudeSessions, slackContexts, gitData, shellHistory] = await Promise.all([
     config.includeSessionLogs ? collectCodexSessions(config, date) : Promise.resolve([]),
     config.includeSessionLogs ? collectClaudeSessions(config, date) : Promise.resolve([]),
-    config.includeSlack ? collectSlackContexts(date) : Promise.resolve([]),
+    config.includeSlack ? collectSlackContexts(config, date) : Promise.resolve([]),
     collectGitCommits(config, date),
     collectShellHistory(config, date)
   ]);

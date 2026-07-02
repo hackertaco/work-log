@@ -73,6 +73,7 @@ import {
 } from "./resumeChatSearch.mjs";
 
 import { collectSlackContexts } from "./slack.mjs";
+import { loadConfig } from "./config.mjs";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -531,9 +532,8 @@ async function collectEvidenceFromWorkLogs(workLogs, aggregated) {
  */
 async function collectDirectSlackEvidence(workLogs) {
   // Slack 토큰이 없으면 즉시 반환 (환경에 따라 선택적)
-  const token = process.env.SLACK_TOKEN || process.env.SLACK_USER_TOKEN || "";
-  const channelIds = process.env.SLACK_CHANNEL_IDS || process.env.WORK_LOG_SLACK_CHANNEL_IDS || "";
-  if (!token || !channelIds) return [];
+  const config = await loadConfig();
+  if (!config.slackToken || !config.slackChannelIds?.length) return [];
 
   // 최근 7일의 날짜만 추출 (API 부하 제한)
   const MAX_SLACK_DAYS = 7;
@@ -548,7 +548,7 @@ async function collectDirectSlackEvidence(workLogs) {
 
   for (const date of recentDates) {
     try {
-      const contexts = await collectSlackContexts(date);
+      const contexts = await collectSlackContexts(config, date);
       for (const ctx of contexts) {
         if (!ctx.text || ctx.text.length < 10) continue;
 

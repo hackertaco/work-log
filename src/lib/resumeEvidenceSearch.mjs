@@ -443,9 +443,8 @@ export async function searchSlack(parsedQuery, options = {}) {
   const { keywords = [], dateRange } = parsedQuery;
 
   // Slack 인증 정보 없으면 즉시 반환
-  const token =
-    process.env.SLACK_TOKEN || process.env.SLACK_USER_TOKEN || "";
-  if (!token) return [];
+  const config = await loadConfig();
+  if (!config.slackToken) return [];
 
   // dateRange 조정 (최대 30일)
   const today = new Date().toISOString().slice(0, 10);
@@ -465,7 +464,7 @@ export async function searchSlack(parsedQuery, options = {}) {
   for (const date of dates) {
     let contexts;
     try {
-      contexts = await collectSlackContexts(date);
+      contexts = await collectSlackContexts(config, date);
     } catch {
       // 채널별 오류는 무시하고 계속
       continue;

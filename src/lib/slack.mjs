@@ -1,9 +1,9 @@
 const SLACK_API_BASE = "https://slack.com/api";
 
-export async function collectSlackContexts(date) {
-  const token = process.env.SLACK_TOKEN || process.env.SLACK_USER_TOKEN || "";
-  const channelIds = parseCsv(process.env.SLACK_CHANNEL_IDS || process.env.WORK_LOG_SLACK_CHANNEL_IDS || "");
-  const configuredUserId = process.env.SLACK_USER_ID || process.env.WORK_LOG_SLACK_USER_ID || "";
+export async function collectSlackContexts(config, date) {
+  const token = config?.slackToken || "";
+  const channelIds = Array.isArray(config?.slackChannelIds) ? config.slackChannelIds : [];
+  const configuredUserId = config?.slackUserId || "";
 
   if (!token || !channelIds.length) return [];
 
@@ -113,13 +113,6 @@ function cleanSlackText(text) {
     .replace(/<([^>]+)>/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function parseCsv(raw) {
-  return String(raw)
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
 }
 
 function uniqueContext(values) {
