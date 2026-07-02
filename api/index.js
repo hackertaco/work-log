@@ -18,7 +18,10 @@ import { handle } from "@hono/node-server/vercel";
 import { createApp } from "../src/server.mjs";
 
 export const config = {
-  runtime: "nodejs"
+  runtime: "nodejs",
+  // Vercel Node 런타임의 body 헬퍼가 요청 스트림을 먼저 소비하면
+  // Hono 어댑터가 body를 영원히 기다린다 (POST 45초 행업).
+  api: { bodyParser: false }
 };
 
 const app = createApp();
