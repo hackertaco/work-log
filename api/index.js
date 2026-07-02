@@ -10,7 +10,10 @@
  *   OPENAI_API_KEY         — OpenAI API key for summarization
  */
 
-import { handle } from "hono/vercel";
+// Node.js 런타임에서는 @hono/node-server 어댑터를 써야 한다.
+// hono/vercel 은 Edge(fetch) 런타임용이라 Node 에서는 상대 URL이 그대로
+// Hono 라우터에 들어와 모든 요청이 catch-all 로 빠지며 500이 난다.
+import { handle } from "@hono/node-server/vercel";
 
 import { createApp } from "../src/server.mjs";
 

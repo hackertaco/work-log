@@ -173,8 +173,7 @@ export function createApp() {
   // client-side routing.  For asset requests (.js, .css, etc.) try the file
   // directly and return 404 only when it genuinely does not exist.
   app.get("*", async (c) => {
-    const pathname = new URL(c.req.url).pathname;
-    return serveStatic(pathname, c);
+    return serveStatic(c.req.path, c);
   });
 
   return app;
