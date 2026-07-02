@@ -5,7 +5,7 @@ import styles from './Login.module.css';
  * 미인증 리다이렉트에서 전달된 ?next= 파라미터를 안전하게 읽는다.
  *
  * 오픈 리다이렉트 방지를 위해 같은 오리진의 pathname(/로 시작)만 허용한다.
- * 파라미터가 없거나 외부 URL이면 기본값 /resume를 반환한다.
+ * 파라미터가 없거나 외부 URL이면 기본값 /(Work Log 홈)를 반환한다.
  *
  * @returns {string} 로그인 성공 후 이동할 경로
  */
@@ -16,7 +16,7 @@ function getNextPath() {
   if (next && next.startsWith('/') && !next.startsWith('//')) {
     return next;
   }
-  return '/resume';
+  return '/';
 }
 
 /**
@@ -29,7 +29,7 @@ function getNextPath() {
  * 인증 후 이동 경로:
  *   - URL에 ?next=<path> 파라미터가 있으면 해당 경로로 이동
  *     (백엔드 cookieAuth 미들웨어가 /login?next=<path> 형태로 리다이렉트함)
- *   - 파라미터가 없으면 기본값 /resume로 이동
+ *   - 파라미터가 없으면 기본값 /(Work Log 홈)로 이동
  *
  * 오픈 리다이렉트 방지: next 값은 /로 시작하는 같은 오리진 경로만 허용
  */
