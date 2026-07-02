@@ -84,6 +84,15 @@ export function createApp() {
   });
 
   app.post("/api/run-batch", async (c) => {
+    // 배치는 로컬 레포·세션 로그·셸 히스토리를 스캔하고 data/vault 디렉토리에
+    // 기록하는 로컬 전용 작업이다. Vercel 서버리스에는 스캔할 소스도 없고
+    // 파일시스템도 읽기 전용이라 (ENOENT mkdir /var/task/vault) 실행 불가.
+    if (process.env.VERCEL) {
+      return c.json(
+        { error: "업무로그 생성은 로컬 환경에서만 실행할 수 있습니다. 이 서버에는 스캔할 저장소와 세션 기록이 없습니다." },
+        501
+      );
+    }
     const user = resolveRequestUser(c);
     const body = await c.req.json().catch(() => ({}));
     const result = await runDailyBatch(body?.date, { userId: user.id });

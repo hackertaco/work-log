@@ -217,7 +217,8 @@ export function WorkLogPage() {
 
       if (handleAuthFailure(response)) return;
       if (!response.ok) {
-        throw new Error(`배치를 실행하지 못했습니다. HTTP ${response.status}`);
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `배치를 실행하지 못했습니다. HTTP ${response.status}`);
       }
 
       const payload = await response.json();
