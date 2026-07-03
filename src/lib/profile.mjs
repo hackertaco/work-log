@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { fileExists, writeJson } from "./utils.mjs";
+import { listWorklogDates, readWorklogDaily } from "./blob.mjs";
 import {
   buildEvidenceBundles,
   personSignalsFromBundles,
@@ -21,7 +22,12 @@ export async function buildProfileSummary(config) {
   const days = await readDailySummaries(config);
   const profile = summarizeProfile(days);
   const profilePath = path.join(config.dataDir, "profile", "summary.json");
-  await writeJson(profilePath, profile);
+  try {
+    await writeJson(profilePath, profile);
+  } catch (err) {
+    // 배포 환경(읽기 전용 파일시스템)에서는 캐시 저장만 건너뛴다
+    console.warn("[profile] summary cache write skipped:", err.message ?? String(err));
+  }
   return { profile, profilePath };
 }
 
@@ -121,12 +127,20 @@ export function summarizeProfile(days, options = {}) {
 async function readDailySummaries(config, options = {}) {
   const windowDays = normalizeWindowDays(options.windowDays);
   const dailyDir = path.join(config.dataDir, "daily");
-  if (!(await fileExists(dailyDir))) return [];
 
-  let entries = (await fs.readdir(dailyDir))
-    .filter((entry) => entry.endsWith(".json"))
-    .sort()
-    .reverse();
+  let entries = [];
+  if (await fileExists(dailyDir)) {
+    entries = (await fs.readdir(dailyDir))
+      .filter((entry) => entry.endsWith(".json"))
+      .sort()
+      .reverse();
+  }
+
+  // 디스크에 일별 데이터가 없으면(배포 환경) 로컬 배치가 밀어올린
+  // Blob 사본에서 읽는다. Blob 미설정이면 조용히 빈 배열로 남는다.
+  if (!entries.length) {
+    return readDailySummariesFromBlob(config.userId, windowDays);
+  }
 
   if (windowDays) {
     entries = entries.slice(0, windowDays);
@@ -143,6 +157,22 @@ async function readDailySummaries(config, options = {}) {
   }
 
   return days;
+}
+
+async function readDailySummariesFromBlob(userId, windowDays = null) {
+  try {
+    let dates = await listWorklogDates(userId);
+    if (windowDays) {
+      dates = dates.slice(0, windowDays);
+    }
+    const docs = await Promise.all(
+      dates.map((date) => readWorklogDaily(date, userId).catch(() => null))
+    );
+    // listWorklogDates 는 최신순이므로 디스크 경로와 같은 과거→최신 순으로 뒤집는다
+    return docs.filter(Boolean).reverse();
+  } catch {
+    return [];
+  }
 }
 
 function summarizeProjectArc(project) {

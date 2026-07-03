@@ -4,9 +4,11 @@ import test from 'node:test';
 import {
   RESUME_DATA_PATHNAME,
   CHAT_DRAFT_CONTEXT_PATHNAME,
+  WORKLOG_PROFILE_PATHNAME,
   bulletsPathnameForDate,
   pathForUser,
   snapshotPathnameFor,
+  worklogDailyPathnameForDate,
 } from './blob.mjs';
 
 test('pathForUser keeps default paths unchanged', () => {
@@ -26,4 +28,14 @@ test('bulletsPathnameForDate scopes per user', () => {
 test('snapshotPathnameFor scopes per user', () => {
   assert.equal(snapshotPathnameFor('2026-04-30T10:00:00.000Z'), 'resume/snapshots/2026-04-30T10-00-00.000Z.json');
   assert.equal(snapshotPathnameFor('2026-04-30T10:00:00.000Z', 'alice'), 'users/alice/resume/snapshots/2026-04-30T10-00-00.000Z.json');
+});
+
+test('worklogDailyPathnameForDate scopes per user', () => {
+  assert.equal(worklogDailyPathnameForDate('2026-07-02'), 'worklog/daily/2026-07-02.json');
+  assert.equal(worklogDailyPathnameForDate('2026-07-02', 'alice'), 'users/alice/worklog/daily/2026-07-02.json');
+});
+
+test('worklog profile pathname scopes per user', () => {
+  assert.equal(pathForUser(WORKLOG_PROFILE_PATHNAME), 'worklog/profile/summary.json');
+  assert.equal(pathForUser(WORKLOG_PROFILE_PATHNAME, 'alice'), 'users/alice/worklog/profile/summary.json');
 });

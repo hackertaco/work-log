@@ -13,6 +13,8 @@
  *                                          (AxesDocument — separate from display_axes)
  *   resume/display-axes.json           — generated display axes as independent entities
  *                                          (DisplayAxesDocument — authoritative axis store)
+ *   worklog/daily/{YYYY-MM-DD}.json    — per-day work-log summary synced by the local batch
+ *   worklog/profile/summary.json       — aggregated work-log profile synced by the local batch
  *
  * Environment variable required:
  *   BLOB_READ_WRITE_TOKEN — provisioned by Vercel Blob integration
@@ -47,6 +49,20 @@ export const BATCH_SUMMARY_PREFIX = "resume/batch-summaries/";
  * Individual files are stored at `resume/bullets/{YYYY-MM-DD}.json`.
  */
 export const DAILY_BULLETS_PREFIX = "resume/bullets/";
+
+/**
+ * Blob pathname prefix for per-day work-log summary documents.
+ * Individual files are stored at `worklog/daily/{YYYY-MM-DD}.json`.
+ * Written by the local daily batch so the deployed site can display
+ * work logs that were collected on the user's machine.
+ */
+export const WORKLOG_DAILY_PREFIX = "worklog/daily/";
+
+/**
+ * Blob pathname for the aggregated work-log profile summary.
+ * Mirrors `data/profile/summary.json` on the machine that ran the batch.
+ */
+export const WORKLOG_PROFILE_PATHNAME = "worklog/profile/summary.json";
 
 /**
  * Blob pathname for the original PDF plain text extracted at bootstrap time.
@@ -464,6 +480,104 @@ export async function listBulletDates(userId = DEFAULT_USER_ID) {
     .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
     .sort()
     .reverse();
+}
+
+// ─── Work-log daily summaries (local batch → deployed site) ─────────────────
+
+export function worklogDailyPathnameForDate(date, userId = undefined) {
+  return pathForUser(`${WORKLOG_DAILY_PREFIX}${date}.json`, userId);
+}
+
+/**
+ * Save (overwrite) a per-day work-log summary document in Vercel Blob.
+ *
+ * The document is the same DailySummary object the batch writes to
+ * `data/daily/{date}.json` on disk. Stored at `worklog/daily/{date}.json`
+ * (user-scoped) so the deployed site can read it.
+ *
+ * @param {string} date  ISO date string YYYY-MM-DD
+ * @param {object} data  DailySummary
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveWorklogDaily(date, data, userId = DEFAULT_USER_ID) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const pathname = worklogDailyPathnameForDate(date, userId);
+  const json = JSON.stringify(data, null, 2);
+
+  const result = await put(pathname, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Download and parse the work-log summary for a specific date.
+ * Returns `null` when no document exists for that date.
+ *
+ * @param {string} date  ISO date string YYYY-MM-DD
+ * @returns {Promise<object|null>}  DailySummary or null
+ */
+export async function readWorklogDaily(date, userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(worklogDailyPathnameForDate(date, userId), userId);
+}
+
+/**
+ * List all dates for which a work-log summary exists in Vercel Blob.
+ * Returns dates sorted descending (most recent first).
+ *
+ * @returns {Promise<string[]>}
+ */
+export async function listWorklogDates(userId = DEFAULT_USER_ID) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const prefix = pathForUser(WORKLOG_DAILY_PREFIX, userId);
+
+  const { blobs } = await list({
+    prefix,
+    ...(token ? { token } : {})
+  });
+
+  return blobs
+    .map((b) => b.pathname.slice(prefix.length).replace(/\.json$/, ""))
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort()
+    .reverse();
+}
+
+/**
+ * Save (overwrite) the aggregated work-log profile summary in Vercel Blob.
+ *
+ * @param {object} data  Profile summary (same shape as data/profile/summary.json)
+ * @returns {Promise<{ url: string }>}
+ */
+export async function saveWorklogProfile(data, userId = DEFAULT_USER_ID) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const pathname = pathForUser(WORKLOG_PROFILE_PATHNAME, userId);
+  const json = JSON.stringify(data, null, 2);
+
+  const result = await put(pathname, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+
+  return { url: result.url };
+}
+
+/**
+ * Download and parse the aggregated work-log profile summary.
+ * Returns `null` when it has never been synced.
+ *
+ * @returns {Promise<object|null>}
+ */
+export async function readWorklogProfile(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(pathForUser(WORKLOG_PROFILE_PATHNAME, userId), userId);
 }
 
 /**

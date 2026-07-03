@@ -17,6 +17,7 @@ import {
   WORK_LOG_EVENTS
 } from "./lib/workLogEventBus.mjs";
 import { cookieAuth, resolveRequestUser } from "./middleware/auth.mjs";
+import { listWorklogDates, readWorklogDaily, readWorklogProfile } from "./lib/blob.mjs";
 import { buildProfileSummary, readProfileSummary } from "./lib/profile.mjs";
 import { fileExists } from "./lib/utils.mjs";
 import { authRouter } from "./routes/auth.mjs";
@@ -210,25 +211,44 @@ export async function startServer(port = 4310, host = "localhost") {
 
 // ---------- Helpers ----------
 
+// 로컬 디스크가 원본, Vercel Blob 은 로컬 배치가 밀어올린 조회용 사본이다.
+// 배포 환경에는 디스크 데이터가 없으므로 디스크 → Blob 순으로 읽는다.
 async function readAvailableDays(userId = "default") {
   const config = await loadConfig({ userId });
   const dailyDir = path.join(config.dataDir, "daily");
-  if (!(await fileExists(dailyDir))) return [];
-  const entries = await fs.readdir(dailyDir);
-  return entries
-    .filter((entry) => entry.endsWith(".json"))
-    .map((entry) => entry.replace(/\.json$/, ""))
-    .sort()
-    .reverse();
+  let diskDays = [];
+  if (await fileExists(dailyDir)) {
+    const entries = await fs.readdir(dailyDir);
+    diskDays = entries
+      .filter((entry) => entry.endsWith(".json"))
+      .map((entry) => entry.replace(/\.json$/, ""));
+  }
+
+  let blobDays = [];
+  try {
+    blobDays = await listWorklogDates(userId);
+  } catch {
+    // Blob 미설정(로컬 개발 등)이면 디스크만 사용
+  }
+
+  return [...new Set([...diskDays, ...blobDays])].sort().reverse();
 }
 
 async function readDailySummary(date, userId = "default") {
   const config = await loadConfig({ userId });
   const filePath = path.join(config.dataDir, "daily", `${date}.json`);
-  if (!(await fileExists(filePath))) {
-    return { missing: true, date };
+  if (await fileExists(filePath)) {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
   }
-  return JSON.parse(await fs.readFile(filePath, "utf8"));
+
+  try {
+    const blobDoc = await readWorklogDaily(date, userId);
+    if (blobDoc) return blobDoc;
+  } catch {
+    // Blob 미설정이면 아래 missing 응답으로
+  }
+
+  return { missing: true, date };
 }
 
 async function readOrBuildProfile(windowDays = null, userId = "default") {
@@ -238,6 +258,14 @@ async function readOrBuildProfile(windowDays = null, userId = "default") {
   }
   const profile = await readProfileSummary(config);
   if (profile.updatedAt) return profile;
+
+  try {
+    const blobProfile = await readWorklogProfile(userId);
+    if (blobProfile) return blobProfile;
+  } catch {
+    // Blob 미설정이면 디스크 기반 재계산으로
+  }
+
   return (await buildProfileSummary(config)).profile;
 }
 

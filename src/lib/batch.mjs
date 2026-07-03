@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { readBulletCache, writeBulletCache } from "./bulletCache.mjs";
-import { readSuggestionsData, saveBatchSummary } from "./blob.mjs";
+import { readSuggestionsData, saveBatchSummary, saveWorklogDaily, saveWorklogProfile } from "./blob.mjs";
 import { loadConfig } from "./config.mjs";
 import { summarizeWithOpenAI } from "./openai.mjs";
 import { buildProfileSummary } from "./profile.mjs";
@@ -109,7 +109,21 @@ export async function runDailyBatch(inputDate, options = {}) {
     writeText(resumeMdPath, renderResumeMarkdown(summary))
   ]);
 
-  const { profilePath } = await buildProfileSummary(config);
+  const { profile, profilePath } = await buildProfileSummary(config);
+
+  // ── Blob sync: 배포 사이트가 로컬 수집 결과를 읽을 수 있게 미러링 ──────────
+  // 로컬 디스크가 원본이고 Blob은 조회용 사본이다. 오프라인이거나 토큰이
+  // 없으면 배치는 그대로 성공해야 하므로 실패는 경고로만 남긴다.
+  let blobSync = { synced: false };
+  try {
+    await saveWorklogDaily(date, summary, config.userId);
+    await saveWorklogProfile(profile, config.userId);
+    blobSync = { synced: true };
+  } catch (err) {
+    const message = err.message ?? String(err);
+    console.warn(`[batch date="${date}"] work-log Blob sync failed (non-fatal):`, message);
+    blobSync = { synced: false, error: message };
+  }
 
   // ── Final stage: delta check + merge candidate generation (Sub-AC 10-3) ─────
   //
@@ -163,6 +177,7 @@ export async function runDailyBatch(inputDate, options = {}) {
     },
     candidateHook,
     batchSummary,
+    blobSync,
   };
 }
 

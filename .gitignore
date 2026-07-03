@@ -7,3 +7,4 @@ vault/
 .omx/
 .vercel/
 .DS_Store
+.vercel
