@@ -227,8 +227,9 @@ async function readAvailableDays(userId = "default") {
   let blobDays = [];
   try {
     blobDays = await listWorklogDates(userId);
-  } catch {
+  } catch (err) {
     // Blob 미설정(로컬 개발 등)이면 디스크만 사용
+    console.warn("[worklog] Blob day list unavailable:", err.message ?? String(err));
   }
 
   return [...new Set([...diskDays, ...blobDays])].sort().reverse();
@@ -244,8 +245,9 @@ async function readDailySummary(date, userId = "default") {
   try {
     const blobDoc = await readWorklogDaily(date, userId);
     if (blobDoc) return blobDoc;
-  } catch {
+  } catch (err) {
     // Blob 미설정이면 아래 missing 응답으로
+    console.warn("[worklog] Blob day read failed:", err.message ?? String(err));
   }
 
   return { missing: true, date };
@@ -262,8 +264,9 @@ async function readOrBuildProfile(windowDays = null, userId = "default") {
   try {
     const blobProfile = await readWorklogProfile(userId);
     if (blobProfile) return blobProfile;
-  } catch {
+  } catch (err) {
     // Blob 미설정이면 디스크 기반 재계산으로
+    console.warn("[worklog] Blob profile read failed:", err.message ?? String(err));
   }
 
   return (await buildProfileSummary(config)).profile;
