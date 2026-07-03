@@ -181,7 +181,8 @@ export async function runDailyBatch(inputDate, options = {}) {
   };
 }
 
-async function buildSummary({ date, codexSessions, claudeSessions, slackContexts, gitCommits, gitWorkingTree, shellHistory, prBranchSignals }) {
+// serverCollect.mjs 가 원격 소스(GitHub API·Zeude)로 같은 요약을 만들 때 재사용한다.
+export async function buildSummary({ date, codexSessions, claudeSessions, slackContexts, gitCommits, gitWorkingTree, shellHistory, prBranchSignals }) {
   const repoGroups = groupBy(gitCommits, "repo");
   const codexSummaries = uniqueStrings(codexSessions.map((session) => session.summary).filter(Boolean), 8);
   const claudeSummaries = uniqueStrings(claudeSessions.map((session) => session.summary).filter(Boolean), 8);

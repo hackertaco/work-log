@@ -19,6 +19,7 @@ import {
 import { cookieAuth, resolveRequestUser } from "./middleware/auth.mjs";
 import { listWorklogDates, readWorklogDaily, readWorklogProfile } from "./lib/blob.mjs";
 import { buildProfileSummary, readProfileSummary } from "./lib/profile.mjs";
+import { runServerCollection } from "./lib/serverCollect.mjs";
 import { fileExists } from "./lib/utils.mjs";
 import { authRouter } from "./routes/auth.mjs";
 import { resumeRouter } from "./routes/resume.mjs";
@@ -56,6 +57,22 @@ export function createApp() {
   // LinkedIn data collection is part of the resume onboarding flow and must
   // be behind the same auth boundary as the resume API.
   app.use("/api/linkedin/*", cookieAuth());
+
+  // ---------- Server-side daily collection (Vercel Cron) ----------
+  // 매일 밤 GitHub/Slack/Zeude 에서 그날의 업무 신호를 수집해 Blob 에 기록한다.
+  // Vercel Cron 은 CRON_SECRET 이 설정돼 있으면 Authorization: Bearer 로 보낸다.
+  // 쿠키 인증 대상이 아니므로 cookieAuth 앞에서 자체 시크릿으로 보호한다.
+  app.get("/api/collect", async (c) => {
+    const secret = process.env.CRON_SECRET;
+    const auth = c.req.header("authorization") ?? "";
+    if (!secret || auth !== `Bearer ${secret}`) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const dateParam = c.req.query("date");
+    const dates = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? [dateParam] : undefined;
+    const result = await runServerCollection({ userId: "default", dates });
+    return c.json(result);
+  });
 
   // ---------- Resume API routes (protected by cookieAuth above) ----------
   app.route("/api/resume", resumeRouter);

@@ -159,6 +159,16 @@ async function readDailySummaries(config, options = {}) {
   return days;
 }
 
+/**
+ * Blob 에 동기화된 일별 요약만으로 프로필을 재계산한다 (서버 수집기용).
+ * Blob 이 비어 있으면 null 을 반환한다.
+ */
+export async function rebuildProfileFromBlob(userId) {
+  const days = await readDailySummariesFromBlob(userId);
+  if (!days.length) return null;
+  return summarizeProfile(days);
+}
+
 async function readDailySummariesFromBlob(userId, windowDays = null) {
   try {
     let dates = await listWorklogDates(userId);
