@@ -667,6 +667,8 @@ function SnapshotCard({ profile, profileWindow, onWindowChange }) {
     return copy.label;
   });
   const workStyle = (profile?.workStyle || []).slice(0, 3);
+  const workStyleAnalysis = profile?.workStyleAnalysis || null;
+  const areas = (workStyleAnalysis?.areas || []).filter((a) => (a.judgments?.length || a.did?.length));
   const strengthCards = (profile?.strengths || []).slice(0, 4).map((item) => {
     const copy = STRENGTH_COPY[item.label] || { label: item.label, description: '' };
     return { label: copy.label, description: copy.description || '', score: item.score };
@@ -731,6 +733,53 @@ function SnapshotCard({ profile, profileWindow, onWindowChange }) {
         <SnapshotSection title="강점 후보" items={resumeDraft.strengthLabels || []} emptyText="아직 강점 후보가 없습니다." />
         <SnapshotSection title="이력서에 남는 작업 방식" items={workStyle} emptyText="아직 누적 작업 성향이 없습니다." tone="sentence" />
       </div>
+
+      {areas.length ? (
+        <section class="worklog-workstyle">
+          <h3 class="worklog-card-title">내가 일한 영역과 그 안의 판단</h3>
+          {workStyleAnalysis?.llmGeneratedAt ? (
+            <p class="worklog-workstyle-fresh">
+              {freshnessLabel(workStyleAnalysis.llmGeneratedAt)}
+            </p>
+          ) : null}
+          <div class="worklog-workstyle-list">
+            {areas.map((a, i) => (
+              <article key={a.area} class="worklog-workstyle-card">
+                <header class="worklog-workstyle-head">
+                  <strong class="worklog-workstyle-area">{a.area}</strong>
+                  <span class="worklog-workstyle-meta">
+                    {i === 0 ? '가장 많이 · ' : ''}프롬프트 {a.promptCount}건
+                  </span>
+                </header>
+                {a.did?.length ? (
+                  <div class="worklog-workstyle-block">
+                    <p class="worklog-worknotes-label">한 일</p>
+                    <p class="worklog-workstyle-did">{a.did.join(' · ')}</p>
+                  </div>
+                ) : null}
+                {a.judgments?.length ? (
+                  <div class="worklog-workstyle-block">
+                    <p class="worklog-worknotes-label">꺼낸 판단</p>
+                    <ul class="worklog-workstyle-judgments">
+                      {a.judgments.map((j, k) => (
+                        <li key={k}>
+                          <span class="worklog-workstyle-judgment">{j.text}</span>
+                          {j.evidence ? (
+                            <span class="worklog-workstyle-evidence">근거: "{j.evidence}"</span>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {a.firstDate || a.lastDate ? (
+                  <p class="worklog-workstyle-range">{a.firstDate} ~ {a.lastDate}</p>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </article>
   );
 }
@@ -935,6 +984,14 @@ function scoreImpactText(text) {
   if (normalized.length > 120) score -= 1;
 
   return score;
+}
+
+function freshnessLabel(iso) {
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return '';
+  const days = Math.floor((Date.now() - then) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return '오늘 분석';
+  return `${days}일 전 분석`;
 }
 
 async function fetchProfileSummary(windowKey, onAuthFailure = null) {
