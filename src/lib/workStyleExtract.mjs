@@ -60,7 +60,10 @@ export function buildExtractPayload(area, prompts) {
   return {
     model: OPENAI_MODEL,
     reasoning: { effort: "low" },
-    max_output_tokens: 600,
+    // reasoning 토큰이 이 예산에서 먼저 차감되므로 넉넉히 잡는다. 너무 낮으면
+    // (예: 600) 추론이 예산을 먹고 JSON 출력이 truncate → status:incomplete →
+    // output_text 빈 문자열이 되어 판단이 통째로 사라진다. (2026-07-07 프로덕션 회귀)
+    max_output_tokens: 3000,
     text: {
       verbosity: "low",
       format: {
