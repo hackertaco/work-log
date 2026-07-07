@@ -254,7 +254,7 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
       AND length(prompt_text) >= 12
       AND NOT startsWith(prompt_text, '<')
     GROUP BY prompt_id
-    ORDER BY max(timestamp)
+    ORDER BY max(timestamp) DESC
     LIMIT 2000
     FORMAT JSON`;
 
@@ -269,10 +269,14 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
   if (!res.ok) throw new Error(`ClickHouse ${res.status}: ${(await res.text()).slice(0, 120)}`);
 
   const body = await res.json();
-  return (body.data ?? []).map((row) => ({
-    text: String(row.text ?? "").slice(0, 300),
-    projectPath: String(row.project_path ?? ""),
-    source: row.source === "codex" ? "codex" : "claude",
-    date: String(row.kst_date ?? "")
-  }));
+  // 쿼리는 최신 2000건을 유지하려고 DESC + LIMIT 이라 최신순으로 온다 —
+  // groupWorkAreas 는 시간순(오래된→최신) 배열을 기대하므로 여기서 뒤집는다.
+  return (body.data ?? [])
+    .map((row) => ({
+      text: String(row.text ?? "").slice(0, 300),
+      projectPath: String(row.project_path ?? ""),
+      source: row.source === "codex" ? "codex" : "claude",
+      date: String(row.kst_date ?? "")
+    }))
+    .reverse();
 }
