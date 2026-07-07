@@ -3,6 +3,8 @@
  * 프롬프트는 주로 "묻는" 기록이라 확정적 성격 규정 대신 근거에서 드러나는 판단만 뽑는다.
  * 실패·미설정은 비치명적 — 빈 결과를 반환한다.
  */
+import { extractOutputText } from "./openai.mjs";
+
 const OPENAI_URL = process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
 const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
 const MAX_PROMPTS = 60;
@@ -26,7 +28,7 @@ export async function extractWorkStyleForArea(areaGroup, fetchImpl = fetch) {
     if (!response.ok) return empty;
 
     const data = await response.json();
-    const text = data.output_text || "";
+    const text = data.output_text || extractOutputText(data) || "";
     if (!text) return empty;
 
     const parsed = JSON.parse(text);

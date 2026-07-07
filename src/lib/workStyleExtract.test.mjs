@@ -43,6 +43,40 @@ test("parses did + judgments from OpenAI json output", async () => {
   if (saved === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = saved;
 });
 
+test("falls back to nested output[].content[] text when output_text is absent", async () => {
+  const saved = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  const fetchImpl = async () =>
+    new Response(
+      JSON.stringify({
+        output: [
+          {
+            content: [
+              {
+                type: "output_text",
+                text: JSON.stringify({
+                  did: ["레거시 배치 정리"],
+                  judgments: [{ text: "실패를 조용히 삼키지 않고 로그로 드러냄", evidence: "에러 나면 로그 남겨야지" }]
+                })
+              }
+            ]
+          }
+        ]
+      }),
+      { status: 200 }
+    );
+
+  const r = await extractWorkStyleForArea({ area: "dt-backend", prompts: ["에러 나면 로그 남겨야지"] }, fetchImpl);
+
+  assert.equal(r.area, "dt-backend");
+  assert.deepEqual(r.did, ["레거시 배치 정리"]);
+  assert.equal(r.judgments.length, 1);
+  assert.equal(r.judgments[0].evidence, "에러 나면 로그 남겨야지");
+
+  if (saved === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = saved;
+});
+
 test("returns empty on OpenAI error (non-fatal)", async () => {
   const saved = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "test-key";
