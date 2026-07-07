@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractWorkStyleForArea } from "./workStyleExtract.mjs";
+import { extractWorkStyleForArea, synthesizeWorkStylePrinciples } from "./workStyleExtract.mjs";
 
 test("no-op without OpenAI key", async () => {
   const saved = process.env.OPENAI_API_KEY;
@@ -83,5 +83,68 @@ test("returns empty on OpenAI error (non-fatal)", async () => {
   const fetchImpl = async () => new Response("boom", { status: 500 });
   const r = await extractWorkStyleForArea({ area: "x", prompts: ["a"] }, fetchImpl);
   assert.deepEqual(r, { area: "x", did: [], judgments: [] });
+  if (saved === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = saved;
+});
+
+// ─── synthesizeWorkStylePrinciples ───────────────────────────────────────────
+
+test("synthesis: no-op without OpenAI key", async () => {
+  const saved = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  const r = await synthesizeWorkStylePrinciples(
+    [{ area: "a", judgments: [{ text: "t", evidence: "e" }] }],
+    () => { throw new Error("no fetch"); }
+  );
+  assert.deepEqual(r, []);
+  if (saved !== undefined) process.env.OPENAI_API_KEY = saved;
+});
+
+test("synthesis: no-op when there are no judgments to synthesize", async () => {
+  const saved = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+  const r = await synthesizeWorkStylePrinciples(
+    [{ area: "a", judgments: [] }, { area: "b", judgments: [] }],
+    () => { throw new Error("no fetch"); }
+  );
+  assert.deepEqual(r, []);
+  if (saved === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = saved;
+});
+
+test("synthesis: distills cross-area principles from judgments", async () => {
+  const saved = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  const fetchImpl = async (url, init) => {
+    const payload = JSON.parse(init.body);
+    // 영역별 판단이 실제로 모델에 전달되는지 확인
+    assert.ok(JSON.stringify(payload).includes("성장팀"));
+    return new Response(JSON.stringify({
+      output_text: JSON.stringify({
+        principles: [
+          { title: "공유·합의 가능성을 품질 기준으로 둔다", description: "내부에서만 통하는 정의가 아니라 다른 팀과 합의 가능한 형태로 만들려 함." },
+          { title: "구현보다 정의·상태를 먼저 정리한다", description: "기능 전에 용어·상태값·기준부터 명확히." }
+        ]
+      })
+    }), { status: 200 });
+  };
+
+  const r = await synthesizeWorkStylePrinciples([
+    { area: "dt-frontend", judgments: [{ text: "성장팀과 합의 가능한 세그먼트 기준이 필요", evidence: "성장팀이랑 얼라인" }] },
+    { area: "neo-fetch", judgments: [{ text: "상태값 먼저 명확히", evidence: "지금 꼬여있어" }] }
+  ], fetchImpl);
+
+  assert.equal(r.length, 2);
+  assert.equal(r[0].title, "공유·합의 가능성을 품질 기준으로 둔다");
+  assert.ok(r[0].description.length > 0);
+});
+
+test("synthesis: returns empty on OpenAI error (non-fatal)", async () => {
+  const saved = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+  const r = await synthesizeWorkStylePrinciples(
+    [{ area: "a", judgments: [{ text: "t", evidence: "e" }] }],
+    async () => new Response("boom", { status: 500 })
+  );
+  assert.deepEqual(r, []);
   if (saved === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = saved;
 });

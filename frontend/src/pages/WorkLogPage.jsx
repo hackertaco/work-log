@@ -668,7 +668,9 @@ function SnapshotCard({ profile, profileWindow, onWindowChange }) {
   });
   const workStyle = (profile?.workStyle || []).slice(0, 3);
   const workStyleAnalysis = profile?.workStyleAnalysis || null;
+  const principles = (workStyleAnalysis?.principles || []).filter((p) => p.title);
   const areas = (workStyleAnalysis?.areas || []).filter((a) => (a.judgments?.length || a.did?.length));
+  const hasWorkStyle = principles.length || areas.length;
   const strengthCards = (profile?.strengths || []).slice(0, 4).map((item) => {
     const copy = STRENGTH_COPY[item.label] || { label: item.label, description: '' };
     return { label: copy.label, description: copy.description || '', score: item.score };
@@ -734,14 +736,29 @@ function SnapshotCard({ profile, profileWindow, onWindowChange }) {
         <SnapshotSection title="이력서에 남는 작업 방식" items={workStyle} emptyText="아직 누적 작업 성향이 없습니다." tone="sentence" />
       </div>
 
-      {areas.length ? (
+      {hasWorkStyle ? (
         <section class="worklog-workstyle">
-          <h3 class="worklog-card-title">내가 일한 영역과 그 안의 판단</h3>
+          <h3 class="worklog-card-title">내가 일할 때 반복하는 판단 기준</h3>
           {workStyleAnalysis?.llmGeneratedAt ? (
             <p class="worklog-workstyle-fresh">
-              {freshnessLabel(workStyleAnalysis.llmGeneratedAt)}
+              {freshnessLabel(workStyleAnalysis.llmGeneratedAt)} · 최근 30일 기록 기준
             </p>
           ) : null}
+
+          {principles.length ? (
+            <ol class="worklog-principles">
+              {principles.map((p, i) => (
+                <li key={i} class="worklog-principle">
+                  <p class="worklog-principle-title">{p.title}</p>
+                  {p.description ? <p class="worklog-principle-desc">{p.description}</p> : null}
+                </li>
+              ))}
+            </ol>
+          ) : null}
+
+          {areas.length ? (
+          <details class="worklog-workstyle-evidence-wrap">
+            <summary class="worklog-workstyle-evidence-toggle">영역별 근거 보기</summary>
           <div class="worklog-workstyle-list">
             {areas.map((a, i) => (
               <article key={a.area} class="worklog-workstyle-card">
@@ -782,6 +799,8 @@ function SnapshotCard({ profile, profileWindow, onWindowChange }) {
               </article>
             ))}
           </div>
+          </details>
+          ) : null}
         </section>
       ) : null}
     </article>

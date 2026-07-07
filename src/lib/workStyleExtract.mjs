@@ -49,6 +49,91 @@ function sanitizeList(v) {
   return (Array.isArray(v) ? v : []).map((s) => String(s).trim()).filter(Boolean).slice(0, 6);
 }
 
+/**
+ * 영역별로 뽑아낸 개별 판단들을 가로질러, 이 사람이 반복적으로 적용하는
+ * "판단 기준 / 사고방식" 3~5개로 승격(합성)한다. 개별 결정이 아니라 그것들을
+ * 관통하는 원칙을 뽑는 게 목적. 미설정/판단 없음/실패는 비치명적 — 빈 배열.
+ *
+ * @param {Array<{area:string, judgments:{text:string,evidence:string}[]}>} areas
+ * @returns {Promise<Array<{title:string, description:string}>>}
+ */
+export async function synthesizeWorkStylePrinciples(areas, fetchImpl = fetch) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") return [];
+
+  const items = (Array.isArray(areas) ? areas : [])
+    .flatMap((a) => (a?.judgments ?? []).map((j) => ({ area: a.area, text: String(j?.text ?? "").trim() })))
+    .filter((j) => j.text)
+    .slice(0, 40);
+  if (!items.length) return [];
+
+  try {
+    const response = await fetchImpl(OPENAI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(buildSynthesisPayload(items))
+    });
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    const text = data.output_text || extractOutputText(data) || "";
+    if (!text) return [];
+
+    const parsed = JSON.parse(text);
+    return (Array.isArray(parsed.principles) ? parsed.principles : [])
+      .map((p) => ({ title: String(p?.title ?? "").trim(), description: String(p?.description ?? "").trim() }))
+      .filter((p) => p.title)
+      .slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
+export function buildSynthesisPayload(items) {
+  const instruction =
+    `아래는 한 사람이 여러 작업 영역에서 내린 개별 판단들이다(각 줄: [영역] 판단). ` +
+    `이 판단들을 가로질러 반복적으로 드러나는, 이 사람이 일할 때 가진 ` +
+    `"판단 기준·사고방식·원칙"을 3~5개로 합성하라. 개별 결정을 그대로 나열하지 말고, ` +
+    `여러 영역에 걸쳐 반복되는 상위 패턴으로 승격할 것. ` +
+    `각 원칙은 title(한 문장 원칙 — 예: "공유·합의 가능성을 품질 기준으로 둔다")과 ` +
+    `description(그 원칙이 어떻게 드러나는지 1~2문장)으로. 한국어로. ` +
+    `제공된 판단에서 실제로 뒷받침되는 것만. 근거 없는 성격 규정·일반론 금지.`;
+
+  return {
+    model: OPENAI_MODEL,
+    reasoning: { effort: "low" },
+    max_output_tokens: 3000,
+    text: {
+      verbosity: "low",
+      format: {
+        type: "json_schema",
+        name: "workstyle_principles",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["principles"],
+          properties: {
+            principles: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["title", "description"],
+                properties: { title: { type: "string" }, description: { type: "string" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    input: [
+      { role: "system", content: instruction },
+      { role: "user", content: items.map((j) => `[${j.area}] ${j.text}`).join("\n") }
+    ]
+  };
+}
+
 export function buildExtractPayload(area, prompts) {
   const instruction =
     `아래는 사용자가 "${area}" 작업을 하며 AI에게 입력한 프롬프트들이다. ` +

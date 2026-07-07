@@ -4,6 +4,7 @@ import { mock, test } from "node:test";
 let stored = null;
 let priorAnalysis = null;
 let extractCalls = [];
+let synthesizeCalls = [];
 
 mock.module("./blob.mjs", {
   namedExports: {
@@ -26,6 +27,10 @@ mock.module("./workStyleExtract.mjs", {
     extractWorkStyleForArea: async (g) => {
       extractCalls.push(g.area);
       return { area: g.area, did: ["did-" + g.area], judgments: [{ text: "j", evidence: "e" }] };
+    },
+    synthesizeWorkStylePrinciples: async (areas) => {
+      synthesizeCalls.push(areas.map((a) => a.area));
+      return [{ title: "원칙-A", description: "설명-A" }];
     }
   }
 });
@@ -63,6 +68,7 @@ test("STALE: prior >7d old triggers LLM re-extract and llmRefreshed:true", async
   setClickHouseEnv();
   stored = null;
   extractCalls = [];
+  synthesizeCalls = [];
   // 8 days before a fixed, well-in-the-past instant — avoids relying on "now" drifting.
   priorAnalysis = { llmGeneratedAt: "2020-01-01T00:00:00.000Z", areas: [] };
 
@@ -86,6 +92,10 @@ test("STALE: prior >7d old triggers LLM re-extract and llmRefreshed:true", async
     }
     // extractor should have been invoked once per grouped area
     assert.deepEqual(extractCalls.sort(), stored.areas.map((a) => a.area).sort());
+    // synthesis runs on the STALE path and its principles are saved
+    assert.equal(synthesizeCalls.length, 1);
+    assert.deepEqual(stored.principles, [{ title: "원칙-A", description: "설명-A" }]);
+    assert.equal(r.principleCount, 1);
   } finally {
     restoreFetch();
     clearClickHouseEnv();
@@ -96,9 +106,11 @@ test("FRESH: prior <7d old reuses prior did/judgments and llmRefreshed:false", a
   setClickHouseEnv();
   stored = null;
   extractCalls = [];
+  synthesizeCalls = [];
   const recentIso = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
   priorAnalysis = {
     llmGeneratedAt: recentIso,
+    principles: [{ title: "이전-원칙", description: "이전-설명" }],
     areas: [
       {
         area: "work-log",
@@ -127,8 +139,11 @@ test("FRESH: prior <7d old reuses prior did/judgments and llmRefreshed:false", a
     assert.deepEqual(area.did, ["prior-did"]);
     assert.deepEqual(area.judgments, [{ text: "prior-judgment", evidence: "prior-evidence" }]);
 
-    // FRESH path only refreshes counts — the extractor must not be called
+    // FRESH path only refreshes counts — extractor and synthesis must not run
     assert.equal(extractCalls.length, 0);
+    assert.equal(synthesizeCalls.length, 0);
+    // principles are carried over from the prior analysis unchanged
+    assert.deepEqual(stored.principles, [{ title: "이전-원칙", description: "이전-설명" }]);
   } finally {
     restoreFetch();
     clearClickHouseEnv();

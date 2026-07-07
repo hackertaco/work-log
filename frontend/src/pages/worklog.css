@@ -1837,6 +1837,34 @@
 .worklog-workstyle-meta { color: var(--muted); font-size: 12px; }
 .worklog-workstyle-block { margin-top: 8px; }
 .worklog-workstyle-did { margin: 4px 0 0; color: var(--ink); font-size: 14px; }
+/* 관통 판단 기준 — 이 섹션의 주인공 */
+.worklog-principles { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 12px; }
+.worklog-principle {
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-card);
+  background: #fff;
+  box-shadow: var(--shadow-xs);
+  padding: 16px 18px;
+  border-left: 3px solid var(--primary);
+}
+.worklog-principle-title { margin: 0; color: var(--ink-strong); font-size: 15px; font-weight: 700; line-height: 1.4; }
+.worklog-principle-desc { margin: 6px 0 0; color: var(--ink); font-size: 13px; line-height: 1.6; }
+
+/* 영역별 근거는 접어서 부차적으로 */
+.worklog-workstyle-evidence-wrap { margin-top: 16px; }
+.worklog-workstyle-evidence-toggle {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  list-style: none;
+  padding: 6px 0;
+}
+.worklog-workstyle-evidence-toggle::-webkit-details-marker { display: none; }
+.worklog-workstyle-evidence-toggle::before { content: '▸ '; color: var(--muted); font-size: 11px; }
+.worklog-workstyle-evidence-wrap[open] > .worklog-workstyle-evidence-toggle::before { content: '▾ '; }
+.worklog-workstyle-evidence-wrap[open] > .worklog-workstyle-evidence-toggle { margin-bottom: 8px; }
+
 .worklog-workstyle-judgments { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 7px; }
 /* 근거는 기본으로 접어 화면을 가볍게 — 판단 문장(summary)만 보이고 클릭 시 펼침 */
 .worklog-workstyle-judgment-item > summary {

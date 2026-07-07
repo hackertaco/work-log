@@ -28,7 +28,7 @@ import { rebuildProfileFromBlob } from "./profile.mjs";
 import { detectPrBranchMentions } from "./resumePrBranchParser.mjs";
 import { collectSlackContexts } from "./slack.mjs";
 import { groupWorkAreas } from "./workAreaGrouping.mjs";
-import { extractWorkStyleForArea } from "./workStyleExtract.mjs";
+import { extractWorkStyleForArea, synthesizeWorkStylePrinciples } from "./workStyleExtract.mjs";
 
 /** 오늘 날짜 (KST) — 서버는 UTC 이므로 명시적으로 변환한다. */
 export function seoulDate(offsetDays = 0) {
@@ -302,6 +302,7 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
     (Date.now() - Date.parse(prior.llmGeneratedAt)) > WORKSTYLE_STALE_MS;
 
   let enriched;
+  let principles;
   let llmGeneratedAt = prior?.llmGeneratedAt ?? null;
 
   if (llmStale) {
@@ -310,21 +311,25 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
       const r = await extractWorkStyleForArea(area).catch(() => ({ did: [], judgments: [] }));
       enriched.push({ area: area.area, promptCount: area.promptCount, firstDate: area.firstDate, lastDate: area.lastDate, did: r.did ?? [], judgments: r.judgments ?? [] });
     }
+    // 영역별 개별 판단을 가로질러 관통 원칙으로 승격 (이게 화면의 주인공)
+    principles = await synthesizeWorkStylePrinciples(enriched).catch(() => []);
     llmGeneratedAt = new Date().toISOString();
   } else {
     enriched = areas.map((a) => {
       const p = (prior.areas ?? []).find((x) => x.area === a.area);
       return { area: a.area, promptCount: a.promptCount, firstDate: a.firstDate, lastDate: a.lastDate, did: p?.did ?? [], judgments: p?.judgments ?? [] };
     });
+    principles = prior?.principles ?? [];
   }
 
   await saveWorkStyleAnalysis({
     generatedAt: new Date().toISOString(),
     llmGeneratedAt,
     windowDays,
+    principles,
     areas: enriched,
     droppedAreas
   }, userId);
 
-  return { skipped: false, areaCount: enriched.length, llmRefreshed: llmStale };
+  return { skipped: false, areaCount: enriched.length, principleCount: principles.length, llmRefreshed: llmStale };
 }
