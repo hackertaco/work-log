@@ -223,3 +223,56 @@ export async function collectZeudePrompts(date, config = {}, fetchImpl = fetch) 
     text: String(row.text ?? "").slice(0, 300)
   }));
 }
+
+/**
+ * 롤링 윈도우(기본 30일)의 사용자 프롬프트를 project_path 포함해 가져온다.
+ * groupWorkAreas 입력 shape로 반환한다. 미설정이면 [].
+ *
+ * @param {string} userId
+ * @param {number} days
+ * @param {typeof fetch} fetchImpl
+ * @returns {Promise<Array<{text:string, projectPath:string, source:string, date:string}>>}
+ */
+export async function collectZeudePromptWindow(userId = "default", days = 30, fetchImpl = fetch) {
+  const url = process.env.CLICKHOUSE_URL;
+  const user = process.env.CLICKHOUSE_USER;
+  const password = process.env.CLICKHOUSE_PASSWORD;
+  const email = process.env.WORK_LOG_ZEUDE_EMAIL || "";
+  if (!url || !user || !email) return [];
+
+  const windowDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 30;
+  const query = `
+    SELECT
+      argMax(prompt_text, timestamp) AS text,
+      argMax(project_path, timestamp) AS project_path,
+      argMax(source, timestamp) AS source,
+      toString(toDate(max(timestamp) + INTERVAL 9 HOUR)) AS kst_date
+    FROM ai_prompts
+    WHERE user_email = {email:String}
+      AND timestamp >= now() - INTERVAL ${windowDays} DAY
+      AND prompt_type = 'natural'
+      AND length(prompt_text) >= 12
+      AND NOT startsWith(prompt_text, '<')
+    GROUP BY prompt_id
+    ORDER BY max(timestamp)
+    LIMIT 2000
+    FORMAT JSON`;
+
+  const endpoint = `${url.replace(/\/$/, "")}/?param_email=${encodeURIComponent(email)}`;
+  const res = await fetchImpl(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${user}:${password ?? ""}`).toString("base64")}`
+    },
+    body: query
+  });
+  if (!res.ok) throw new Error(`ClickHouse ${res.status}: ${(await res.text()).slice(0, 120)}`);
+
+  const body = await res.json();
+  return (body.data ?? []).map((row) => ({
+    text: String(row.text ?? "").slice(0, 300),
+    projectPath: String(row.project_path ?? ""),
+    source: row.source === "codex" ? "codex" : "claude",
+    date: String(row.kst_date ?? "")
+  }));
+}
