@@ -60,6 +60,7 @@ export function buildExtractPayload(area, prompts) {
   return {
     model: OPENAI_MODEL,
     reasoning: { effort: "low" },
+    max_output_tokens: 600,
     text: {
       verbosity: "low",
       format: {
