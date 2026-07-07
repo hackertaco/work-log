@@ -23,10 +23,12 @@
 
 import { buildSummary } from "./batch.mjs";
 import { loadConfig } from "./config.mjs";
-import { readWorklogDaily, saveWorklogDaily, saveWorklogProfile } from "./blob.mjs";
+import { readWorklogDaily, saveWorklogDaily, saveWorklogProfile, saveWorkStyleAnalysis, readWorkStyleAnalysis } from "./blob.mjs";
 import { rebuildProfileFromBlob } from "./profile.mjs";
 import { detectPrBranchMentions } from "./resumePrBranchParser.mjs";
 import { collectSlackContexts } from "./slack.mjs";
+import { groupWorkAreas } from "./workAreaGrouping.mjs";
+import { extractWorkStyleForArea } from "./workStyleExtract.mjs";
 
 /** 오늘 날짜 (KST) — 서버는 UTC 이므로 명시적으로 변환한다. */
 export function seoulDate(offsetDays = 0) {
@@ -279,4 +281,50 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
       date: String(row.kst_date ?? "")
     }))
     .reverse();
+}
+
+// ─── Workstyle tacit-knowledge orchestration ─────────────────────────────────
+
+const WORKSTYLE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * 사용자 프롬프트 → 영역 그룹핑(매번) + 판단 추출(stale일 때만) → Blob 저장.
+ * 모든 실패는 비치명적.
+ */
+export async function runWorkStyleAnalysis({ userId = "default", force = false, windowDays = 30 } = {}) {
+  const prompts = await collectZeudePromptWindow(userId, windowDays).catch(() => []);
+  if (!prompts.length) return { skipped: true, reason: "no prompts" };
+
+  const { areas, droppedAreas } = groupWorkAreas(prompts, { topN: 5 });
+  const prior = await readWorkStyleAnalysis(userId).catch(() => null);
+
+  const llmStale = force || !prior?.llmGeneratedAt ||
+    (Date.now() - Date.parse(prior.llmGeneratedAt)) > WORKSTYLE_STALE_MS;
+
+  let enriched;
+  let llmGeneratedAt = prior?.llmGeneratedAt ?? null;
+
+  if (llmStale) {
+    enriched = [];
+    for (const area of areas) {
+      const r = await extractWorkStyleForArea(area).catch(() => ({ did: [], judgments: [] }));
+      enriched.push({ area: area.area, promptCount: area.promptCount, firstDate: area.firstDate, lastDate: area.lastDate, did: r.did ?? [], judgments: r.judgments ?? [] });
+    }
+    llmGeneratedAt = new Date().toISOString();
+  } else {
+    enriched = areas.map((a) => {
+      const p = (prior.areas ?? []).find((x) => x.area === a.area);
+      return { area: a.area, promptCount: a.promptCount, firstDate: a.firstDate, lastDate: a.lastDate, did: p?.did ?? [], judgments: p?.judgments ?? [] };
+    });
+  }
+
+  await saveWorkStyleAnalysis({
+    generatedAt: new Date().toISOString(),
+    llmGeneratedAt,
+    windowDays,
+    areas: enriched,
+    droppedAreas
+  }, userId);
+
+  return { skipped: false, areaCount: enriched.length, llmRefreshed: llmStale };
 }
