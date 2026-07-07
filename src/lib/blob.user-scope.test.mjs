@@ -5,6 +5,7 @@ import {
   RESUME_DATA_PATHNAME,
   CHAT_DRAFT_CONTEXT_PATHNAME,
   WORKLOG_PROFILE_PATHNAME,
+  WORKSTYLE_ANALYSIS_PATHNAME,
   bulletsPathnameForDate,
   pathForUser,
   snapshotPathnameFor,
@@ -38,4 +39,9 @@ test('worklogDailyPathnameForDate scopes per user', () => {
 test('worklog profile pathname scopes per user', () => {
   assert.equal(pathForUser(WORKLOG_PROFILE_PATHNAME), 'worklog/profile/summary.json');
   assert.equal(pathForUser(WORKLOG_PROFILE_PATHNAME, 'alice'), 'users/alice/worklog/profile/summary.json');
+});
+
+test('workstyle analysis pathname scopes per user', () => {
+  assert.equal(pathForUser(WORKSTYLE_ANALYSIS_PATHNAME), 'worklog/workstyle/analysis.json');
+  assert.equal(pathForUser(WORKSTYLE_ANALYSIS_PATHNAME, 'alice'), 'users/alice/worklog/workstyle/analysis.json');
 });

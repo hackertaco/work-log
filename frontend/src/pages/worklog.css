@@ -1803,3 +1803,41 @@
   outline: none;
   box-shadow: var(--focus-ring);
 }
+
+/* 영역 카드 섹션 — "내가 일한 영역과 그 안의 판단" */
+.worklog-workstyle {
+  margin-top: 20px;
+  display: grid;
+  gap: 12px;
+}
+.worklog-workstyle-fresh {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.worklog-workstyle-list {
+  display: grid;
+  gap: 12px;
+}
+.worklog-workstyle-card {
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-card);
+  padding: 16px;
+  background: #fff;
+  box-shadow: var(--shadow-xs);
+}
+.worklog-workstyle-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.worklog-workstyle-area { font-size: 15px; color: var(--ink-strong); }
+.worklog-workstyle-meta { color: var(--muted); font-size: 12px; }
+.worklog-workstyle-block { margin-top: 8px; }
+.worklog-workstyle-did { margin: 4px 0 0; color: var(--ink); font-size: 14px; }
+.worklog-workstyle-judgments { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 6px; }
+.worklog-workstyle-judgment { display: block; color: var(--ink); font-size: 14px; line-height: 1.5; }
+.worklog-workstyle-evidence { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.worklog-workstyle-range { margin: 8px 0 0; color: var(--muted); font-size: 11px; }

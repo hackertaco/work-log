@@ -23,10 +23,12 @@
 
 import { buildSummary } from "./batch.mjs";
 import { loadConfig } from "./config.mjs";
-import { readWorklogDaily, saveWorklogDaily, saveWorklogProfile } from "./blob.mjs";
+import { readWorklogDaily, saveWorklogDaily, saveWorklogProfile, saveWorkStyleAnalysis, readWorkStyleAnalysis } from "./blob.mjs";
 import { rebuildProfileFromBlob } from "./profile.mjs";
 import { detectPrBranchMentions } from "./resumePrBranchParser.mjs";
 import { collectSlackContexts } from "./slack.mjs";
+import { groupWorkAreas } from "./workAreaGrouping.mjs";
+import { extractWorkStyleForArea } from "./workStyleExtract.mjs";
 
 /** 오늘 날짜 (KST) — 서버는 UTC 이므로 명시적으로 변환한다. */
 export function seoulDate(offsetDays = 0) {
@@ -222,4 +224,107 @@ export async function collectZeudePrompts(date, config = {}, fetchImpl = fetch) 
     source: row.source === "codex" ? "codex" : "claude",
     text: String(row.text ?? "").slice(0, 300)
   }));
+}
+
+/**
+ * 롤링 윈도우(기본 30일)의 사용자 프롬프트를 project_path 포함해 가져온다.
+ * groupWorkAreas 입력 shape로 반환한다. 미설정이면 [].
+ *
+ * @param {string} userId
+ * @param {number} days
+ * @param {typeof fetch} fetchImpl
+ * @returns {Promise<Array<{text:string, projectPath:string, source:string, date:string}>>}
+ */
+export async function collectZeudePromptWindow(userId = "default", days = 30, fetchImpl = fetch) {
+  const url = process.env.CLICKHOUSE_URL;
+  const user = process.env.CLICKHOUSE_USER;
+  const password = process.env.CLICKHOUSE_PASSWORD;
+  const email = process.env.WORK_LOG_ZEUDE_EMAIL || "";
+  if (!url || !user || !email) return [];
+
+  const windowDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 30;
+  const query = `
+    SELECT
+      argMax(prompt_text, timestamp) AS text,
+      argMax(project_path, timestamp) AS project_path,
+      argMax(source, timestamp) AS source,
+      toString(toDate(max(timestamp) + INTERVAL 9 HOUR)) AS kst_date
+    FROM ai_prompts
+    WHERE user_email = {email:String}
+      AND timestamp >= now() - INTERVAL ${windowDays} DAY
+      AND prompt_type = 'natural'
+      AND length(prompt_text) >= 12
+      AND NOT startsWith(prompt_text, '<')
+    GROUP BY prompt_id
+    ORDER BY max(timestamp) DESC
+    LIMIT 2000
+    FORMAT JSON`;
+
+  const endpoint = `${url.replace(/\/$/, "")}/?param_email=${encodeURIComponent(email)}`;
+  const res = await fetchImpl(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${user}:${password ?? ""}`).toString("base64")}`
+    },
+    body: query
+  });
+  if (!res.ok) throw new Error(`ClickHouse ${res.status}: ${(await res.text()).slice(0, 120)}`);
+
+  const body = await res.json();
+  // 쿼리는 최신 2000건을 유지하려고 DESC + LIMIT 이라 최신순으로 온다 —
+  // groupWorkAreas 는 시간순(오래된→최신) 배열을 기대하므로 여기서 뒤집는다.
+  return (body.data ?? [])
+    .map((row) => ({
+      text: String(row.text ?? "").slice(0, 300),
+      projectPath: String(row.project_path ?? ""),
+      source: row.source === "codex" ? "codex" : "claude",
+      date: String(row.kst_date ?? "")
+    }))
+    .reverse();
+}
+
+// ─── Workstyle tacit-knowledge orchestration ─────────────────────────────────
+
+const WORKSTYLE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * 사용자 프롬프트 → 영역 그룹핑(매번) + 판단 추출(stale일 때만) → Blob 저장.
+ * 모든 실패는 비치명적.
+ */
+export async function runWorkStyleAnalysis({ userId = "default", force = false, windowDays = 30 } = {}) {
+  const prompts = await collectZeudePromptWindow(userId, windowDays).catch(() => []);
+  if (!prompts.length) return { skipped: true, reason: "no prompts" };
+
+  const { areas, droppedAreas } = groupWorkAreas(prompts, { topN: 5 });
+  const prior = await readWorkStyleAnalysis(userId).catch(() => null);
+
+  const llmStale = force || !prior?.llmGeneratedAt ||
+    (Date.now() - Date.parse(prior.llmGeneratedAt)) > WORKSTYLE_STALE_MS;
+
+  let enriched;
+  let llmGeneratedAt = prior?.llmGeneratedAt ?? null;
+
+  if (llmStale) {
+    enriched = [];
+    for (const area of areas) {
+      const r = await extractWorkStyleForArea(area).catch(() => ({ did: [], judgments: [] }));
+      enriched.push({ area: area.area, promptCount: area.promptCount, firstDate: area.firstDate, lastDate: area.lastDate, did: r.did ?? [], judgments: r.judgments ?? [] });
+    }
+    llmGeneratedAt = new Date().toISOString();
+  } else {
+    enriched = areas.map((a) => {
+      const p = (prior.areas ?? []).find((x) => x.area === a.area);
+      return { area: a.area, promptCount: a.promptCount, firstDate: a.firstDate, lastDate: a.lastDate, did: p?.did ?? [], judgments: p?.judgments ?? [] };
+    });
+  }
+
+  await saveWorkStyleAnalysis({
+    generatedAt: new Date().toISOString(),
+    llmGeneratedAt,
+    windowDays,
+    areas: enriched,
+    droppedAreas
+  }, userId);
+
+  return { skipped: false, areaCount: enriched.length, llmRefreshed: llmStale };
 }

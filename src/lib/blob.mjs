@@ -65,6 +65,12 @@ export const WORKLOG_DAILY_PREFIX = "worklog/daily/";
 export const WORKLOG_PROFILE_PATHNAME = "worklog/profile/summary.json";
 
 /**
+ * Blob pathname for the prompt-based workstyle analysis (per-user).
+ * Written by the server collector; read by /api/profile.
+ */
+export const WORKSTYLE_ANALYSIS_PATHNAME = "worklog/workstyle/analysis.json";
+
+/**
  * Blob pathname for the original PDF plain text extracted at bootstrap time.
  * Used by the reconstruction fallback to regenerate bullets without
  * requiring the user to re-upload the PDF.
@@ -578,6 +584,24 @@ export async function saveWorklogProfile(data, userId = DEFAULT_USER_ID) {
  */
 export async function readWorklogProfile(userId = DEFAULT_USER_ID) {
   return readPrivateJsonBlob(pathForUser(WORKLOG_PROFILE_PATHNAME, userId), userId);
+}
+
+export async function saveWorkStyleAnalysis(data, userId = DEFAULT_USER_ID) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const pathname = pathForUser(WORKSTYLE_ANALYSIS_PATHNAME, userId);
+  const json = JSON.stringify(data, null, 2);
+  const result = await put(pathname, json, {
+    access: "private",
+    contentType: "application/json; charset=utf-8",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    ...(token ? { token } : {})
+  });
+  return { url: result.url };
+}
+
+export async function readWorkStyleAnalysis(userId = DEFAULT_USER_ID) {
+  return readPrivateJsonBlob(pathForUser(WORKSTYLE_ANALYSIS_PATHNAME, userId), userId);
 }
 
 /**

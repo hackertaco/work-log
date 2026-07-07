@@ -17,9 +17,9 @@ import {
   WORK_LOG_EVENTS
 } from "./lib/workLogEventBus.mjs";
 import { cookieAuth, resolveRequestUser } from "./middleware/auth.mjs";
-import { listWorklogDates, readWorklogDaily, readWorklogProfile } from "./lib/blob.mjs";
+import { listWorklogDates, readWorklogDaily, readWorklogProfile, readWorkStyleAnalysis } from "./lib/blob.mjs";
 import { buildProfileSummary, readProfileSummary } from "./lib/profile.mjs";
-import { runServerCollection } from "./lib/serverCollect.mjs";
+import { runServerCollection, runWorkStyleAnalysis } from "./lib/serverCollect.mjs";
 import { fileExists } from "./lib/utils.mjs";
 import { authRouter } from "./routes/auth.mjs";
 import { resumeRouter } from "./routes/resume.mjs";
@@ -71,6 +71,11 @@ export function createApp() {
     const dateParam = c.req.query("date");
     const dates = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? [dateParam] : undefined;
     const result = await runServerCollection({ userId: "default", dates });
+    const workStyle = await runWorkStyleAnalysis({
+      userId: "default",
+      force: c.req.query("forceLlm") === "1"
+    }).catch((err) => ({ skipped: true, reason: err.message ?? String(err) }));
+    result.workStyle = workStyle;
     return c.json(result);
   });
 
@@ -95,10 +100,15 @@ export function createApp() {
   app.get("/api/profile", async (c) => {
     const user = resolveRequestUser(c);
     const rawWindow = c.req.query("window");
-    const windowDays = rawWindow === "all" || !rawWindow
-      ? null
-      : Number(rawWindow);
-    return c.json(await readOrBuildProfile(windowDays, user.id));
+    const windowDays = rawWindow === "all" || !rawWindow ? null : Number(rawWindow);
+    const profile = await readOrBuildProfile(windowDays, user.id);
+    let workStyleAnalysis = null;
+    try {
+      workStyleAnalysis = await readWorkStyleAnalysis(user.id);
+    } catch (err) {
+      console.warn("[worklog] workstyle analysis read failed:", err.message ?? String(err));
+    }
+    return c.json({ ...profile, workStyleAnalysis });
   });
 
   app.post("/api/run-batch", async (c) => {

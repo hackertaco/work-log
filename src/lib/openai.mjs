@@ -155,7 +155,7 @@ export function buildSummaryPayload(input) {
   };
 }
 
-function extractOutputText(data) {
+export function extractOutputText(data) {
   const outputs = data.output || [];
   const texts = [];
   for (const item of outputs) {
