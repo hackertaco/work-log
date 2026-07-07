@@ -763,10 +763,14 @@ function SnapshotCard({ profile, profileWindow, onWindowChange }) {
                     <ul class="worklog-workstyle-judgments">
                       {a.judgments.map((j, k) => (
                         <li key={k}>
-                          <span class="worklog-workstyle-judgment">{j.text}</span>
                           {j.evidence ? (
-                            <span class="worklog-workstyle-evidence">근거: "{j.evidence}"</span>
-                          ) : null}
+                            <details class="worklog-workstyle-judgment-item">
+                              <summary class="worklog-workstyle-judgment">{j.text}</summary>
+                              <span class="worklog-workstyle-evidence">근거: "{j.evidence}"</span>
+                            </details>
+                          ) : (
+                            <span class="worklog-workstyle-judgment">{j.text}</span>
+                          )}
                         </li>
                       ))}
                     </ul>

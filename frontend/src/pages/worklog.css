@@ -1837,7 +1837,23 @@
 .worklog-workstyle-meta { color: var(--muted); font-size: 12px; }
 .worklog-workstyle-block { margin-top: 8px; }
 .worklog-workstyle-did { margin: 4px 0 0; color: var(--ink); font-size: 14px; }
-.worklog-workstyle-judgments { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 6px; }
+.worklog-workstyle-judgments { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 7px; }
+/* 근거는 기본으로 접어 화면을 가볍게 — 판단 문장(summary)만 보이고 클릭 시 펼침 */
+.worklog-workstyle-judgment-item > summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.worklog-workstyle-judgment-item > summary::-webkit-details-marker { display: none; }
+.worklog-workstyle-judgment-item > summary::before {
+  content: '▸';
+  color: var(--muted);
+  font-size: 11px;
+  margin-right: 6px;
+}
+.worklog-workstyle-judgment-item[open] > summary::before { content: '▾'; }
 .worklog-workstyle-judgment { display: block; color: var(--ink); font-size: 14px; line-height: 1.5; }
-.worklog-workstyle-evidence { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.worklog-workstyle-evidence { display: block; color: var(--muted); font-size: 12px; margin: 3px 0 0 17px; }
 .worklog-workstyle-range { margin: 8px 0 0; color: var(--muted); font-size: 11px; }
