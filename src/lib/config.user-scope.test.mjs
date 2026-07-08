@@ -69,6 +69,7 @@ test("loadConfig merges env user sources into effective config", async () => {
         includeSlack: true,
         includeSessionLogs: true,
         repoRoots: ["./alice-root"],
+        zeudeEmail: "alice@example.com",
         slack: { token: "alice-slack-token", userId: "U123", channelIds: ["C1", "C2"] }
       }
     }
@@ -81,6 +82,7 @@ test("loadConfig merges env user sources into effective config", async () => {
     assert.equal(config.slackToken, "alice-slack-token");
     assert.equal(config.slackUserId, "U123");
     assert.deepEqual(config.slackChannelIds, ["C1", "C2"]);
+    assert.equal(config.zeudeEmail, "alice@example.com");
     assert.ok(config.repoRoots[0].endsWith(path.join("work-log", "alice-root")));
   });
 

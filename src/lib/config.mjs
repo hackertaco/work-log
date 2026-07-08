@@ -56,7 +56,8 @@ export async function loadConfig(options = {}) {
     repoRoots: merged.repoRoots.map(resolveProjectPath),
     slackToken: merged.slackToken || process.env.SLACK_TOKEN || process.env.SLACK_USER_TOKEN || "",
     slackUserId: merged.slackUserId || process.env.SLACK_USER_ID || process.env.WORK_LOG_SLACK_USER_ID || "",
-    slackChannelIds: normalizeStringArray(merged.slackChannelIds ?? parseCsv(process.env.SLACK_CHANNEL_IDS || process.env.WORK_LOG_SLACK_CHANNEL_IDS || ""))
+    slackChannelIds: normalizeStringArray(merged.slackChannelIds ?? parseCsv(process.env.SLACK_CHANNEL_IDS || process.env.WORK_LOG_SLACK_CHANNEL_IDS || "")),
+    zeudeEmail: merged.zeudeEmail || process.env.WORK_LOG_ZEUDE_EMAIL || ""
   };
 }
 
@@ -118,6 +119,9 @@ function materializeUserOverrides(raw) {
   if (typeof slack.token === "string") overrides.slackToken = slack.token;
   if (typeof slack.userId === "string") overrides.slackUserId = slack.userId;
   if (Array.isArray(slack.channelIds)) overrides.slackChannelIds = slack.channelIds;
+
+  // Zeude(ClickHouse) 프롬프트를 유저별 이메일로 조회하기 위한 매핑
+  if (typeof sources.zeudeEmail === "string") overrides.zeudeEmail = sources.zeudeEmail;
 
   return overrides;
 }

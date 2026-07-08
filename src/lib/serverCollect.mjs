@@ -239,7 +239,10 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
   const url = process.env.CLICKHOUSE_URL;
   const user = process.env.CLICKHOUSE_USER;
   const password = process.env.CLICKHOUSE_PASSWORD;
-  const email = process.env.WORK_LOG_ZEUDE_EMAIL || "";
+  // 유저별 Zeude 이메일로 조회한다 (WORK_LOG_USERS_JSON 의 sources.zeudeEmail).
+  // config.zeudeEmail 은 loadConfig 안에서 WORK_LOG_ZEUDE_EMAIL 로 폴백된다.
+  const config = await loadConfig({ userId }).catch(() => null);
+  const email = config?.zeudeEmail || process.env.WORK_LOG_ZEUDE_EMAIL || "";
   if (!url || !user || !email) return [];
 
   const windowDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 30;

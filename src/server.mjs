@@ -17,6 +17,7 @@ import {
   WORK_LOG_EVENTS
 } from "./lib/workLogEventBus.mjs";
 import { cookieAuth, resolveRequestUser } from "./middleware/auth.mjs";
+import { getAuthUsers } from "./lib/authUsers.mjs";
 import { listWorklogDates, readWorklogDaily, readWorklogProfile, readWorkStyleAnalysis } from "./lib/blob.mjs";
 import { buildProfileSummary, readProfileSummary } from "./lib/profile.mjs";
 import { runServerCollection, runWorkStyleAnalysis } from "./lib/serverCollect.mjs";
@@ -70,13 +71,22 @@ export function createApp() {
     }
     const dateParam = c.req.query("date");
     const dates = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? [dateParam] : undefined;
-    const result = await runServerCollection({ userId: "default", dates });
-    const workStyle = await runWorkStyleAnalysis({
-      userId: "default",
-      force: c.req.query("forceLlm") === "1"
-    }).catch((err) => ({ skipped: true, reason: err.message ?? String(err) }));
-    result.workStyle = workStyle;
-    return c.json(result);
+    const force = c.req.query("forceLlm") === "1";
+
+    // 설정된 유저마다 각자 데이터로 수집한다. WORK_LOG_USERS_JSON 미설정(로컬
+    // 단일유저)이면 legacy "default" 네임스페이스로 폴백.
+    const configured = getAuthUsers().map((u) => u.id);
+    const userIds = configured.length ? configured : ["default"];
+
+    const perUser = [];
+    for (const userId of userIds) {
+      const collection = await runServerCollection({ userId, dates })
+        .catch((err) => ({ error: err.message ?? String(err) }));
+      const workStyle = await runWorkStyleAnalysis({ userId, force })
+        .catch((err) => ({ skipped: true, reason: err.message ?? String(err) }));
+      perUser.push({ userId, ...collection, workStyle });
+    }
+    return c.json({ users: userIds, results: perUser });
   });
 
   // ---------- Resume API routes (protected by cookieAuth above) ----------
