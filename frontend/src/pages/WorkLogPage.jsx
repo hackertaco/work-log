@@ -440,11 +440,7 @@ export function WorkLogPage() {
                   segments={breakdownSegments}
                   total={dayPayload.counts?.gitCommits || 0}
                 />
-                <SnapshotCard
-                  profile={profile}
-                  profileWindow={profileWindow}
-                  onWindowChange={setProfileWindow}
-                />
+                <SnapshotCard profile={profile} />
               </section>
 
               <div class="worklog-divider" />
@@ -660,82 +656,16 @@ function TodayBreakdownCard({ dayPayload, segments, total }) {
   );
 }
 
-function SnapshotCard({ profile, profileWindow, onWindowChange }) {
-  const resumeDraft = profile?.resumeDraft || { headline: '', summary: '', strengthLabels: [] };
-  const strengths = (profile?.strengths || []).slice(0, 3).map((item) => {
-    const copy = STRENGTH_COPY[item.label] || { label: item.label };
-    return copy.label;
-  });
-  const workStyle = (profile?.workStyle || []).slice(0, 3);
+function SnapshotCard({ profile }) {
+  // 이력서성 스냅샷 카드는 회사 동료와 공유하는 화면이라 노출하지 않는다.
+  // 공유해도 되는 "판단 기준"만 남긴다.
   const workStyleAnalysis = profile?.workStyleAnalysis || null;
   const principles = (workStyleAnalysis?.principles || []).filter((p) => p.title);
   const areas = (workStyleAnalysis?.areas || []).filter((a) => (a.judgments?.length || a.did?.length));
   const hasWorkStyle = principles.length || areas.length;
-  const strengthCards = (profile?.strengths || []).slice(0, 4).map((item) => {
-    const copy = STRENGTH_COPY[item.label] || { label: item.label, description: '' };
-    return { label: copy.label, description: copy.description || '', score: item.score };
-  });
 
   return (
     <article class="ds-card worklog-info-card worklog-insight-card">
-      <header class="worklog-snapshot-header">
-        <div class="worklog-snapshot-meta-row">
-          <p class="ds-kicker worklog-section-kicker">Current Snapshot</p>
-          <div class="worklog-toggle-group" role="tablist" aria-label="snapshot window">
-            {[
-              { id: '7', label: '최근 7일' },
-              { id: '30', label: '최근 30일' },
-              { id: 'all', label: '전체' },
-            ].map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                class={`worklog-toggle${profileWindow === item.id ? ' is-active' : ''}`}
-                onClick={() => onWindowChange(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <h3 class="worklog-card-title">이력서로 이어지는 현재 스냅샷</h3>
-        <p class="ds-panel-subtitle worklog-panel-subtitle">
-          {profile?.dayCount
-            ? `${profile.dayCount}일치 기록을 바탕으로 지금 이력서에 남을 핵심만 추렸습니다.`
-            : '아직 누적 스냅샷이 없습니다.'}
-        </p>
-      </header>
-
-      <div class="worklog-snapshot-grid">
-        <SnapshotSection title="요약 초안" items={[]} emptyText="">
-          {resumeDraft.headline || resumeDraft.summary ? (
-            <div class="worklog-resume-draft">
-              {resumeDraft.headline ? <p class="worklog-resume-draft-headline">{resumeDraft.headline}</p> : null}
-              {resumeDraft.summary ? <p class="worklog-resume-draft-body">{resumeDraft.summary}</p> : null}
-            </div>
-          ) : <p class="worklog-snapshot-empty">아직 요약 초안을 만들 데이터가 부족합니다.</p>}
-        </SnapshotSection>
-        <SnapshotSection title="주요 강점" items={[]} emptyText="">
-          {strengthCards.length ? (
-            <div class="worklog-strength-card-grid">
-              {strengthCards.map((item) => (
-                <article key={item.label} class="worklog-strength-card">
-                  <div class="worklog-strength-card-head">
-                    <p class="worklog-strength-card-title">{item.label}</p>
-                    <span class="worklog-strength-card-score">{item.score}</span>
-                  </div>
-                  {item.description ? (
-                    <p class="worklog-strength-card-copy">{item.description}</p>
-                  ) : null}
-                </article>
-              ))}
-            </div>
-          ) : <p class="worklog-snapshot-empty">아직 누적 강점이 없습니다.</p>}
-        </SnapshotSection>
-        <SnapshotSection title="강점 후보" items={resumeDraft.strengthLabels || []} emptyText="아직 강점 후보가 없습니다." />
-        <SnapshotSection title="이력서에 남는 작업 방식" items={workStyle} emptyText="아직 누적 작업 성향이 없습니다." tone="sentence" />
-      </div>
-
       {hasWorkStyle ? (
         <section class="worklog-workstyle">
           <h3 class="worklog-card-title">내가 일할 때 반복하는 판단 기준</h3>
@@ -802,7 +732,9 @@ function SnapshotCard({ profile, profileWindow, onWindowChange }) {
           </details>
           ) : null}
         </section>
-      ) : null}
+      ) : (
+        <p class="worklog-snapshot-empty">아직 판단 기준을 만들 기록이 부족합니다.</p>
+      )}
     </article>
   );
 }

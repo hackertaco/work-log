@@ -19,6 +19,9 @@ test("keeps per-area judgments as collapsible supporting evidence", () => {
   assert.ok(source.includes("꺼낸 판단"), "still renders per-area judgments as evidence");
 });
 
-test("keeps keyword workStyle as fallback when no analysis", () => {
-  assert.ok(source.includes("이력서에 남는 작업 방식"), "fallback keyword section retained");
+test("does not render the resume snapshot (shared with colleagues)", () => {
+  // 회사 동료와 공유하는 화면이라 이력서성 섹션은 노출하지 않는다.
+  assert.ok(!source.includes("이력서로 이어지는 현재 스냅샷"), "resume snapshot title removed");
+  assert.ok(!source.includes("이력서에 남는 작업 방식"), "resume-oriented keyword section removed");
+  assert.ok(!source.includes("요약 초안"), "resume draft section removed");
 });
