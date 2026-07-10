@@ -249,8 +249,12 @@ export function WorkLogPage() {
   const storyRepos = deriveStoryRepos(dayPayload);
   const companyProjects = dayPayload?.projectGroups?.company || [];
   const openSourceProjects = dayPayload?.projectGroups?.opensource || [];
-  const breakdownSegments = buildWorkEstimateSegments(dayPayload);
   const shareSentence = dayPayload?.highlights?.shareableSentence || buildShareSentence(dayPayload, leadStory);
+  // 세션(Claude/Codex 프롬프트) 중심 지표. 커밋 없는 날도 실제 작업이 드러난다.
+  const sessionAreas = dayPayload?.sessionAreas || [];
+  const sessionCount = dayPayload?.sessionCount ?? ((dayPayload?.counts?.claudeSessions || 0) + (dayPayload?.counts?.codexSessions || 0));
+  const hasSession = sessionCount > 0 && sessionAreas.length > 0;
+  const breakdownSegments = hasSession ? buildSessionSegments(dayPayload) : buildWorkEstimateSegments(dayPayload);
 
   function handleDateInput(event) {
     setDateInput(event.currentTarget.value);
@@ -364,14 +368,55 @@ export function WorkLogPage() {
           {!isBooting && dayPayload && !dayPayload.missing ? (
             <div class="worklog-view">
               <section class="worklog-stat-bar">
-                <StatCard label="총 커밋" value={dayPayload.counts?.gitCommits || 0} primary />
-                <StatCard label="회사" value={dayPayload.counts?.companyCommits || 0} />
-                <StatCard label="오픈소스" value={dayPayload.counts?.openSourceCommits || 0} />
-                <StatCard label="기준 날짜" value={dayPayload.date} />
+                {hasSession ? (
+                  <>
+                    <StatCard label="세션" value={sessionCount} primary />
+                    <StatCard label="작업 영역" value={sessionAreas.length} />
+                    <StatCard label="커밋" value={dayPayload.counts?.gitCommits || 0} />
+                    <StatCard label="기준 날짜" value={dayPayload.date} />
+                  </>
+                ) : (
+                  <>
+                    <StatCard label="총 커밋" value={dayPayload.counts?.gitCommits || 0} primary />
+                    <StatCard label="회사" value={dayPayload.counts?.companyCommits || 0} />
+                    <StatCard label="오픈소스" value={dayPayload.counts?.openSourceCommits || 0} />
+                    <StatCard label="기준 날짜" value={dayPayload.date} />
+                  </>
+                )}
               </section>
 
               <div class="worklog-divider" />
 
+              {hasSession ? (
+                <section class="worklog-story-layout">
+                  <article class="worklog-lead-story">
+                    <div class="worklog-story-meta">
+                      <p class="ds-kicker worklog-section-kicker">오늘 가장 많이</p>
+                      <span class="worklog-story-repo-text">세션 {sessionCount}개 · 영역 {sessionAreas.length}개</span>
+                    </div>
+                    <h2 class="worklog-story-title">{sessionAreas[0].area}</h2>
+                    <p class="worklog-lead-deck">
+                      {shareSentence || `이 영역에서 세션 ${sessionAreas[0].count}개를 남겼습니다.`}
+                    </p>
+                  </article>
+
+                  <div class="worklog-story-column">
+                    {sessionAreas.slice(1).length ? sessionAreas.slice(1).map((area, index) => (
+                      <article key={area.area} class="worklog-compact-story">
+                        <div class="worklog-story-meta">
+                          <p class="ds-kicker worklog-section-kicker">영역 {index + 2}</p>
+                          <span class="worklog-story-repo-text">{area.area}</span>
+                        </div>
+                        <h3 class="worklog-compact-title">세션 {area.count}개</h3>
+                      </article>
+                    )) : (
+                      <article class="worklog-compact-story worklog-compact-story-empty">
+                        <p>다른 영역 없음</p>
+                      </article>
+                    )}
+                  </div>
+                </section>
+              ) : (
               <section class="worklog-story-layout">
                 {leadStory ? (
                   <article class="worklog-lead-story">
@@ -418,6 +463,7 @@ export function WorkLogPage() {
                   )}
                 </div>
               </section>
+              )}
 
               <div class="worklog-divider" />
 
@@ -438,7 +484,8 @@ export function WorkLogPage() {
                 <TodayBreakdownCard
                   dayPayload={dayPayload}
                   segments={breakdownSegments}
-                  total={dayPayload.counts?.gitCommits || 0}
+                  total={hasSession ? sessionCount : (dayPayload.counts?.gitCommits || 0)}
+                  unit={hasSession ? '세션' : 'commits'}
                 />
                 <SnapshotCard profile={profile} />
               </section>
@@ -617,17 +664,20 @@ function AIJudgmentCard({ sentence, outcomes, whyItMatters, keyChanges, aiReview
   );
 }
 
-function TodayBreakdownCard({ dayPayload, segments, total }) {
+function TodayBreakdownCard({ dayPayload, segments, total, unit = 'commits' }) {
   const gradient = segments.length
     ? `conic-gradient(${segments.map((segment) => `${segment.color} ${segment.start}% ${segment.end}%`).join(', ')})`
     : 'conic-gradient(#e5e7eb 0% 100%)';
+  const isSession = unit === '세션';
 
   return (
     <article class="ds-card worklog-info-card worklog-insight-card">
       <CardHeader
         kicker="Work Share Estimate"
         title="작업 비중 추정"
-        subtitle="커밋 수와 대표 스토리를 함께 반영해 오늘의 분포를 요약합니다."
+        subtitle={isSession
+          ? 'Claude·Codex 세션을 작업 영역별로 나눠 오늘의 분포를 요약합니다.'
+          : '커밋 수와 대표 스토리를 함께 반영해 오늘의 분포를 요약합니다.'}
       />
 
       <div class="worklog-breakdown-layout">
@@ -635,7 +685,7 @@ function TodayBreakdownCard({ dayPayload, segments, total }) {
           <div class="worklog-donut" style={{ background: gradient }}>
             <div class="worklog-donut-hole">
               <strong>{total}</strong>
-              <span>commits</span>
+              <span>{unit}</span>
             </div>
           </div>
         </div>
@@ -647,13 +697,36 @@ function TodayBreakdownCard({ dayPayload, segments, total }) {
                 <span class="worklog-breakdown-dot" style={{ background: segment.color }} />
                 <strong>{segment.label}</strong>
               </div>
-              <p>{segment.count} commits · {segment.percent}%</p>
+              <p>{segment.count} {unit} · {segment.percent}%</p>
             </div>
           ))}
         </div>
       </div>
     </article>
   );
+}
+
+const SESSION_AREA_COLORS = ['#334155', '#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#a855f7'];
+
+// 그날 세션 영역 분포를 도넛 세그먼트로. buildWorkEstimateSegments 와 동일한 shape.
+function buildSessionSegments(dayPayload) {
+  const areas = (dayPayload?.sessionAreas || []).slice(0, 7);
+  const total = areas.reduce((sum, a) => sum + (a.count || 0), 0);
+  if (!total) return [];
+  let acc = 0;
+  return areas.map((a, i) => {
+    const share = (a.count / total) * 100;
+    const start = acc;
+    acc += share;
+    return {
+      label: a.area,
+      count: a.count,
+      percent: Math.round(share),
+      color: SESSION_AREA_COLORS[i % SESSION_AREA_COLORS.length],
+      start,
+      end: acc,
+    };
+  });
 }
 
 function SnapshotCard({ profile }) {

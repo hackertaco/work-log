@@ -13,7 +13,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { collectGithubCommits, collectZeudePrompts, seoulDate } from "./serverCollect.mjs";
+import { collectGithubCommits, collectZeudePrompts, sessionAreasFromPrompts, seoulDate } from "./serverCollect.mjs";
+
+test("sessionAreasFromPrompts groups by repo (last path segment), count desc", () => {
+  const areas = sessionAreasFromPrompts([
+    { projectPath: "/Users/x/company-code/work-log" },
+    { projectPath: "/Users/x/company-code/work-log" },
+    { projectPath: "/Users/x/company-code/dt-frontend" },
+    { projectPath: "" }
+  ]);
+  assert.deepEqual(areas, [
+    { area: "work-log", count: 2 },
+    { area: "dt-frontend", count: 1 },
+    { area: "unknown", count: 1 }
+  ]);
+});
+
+test("sessionAreasFromPrompts empty input → []", () => {
+  assert.deepEqual(sessionAreasFromPrompts([]), []);
+});
 
 test("seoulDate formats as YYYY-MM-DD", () => {
   assert.match(seoulDate(), /^\d{4}-\d{2}-\d{2}$/);
@@ -88,8 +106,8 @@ test("collectZeudePrompts maps rows and passes the KST date window params", asyn
     return new Response(
       JSON.stringify({
         data: [
-          { source: "claude", text: "work-log 서버 수집기 만들어줘" },
-          { source: "codex", text: "예약 대시보드 버그 고쳐줘" }
+          { source: "claude", text: "work-log 서버 수집기 만들어줘", project_path: "/x/work-log" },
+          { source: "codex", text: "예약 대시보드 버그 고쳐줘", project_path: "/x/dt-frontend" }
         ]
       }),
       { status: 200 }
@@ -99,8 +117,8 @@ test("collectZeudePrompts maps rows and passes the KST date window params", asyn
   const prompts = await collectZeudePrompts("2026-07-02", {}, fetchImpl);
 
   assert.deepEqual(prompts, [
-    { source: "claude", text: "work-log 서버 수집기 만들어줘" },
-    { source: "codex", text: "예약 대시보드 버그 고쳐줘" }
+    { source: "claude", text: "work-log 서버 수집기 만들어줘", projectPath: "/x/work-log" },
+    { source: "codex", text: "예약 대시보드 버그 고쳐줘", projectPath: "/x/dt-frontend" }
   ]);
   assert.ok(capturedUrl.includes("param_email=seungah.jung%40tgsociety.co.kr"));
   assert.ok(capturedUrl.includes("param_date=2026-07-02"));

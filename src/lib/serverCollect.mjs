@@ -97,6 +97,9 @@ export async function collectServerDay(date, { userId = "default" } = {}) {
     prBranchSignals
   });
   summary.collector = "server";
+  // 그날 세션(프롬프트)을 영역별로 집계해 세션 중심 UI(카드·비중 차트)의 근거로 저장한다.
+  summary.sessionAreas = sessionAreasFromPrompts(prompts);
+  summary.sessionCount = prompts.length;
 
   await saveWorklogDaily(date, summary, userId);
 
@@ -196,7 +199,7 @@ export async function collectZeudePrompts(date, config = {}, fetchImpl = fetch) 
 
   // ai_prompts 는 MergeTree 라 PATCH 업데이트가 중복 행으로 쌓인다 — prompt_id 로 dedupe
   const query = `
-    SELECT source, argMax(prompt_text, timestamp) AS text
+    SELECT source, argMax(prompt_text, timestamp) AS text, argMax(project_path, timestamp) AS project_path
     FROM ai_prompts
     WHERE user_email = {email:String}
       AND timestamp >= toDateTime({date:String}) - INTERVAL 9 HOUR
@@ -222,8 +225,30 @@ export async function collectZeudePrompts(date, config = {}, fetchImpl = fetch) 
   const body = await res.json();
   return (body.data ?? []).map((row) => ({
     source: row.source === "codex" ? "codex" : "claude",
-    text: String(row.text ?? "").slice(0, 300)
+    text: String(row.text ?? "").slice(0, 300),
+    projectPath: String(row.project_path ?? "")
   }));
+}
+
+/**
+ * 그날 프롬프트를 작업 영역(레포)별로 집계한다. 순수 함수.
+ * @param {Array<{projectPath:string}>} prompts
+ * @returns {Array<{area:string, count:number}>} count 내림차순
+ */
+export function sessionAreasFromPrompts(prompts) {
+  const map = new Map();
+  for (const p of Array.isArray(prompts) ? prompts : []) {
+    const area = areaKeyFromPath(p?.projectPath);
+    map.set(area, (map.get(area) || 0) + 1);
+  }
+  return [...map.entries()]
+    .map(([area, count]) => ({ area, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+function areaKeyFromPath(projectPath) {
+  const segments = String(projectPath ?? "").split("/").map((s) => s.trim()).filter(Boolean);
+  return segments.length ? segments[segments.length - 1] : "unknown";
 }
 
 /**
