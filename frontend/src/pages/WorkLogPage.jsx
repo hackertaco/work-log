@@ -387,85 +387,57 @@ export function WorkLogPage() {
 
               <div class="worklog-divider" />
 
-              {hasSession ? (
-                <section class="worklog-story-layout">
-                  <article class="worklog-lead-story">
-                    <div class="worklog-story-meta">
-                      <p class="ds-kicker worklog-section-kicker">오늘 가장 많이</p>
-                      <span class="worklog-story-repo-text">세션 {sessionCount}개 · 영역 {sessionAreas.length}개</span>
-                    </div>
-                    <h2 class="worklog-story-title">{sessionAreas[0].area}</h2>
-                    <p class="worklog-lead-deck">
-                      {shareSentence || `이 영역에서 세션 ${sessionAreas[0].count}개를 남겼습니다.`}
-                    </p>
-                  </article>
-
-                  <div class="worklog-story-column">
-                    {sessionAreas.slice(1).length ? sessionAreas.slice(1).map((area, index) => (
-                      <article key={area.area} class="worklog-compact-story">
+              {/* 커밋 기반 날에는 git 스토리를 먼저 보여준다. 세션 기반 날은
+                  "오늘의 작업과 판단"(한 일)이 곧바로 주인공이 되고, 영역 분포는
+                  아래 "작업 비중" 도넛이 담당한다 — 갯수만 있는 카드는 없앤다. */}
+              {!hasSession && (leadStory || secondaryStories.length) ? (
+                <>
+                  <section class="worklog-story-layout">
+                    {leadStory ? (
+                      <article class="worklog-lead-story">
                         <div class="worklog-story-meta">
-                          <p class="ds-kicker worklog-section-kicker">영역 {index + 2}</p>
-                          <span class="worklog-story-repo-text">{area.area}</span>
+                          <p class="ds-kicker worklog-section-kicker">Lead Story</p>
+                          <span class="worklog-story-repo-text">{leadStory.repo || storyRepos[0] || 'repo 정보 없음'}</span>
                         </div>
-                        <h3 class="worklog-compact-title">세션 {area.count}개</h3>
+                        <h2 class="worklog-story-title">{leadStory.outcome}</h2>
+                        <p class="worklog-lead-deck">
+                          {leadStory.impact || leadStory.why || leadStory.keyChange || '오늘의 핵심 변화가 아직 정리되지 않았습니다.'}
+                        </p>
+                        {leadStory.decision ? (
+                          <div class="worklog-lead-aside">
+                            <span class="worklog-story-label">Judgment</span>
+                            <p>{leadStory.decision}</p>
+                          </div>
+                        ) : null}
+                        <div class="worklog-lead-notes">
+                          <LeadStoryFact label="Key change" value={leadStory.keyChange || '없음'} />
+                          <LeadStoryFact label="Why it matters" value={leadStory.why || '없음'} />
+                        </div>
                       </article>
-                    )) : (
-                      <article class="worklog-compact-story worklog-compact-story-empty">
-                        <p>다른 영역 없음</p>
-                      </article>
-                    )}
-                  </div>
-                </section>
-              ) : (
-              <section class="worklog-story-layout">
-                {leadStory ? (
-                  <article class="worklog-lead-story">
-                    <div class="worklog-story-meta">
-                      <p class="ds-kicker worklog-section-kicker">Lead Story</p>
-                      <span class="worklog-story-repo-text">{leadStory.repo || storyRepos[0] || 'repo 정보 없음'}</span>
-                    </div>
-                    <h2 class="worklog-story-title">{leadStory.outcome}</h2>
-                    <p class="worklog-lead-deck">
-                      {leadStory.impact || leadStory.why || leadStory.keyChange || '오늘의 핵심 변화가 아직 정리되지 않았습니다.'}
-                    </p>
-                    {leadStory.decision ? (
-                      <div class="worklog-lead-aside">
-                        <span class="worklog-story-label">Judgment</span>
-                        <p>{leadStory.decision}</p>
-                      </div>
                     ) : null}
-                    <div class="worklog-lead-notes">
-                      <LeadStoryFact label="Key change" value={leadStory.keyChange || '없음'} />
-                      <LeadStoryFact label="Why it matters" value={leadStory.why || '없음'} />
+
+                    <div class="worklog-story-column">
+                      {secondaryStories.length ? secondaryStories.map((story, index) => (
+                        <article key={`${story.outcome}-${index}`} class="worklog-compact-story">
+                          <div class="worklog-story-meta">
+                            <p class="ds-kicker worklog-section-kicker">Story {index + 2}</p>
+                            <span class="worklog-story-repo-text">{story.repo || storyRepos[index + 1] || 'repo 정보 없음'}</span>
+                          </div>
+                          <h3 class="worklog-compact-title">{story.outcome}</h3>
+                          <div class="worklog-story-grid worklog-story-grid--compact">
+                            <StoryLine label="Key change" value={story.keyChange || '없음'} compact />
+                            <StoryLine label="Impact" value={story.impact || '없음'} compact />
+                            <StoryLine label="Why it matters" value={story.why || '없음'} compact />
+                            {story.decision ? <StoryLine label="Judgment" value={story.decision} compact /> : null}
+                          </div>
+                        </article>
+                      )) : null}
                     </div>
-                  </article>
-                ) : null}
+                  </section>
 
-                <div class="worklog-story-column">
-                  {secondaryStories.length ? secondaryStories.map((story, index) => (
-                    <article key={`${story.outcome}-${index}`} class="worklog-compact-story">
-                      <div class="worklog-story-meta">
-                        <p class="ds-kicker worklog-section-kicker">Story {index + 2}</p>
-                        <span class="worklog-story-repo-text">{story.repo || storyRepos[index + 1] || 'repo 정보 없음'}</span>
-                      </div>
-                      <h3 class="worklog-compact-title">{story.outcome}</h3>
-                      <div class="worklog-story-grid worklog-story-grid--compact">
-                        <StoryLine label="Key change" value={story.keyChange || '없음'} compact />
-                        <StoryLine label="Impact" value={story.impact || '없음'} compact />
-                        <StoryLine label="Why it matters" value={story.why || '없음'} compact />
-                        {story.decision ? <StoryLine label="Judgment" value={story.decision} compact /> : null}
-                      </div>
-                    </article>
-                  )) : (
-                    <article class="worklog-compact-story worklog-compact-story-empty">
-                      <p>추가 story 없음</p>
-                    </article>
-                  )}
-                </div>
-              </section>
-              )}
-
-              <div class="worklog-divider" />
+                  <div class="worklog-divider" />
+                </>
+              ) : null}
 
               <section class="worklog-notes-layout worklog-notes-layout--feature">
                 <AIJudgmentCard
