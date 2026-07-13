@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { groupWorkAreas } from "./workAreaGrouping.mjs";
+import { groupWorkAreas, areaKey } from "./workAreaGrouping.mjs";
+
+test("areaKey resolves the project root, not the working subdir", () => {
+  // company-code/opensource 마커 다음 세그먼트 = 진짜 레포
+  assert.equal(areaKey("/Users/x/Documents/company-code/driving-teacher-knowledge-base/graph-v2"), "driving-teacher-knowledge-base");
+  assert.equal(areaKey("/Users/x/Documents/company-code/driving-teacher-knowledge-base/raw/notion_sync"), "driving-teacher-knowledge-base");
+  assert.equal(areaKey("/Users/x/Documents/opensource/kakao-novel-generator/web/output/emotion-arc-15u-llm"), "kakao-novel-generator");
+  // Codex/<날짜>/<프로젝트>
+  assert.equal(areaKey("/Users/x/Documents/Codex/2026-07-12/koreans-love-stock-with-tests-md/work"), "koreans-love-stock-with-tests-md");
+  assert.equal(areaKey("/Users/x/Documents/Codex/2026-07-07/pdf-plugin/outputs/deck"), "pdf-plugin");
+  // 마커 없으면 마지막 세그먼트, 파일이면 상위 폴더
+  assert.equal(areaKey("/Users/x/Documents/study"), "study");
+  assert.equal(areaKey("/Users/x/proj/README.md"), "proj");
+  assert.equal(areaKey(""), "unknown");
+});
 
 const P = (projectPath, text, date) => ({ projectPath, text, date, source: "claude" });
 

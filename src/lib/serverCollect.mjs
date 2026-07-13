@@ -27,7 +27,7 @@ import { readWorklogDaily, saveWorklogDaily, saveWorklogProfile, saveWorkStyleAn
 import { rebuildProfileFromBlob } from "./profile.mjs";
 import { detectPrBranchMentions } from "./resumePrBranchParser.mjs";
 import { collectSlackContexts } from "./slack.mjs";
-import { groupWorkAreas } from "./workAreaGrouping.mjs";
+import { groupWorkAreas, areaKey } from "./workAreaGrouping.mjs";
 import { extractWorkStyleForArea, synthesizeWorkStylePrinciples } from "./workStyleExtract.mjs";
 
 /** 오늘 날짜 (KST) — 서버는 UTC 이므로 명시적으로 변환한다. */
@@ -238,17 +238,12 @@ export async function collectZeudePrompts(date, config = {}, fetchImpl = fetch) 
 export function sessionAreasFromPrompts(prompts) {
   const map = new Map();
   for (const p of Array.isArray(prompts) ? prompts : []) {
-    const area = areaKeyFromPath(p?.projectPath);
+    const area = areaKey(p?.projectPath);
     map.set(area, (map.get(area) || 0) + 1);
   }
   return [...map.entries()]
     .map(([area, count]) => ({ area, count }))
     .sort((a, b) => b.count - a.count);
-}
-
-function areaKeyFromPath(projectPath) {
-  const segments = String(projectPath ?? "").split("/").map((s) => s.trim()).filter(Boolean);
-  return segments.length ? segments[segments.length - 1] : "unknown";
 }
 
 /**
