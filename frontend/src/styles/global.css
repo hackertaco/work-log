@@ -5,14 +5,17 @@
   --surface: #f9fafb;
   --panel: rgba(255, 255, 255, 0.94);
   --panel-2: rgba(248, 250, 253, 0.88);
-  --ink: #1e293b;
+  --ink: #1a1815;
+  --ink-body: #33302b;
   --ink-strong: #0f172a;
-  --muted: #64748b;
+  --muted: #8a8378;
   --line: rgba(15, 23, 42, 0.08);
   --line-strong: rgba(15, 23, 42, 0.14);
-  --accent: #1e40af;
-  --accent-subtle: #6366f1;
-  --accent-muted: rgba(99, 102, 241, 0.1);
+  --rule: rgba(26, 24, 21, 0.12);
+  --rule-soft: rgba(26, 24, 21, 0.07);
+  --accent: #1a1815;
+  --accent-subtle: #33302b;
+  --accent-muted: rgba(26, 24, 21, 0.08);
   --shadow: 0 16px 36px rgba(15, 23, 42, 0.08);
   --shadow-sm: 0 4px 12px rgba(15, 23, 42, 0.06);
 
@@ -36,11 +39,11 @@
   /* ─── shadcn(new-york) 정렬 토큰 — 폼 컨트롤·버튼·팝오버 공통 스펙 ───
      기존 팔레트를 shadcn 의미 체계로 매핑한다. --primary 는 기존 --accent 를
      그대로 쓰고, 액센트는 이 하나만 사용한다. */
-  --primary: #1e40af;
+  --primary: #1a1815;
   --primary-foreground: #ffffff;
   --border-input: #e2e8f0;            /* shadcn --input (slate-200) */
-  --ring: #1e40af;
-  --focus-ring: 0 0 0 3px rgba(30, 64, 175, 0.22);  /* focus-visible: ring/50, 3px */
+  --ring: #1a1815;
+  --focus-ring: 0 0 0 3px rgba(26, 24, 21, 0.18);  /* focus-visible: ring/50, 3px */
   --radius-field: 8px;                /* shadcn rounded-md — 버튼·인풋·셀렉트 */
   --radius-popover: 10px;             /* shadcn rounded-lg — 메뉴·팝오버 */
   --radius-card: 14px;                /* shadcn rounded-xl — 카드 */
@@ -48,6 +51,7 @@
   --shadow-popover: 0 4px 16px rgba(15, 23, 42, 0.10);
 
   --font-display: "Pretendard", "SUIT Variable", "Noto Sans KR", sans-serif;
+  --font-serif: "Noto Serif KR", serif;
 }
 
 * {
@@ -60,8 +64,8 @@ body {
   font-family: "Pretendard", "SUIT Variable", "Noto Sans KR", -apple-system,
     BlinkMacSystemFont, sans-serif;
   background:
-    linear-gradient(rgba(30, 41, 59, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(30, 41, 59, 0.025) 1px, transparent 1px),
+    linear-gradient(rgba(30, 41, 59, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 41, 59, 0.018) 1px, transparent 1px),
     linear-gradient(180deg, #faf8f5 0%, #f5f0eb 100%);
   background-size: 24px 24px, 24px 24px, auto;
   min-height: 100vh;
