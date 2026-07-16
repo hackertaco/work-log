@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { useAuthSession } from '../hooks/useAuthSession.js';
 import './worklog.css';
 
+const RESUME_ENABLED = import.meta.env.VITE_ENABLE_RESUME === '1';
+
 const SEOUL_DATE = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Seoul',
   year: 'numeric',
@@ -342,7 +344,9 @@ export function WorkLogPage() {
               <button class="worklog-primary-action" type="button" onClick={handleRunBatch} disabled={isRunningBatch}>
                 {isRunningBatch ? 'Generating...' : 'Generate Record'}
               </button>
-              <a class="worklog-back-link worklog-back-link--secondary" href="/resume">Living Resume</a>
+              {RESUME_ENABLED ? (
+                <a class="worklog-back-link worklog-back-link--secondary" href="/resume">Living Resume</a>
+              ) : null}
             </div>
           </div>
         </section>

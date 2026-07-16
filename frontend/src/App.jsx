@@ -5,6 +5,8 @@ import { ResumeChatPage } from './pages/ResumeChatPage.jsx';
 import { ResumePage } from './pages/ResumePage.jsx';
 import { WorkLogPage } from './pages/WorkLogPage.jsx';
 
+const RESUME_ENABLED = import.meta.env.VITE_ENABLE_RESUME === '1';
+
 /**
  * Minimal client-side router.
  * Reads window.location.pathname and renders the matching page.
@@ -37,11 +39,11 @@ export function App() {
     return <LoginPage />;
   }
 
-  if (pathname === '/resume') {
+  if (RESUME_ENABLED && pathname === '/resume') {
     return <ResumePage />;
   }
 
-  if (pathname === '/resume/chat') {
+  if (RESUME_ENABLED && pathname === '/resume/chat') {
     return <ResumeChatPage />;
   }
 
