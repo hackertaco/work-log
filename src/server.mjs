@@ -34,6 +34,11 @@ const __dirname = path.dirname(__filename);
 // this path is only used by `npm run serve` and the Vercel serverless function.
 const publicDir = path.resolve(__dirname, "../dist");
 
+// (userId:date) → last run epoch ms. Guards /api/run-batch from rapid re-runs
+// (client throttle is bypassable). Warm serverless instances retain this.
+const RUN_BATCH_MIN_INTERVAL_MS = 30_000;
+const lastRunBatchAt = new Map();
+
 export function createApp() {
   const app = new Hono();
 
@@ -135,19 +140,28 @@ export function createApp() {
   });
 
   app.post("/api/run-batch", async (c) => {
-    // 배치는 로컬 레포·세션 로그·셸 히스토리를 스캔하고 data/vault 디렉토리에
-    // 기록하는 로컬 전용 작업이다. Vercel 서버리스에는 스캔할 소스도 없고
-    // 파일시스템도 읽기 전용이라 (ENOENT mkdir /var/task/vault) 실행 불가.
-    if (process.env.VERCEL) {
-      return c.json(
-        { error: "업무로그 생성은 로컬 환경에서만 실행할 수 있습니다. 이 서버에는 스캔할 저장소와 세션 기록이 없습니다." },
-        501
-      );
-    }
     const user = resolveRequestUser(c);
     const body = await c.req.json().catch(() => ({}));
-    const result = await runDailyBatch(body?.date, { userId: user.id });
-    return c.json(result);
+    const date = body?.date;
+
+    const key = `${user.id}:${date ?? "today"}`;
+    const now = Date.now();
+    const prev = lastRunBatchAt.get(key) ?? 0;
+    if (now - prev < RUN_BATCH_MIN_INTERVAL_MS) {
+      return c.json({ error: "너무 잦은 요청입니다. 잠시 후 다시 시도하세요." }, 429);
+    }
+    lastRunBatchAt.set(key, now);
+
+    if (process.env.VERCEL) {
+      // Deployed (v1): no local repos/fs. Reuse the cron's server collection for THIS user.
+      await runServerCollection({ userId: user.id, dates: date ? [date] : undefined });
+      const summary = await readDailySummary(date, user.id);
+      return c.json(stripResumeFields(summary));
+    }
+
+    // Local (v2): rich local batch (scans repos, shell history, sessions).
+    const result = await runDailyBatch(date, { userId: user.id });
+    return c.json(stripResumeFields(result));
   });
 
   // ── Work-log event trigger (Sub-AC 2-1) ───────────────────────────────────
