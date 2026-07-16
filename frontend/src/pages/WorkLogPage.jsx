@@ -376,17 +376,15 @@ export function WorkLogPage() {
               <section class="worklog-stat-bar">
                 {hasSession ? (
                   <>
-                    <StatCard label="세션" value={sessionCount} primary />
+                    <StatCard label="세션" value={sessionCount} />
                     <StatCard label="작업 영역" value={sessionAreas.length} />
                     <StatCard label="커밋" value={dayPayload.counts?.gitCommits || 0} />
-                    <StatCard label="기준 날짜" value={dayPayload.date} />
                   </>
                 ) : (
                   <>
-                    <StatCard label="총 커밋" value={dayPayload.counts?.gitCommits || 0} primary />
+                    <StatCard label="총 커밋" value={dayPayload.counts?.gitCommits || 0} />
                     <StatCard label="회사" value={dayPayload.counts?.companyCommits || 0} />
                     <StatCard label="오픈소스" value={dayPayload.counts?.openSourceCommits || 0} />
-                    <StatCard label="기준 날짜" value={dayPayload.date} />
                   </>
                 )}
               </section>
@@ -459,12 +457,22 @@ export function WorkLogPage() {
               <div class="worklog-divider" />
 
               <section class="worklog-insight-layout">
-                <TodayBreakdownCard
-                  dayPayload={dayPayload}
-                  segments={breakdownSegments}
-                  total={hasSession ? sessionCount : (dayPayload.counts?.gitCommits || 0)}
-                  unit={hasSession ? '세션' : 'commits'}
-                />
+                <section class="worklog-areas">
+                  <div class="worklog-sec-head">
+                    <h2>무엇에 시간을 썼나</h2>
+                    <span class="worklog-sec-count">세션 기준</span>
+                  </div>
+                  {(sessionAreas.length ? sessionAreas : breakdownSegments.map((s) => ({ area: s.label, count: s.count }))).map((a, index, list) => {
+                    const max = list[0]?.count || 1;
+                    return (
+                      <div class="worklog-area-row" key={a.area}>
+                        <span class="worklog-area-name">{a.area}</span>
+                        <span class="worklog-area-bar"><i style={{ width: `${Math.round((a.count / max) * 100)}%` }} /></span>
+                        <span class="worklog-area-count">{a.count}</span>
+                      </div>
+                    );
+                  })}
+                </section>
                 <SnapshotCard profile={profile} />
               </section>
 

@@ -38,7 +38,7 @@
   z-index: 10;
   overflow: visible;
   background: transparent;
-  border-bottom: 1px solid rgba(30, 41, 59, 0.08);
+  border-bottom: 1.5px solid var(--ink);
 }
 
 .worklog-hero::after {
@@ -68,30 +68,42 @@
 
 .worklog-eyebrow {
   font-size: 11px;
-  letter-spacing: 0.18em;
-  color: #3d56d7;
-  font-weight: 800;
+  letter-spacing: 0.22em;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .worklog-hero h1 {
   margin: 0;
-  font-family: inherit;
+  font-family: var(--font-serif);
+  color: var(--ink);
   font-size: clamp(38px, 4.8vw, 64px);
-  font-weight: 900;
-  line-height: 1.02;
-  letter-spacing: -0.045em;
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
   max-width: 6.5em;
   word-break: keep-all;
   line-break: strict;
   text-wrap: pretty;
 }
 
+/* Editorial serif figures/titles across the day view */
+.worklog-story-title,
+.worklog-compact-title,
+.worklog-stat-value {
+  font-family: var(--font-serif);
+  color: var(--ink);
+}
+
 .worklog-lede {
   max-width: 52ch;
   margin: 0;
-  color: #475467;
-  font-size: 16px;
-  line-height: 1.8;
+  font-family: var(--font-serif);
+  font-weight: 500;
+  color: var(--ink);
+  font-size: 21px;
+  line-height: 1.62;
   text-wrap: pretty;
 }
 
@@ -179,26 +191,25 @@
   gap: 8px;
   width: 100%;
   min-height: 40px;
-  padding: 0 16px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-field);
-  color: var(--primary-foreground);
-  background: var(--primary);
+  padding: 11px 22px;
+  border: 1.5px solid var(--ink);
+  border-radius: 3px;
+  color: #f7f3ee;
+  background: var(--ink);
   font: inherit;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.4;
   cursor: pointer;
-  box-shadow: var(--shadow-xs);
-  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
 }
 
 .worklog-primary-action:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 90%, #fff);
+  background: color-mix(in srgb, var(--ink) 88%, #fff);
 }
 
 .worklog-primary-action:disabled {
-  opacity: 0.5;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
@@ -393,17 +404,26 @@
 
 .worklog-stat-bar {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
   padding: 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  background: none;
+  box-shadow: none;
 }
 
 .worklog-stat-card {
-  padding: 16px 18px;
-  border-radius: 20px;
-  border: 1px solid rgba(72, 92, 198, 0.08);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 8px 20px rgba(24, 44, 120, 0.04);
+  padding: 20px 4px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.worklog-stat-card + .worklog-stat-card {
+  border-left: 1px solid var(--rule-soft);
+  padding-left: 22px;
 }
 
 .worklog-info-card {
@@ -414,30 +434,84 @@
   box-shadow: 0 14px 28px rgba(24, 44, 120, 0.05);
 }
 
-.worklog-stat-card.is-primary {
-  background: rgba(255, 255, 255, 0.85);
-  border-left: 3px solid var(--accent);
-}
-
-.worklog-stat-card.is-primary .worklog-stat-value {
-  color: var(--accent);
-}
-
 .worklog-stat-label {
-  color: #7a88ad;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
 .worklog-stat-value {
-  margin: 6px 0 0;
-  font-size: clamp(26px, 2.5vw, 36px);
-  line-height: 0.98;
-  font-weight: 750;
+  margin: 8px 0 0;
+  font-size: 40px;
+  line-height: 1;
+  font-weight: 700;
   white-space: nowrap;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Section head + ink area bars (replaces the donut breakdown) */
+.worklog-sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ink);
+  margin-top: 40px;
+}
+
+.worklog-sec-head h2 {
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: 22px;
+  color: var(--ink);
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.worklog-sec-count {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.worklog-areas {
+  margin-top: 4px;
+}
+
+.worklog-area-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) 1fr 44px;
+  align-items: center;
+  gap: 16px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.worklog-area-name {
+  font-weight: 600;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.worklog-area-bar {
+  height: 6px;
+  background: rgba(26, 24, 21, 0.08);
+  position: relative;
+}
+
+.worklog-area-bar > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--ink);
+}
+
+.worklog-area-count {
+  text-align: right;
+  font-size: 13px;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -680,8 +754,8 @@
 .worklog-lead-story {
   padding: 26px;
   border-radius: 24px;
-  border: 1px solid rgba(72, 92, 198, 0.08);
-  border-left: 3px solid #4462e6;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--ink);
   background: rgba(255, 255, 255, 0.95);
   box-shadow: 0 12px 24px rgba(24, 44, 120, 0.05);
   display: grid;
@@ -854,7 +928,7 @@
 .worklog-compact-story-empty {
   padding: 20px;
   border-radius: 20px;
-  border: 1px solid rgba(72, 92, 198, 0.08);
+  border: 1px solid var(--rule);
   background: rgba(255, 255, 255, 0.93);
   box-shadow: 0 8px 20px rgba(24, 44, 120, 0.04);
   transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
