@@ -22,6 +22,7 @@ import { listWorklogDates, readWorklogDaily, readWorklogProfile, readWorkStyleAn
 import { buildProfileSummary, readProfileSummary } from "./lib/profile.mjs";
 import { runServerCollection, runWorkStyleAnalysis } from "./lib/serverCollect.mjs";
 import { fileExists } from "./lib/utils.mjs";
+import { resumeEnabled, stripResumeFields, stripResumeDraft } from "./lib/resumeVisibility.mjs";
 import { authRouter } from "./routes/auth.mjs";
 import { resumeRouter } from "./routes/resume.mjs";
 import { registerLinkedInRoutes } from "./routes/linkedin.mjs";
@@ -104,7 +105,7 @@ export function createApp() {
   app.get("/api/day/:date", async (c) => {
     const user = resolveRequestUser(c);
     const date = c.req.param("date");
-    return c.json(await readDailySummary(date, user.id));
+    return c.json(stripResumeFields(await readDailySummary(date, user.id)));
   });
 
   app.get("/api/profile", async (c) => {
@@ -118,7 +119,8 @@ export function createApp() {
     } catch (err) {
       console.warn("[worklog] workstyle analysis read failed:", err.message ?? String(err));
     }
-    return c.json({ ...profile, workStyleAnalysis });
+    const safeProfile = stripResumeDraft(profile);
+    return c.json({ ...safeProfile, workStyleAnalysis });
   });
 
   app.post("/api/run-batch", async (c) => {
