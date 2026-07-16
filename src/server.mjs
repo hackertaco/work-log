@@ -42,13 +42,22 @@ export function createApp() {
   app.route("/auth", authRouter);
   app.route("/api/auth", authRouter);
 
+  // Resume disabled (v1): redirect pages to home, 404 the API — must sit BEFORE cookieAuth.
+  if (!resumeEnabled()) {
+    app.get("/resume", (c) => c.redirect("/", 302));
+    app.get("/resume/*", (c) => c.redirect("/", 302));
+    app.all("/api/resume/*", (c) => c.json({ error: "not found" }, 404));
+  }
+
   // ---------- Cookie auth guard — /resume page and /api/resume/* API routes only ----------
   // Exact /resume path: browser visitor is redirected to /login; API caller gets 401.
-  app.use("/resume", cookieAuth());
-  // Sub-paths under /resume (e.g. /resume/edit): same guard.
-  app.use("/resume/*", cookieAuth());
-  // Resume API routes: cookieAuth returns 401 JSON for unauthenticated callers.
-  app.use("/api/resume/*", cookieAuth());
+  if (resumeEnabled()) {
+    app.use("/resume", cookieAuth());
+    // Sub-paths under /resume (e.g. /resume/edit): same guard.
+    app.use("/resume/*", cookieAuth());
+    // Resume API routes: cookieAuth returns 401 JSON for unauthenticated callers.
+    app.use("/api/resume/*", cookieAuth());
+  }
   // Worklog API routes are also user-scoped and must not leak the default workspace.
   app.use("/api/days", cookieAuth());
   app.use("/api/day/*", cookieAuth());
@@ -91,10 +100,12 @@ export function createApp() {
   });
 
   // ---------- Resume API routes (protected by cookieAuth above) ----------
-  app.route("/api/resume", resumeRouter);
+  if (resumeEnabled()) {
+    app.route("/api/resume", resumeRouter);
 
-  // LinkedIn fetch route: POST /api/resume/linkedin (protected by cookieAuth above)
-  registerLinkedInRoutes(app);
+    // LinkedIn fetch route: POST /api/resume/linkedin (protected by cookieAuth above)
+    registerLinkedInRoutes(app);
+  }
 
   // ---------- API routes ----------
   app.get("/api/days", async (c) => {
@@ -213,9 +224,11 @@ export function createApp() {
   // ---------- GET /resume — SPA page route ----------
   // Authenticated users (past cookieAuth guard above) get index.html so that
   // the Preact client-side router handles the /resume path.
-  app.get("/resume", async (c) => {
-    return serveStatic("/index.html", c);
-  });
+  if (resumeEnabled()) {
+    app.get("/resume", async (c) => {
+      return serveStatic("/index.html", c);
+    });
+  }
 
   // ---------- Static file fallback ----------
   // For known SPA routes (no file extension), serve index.html to allow
@@ -235,7 +248,9 @@ export async function startServer(port = 4310, host = "localhost") {
   // Register the resume batch hook so that emitWorkLogSaved() (called from
   // batch.mjs and POST /api/work-log/event) triggers runResumeCandidateHook.
   // Idempotent — safe to call multiple times (Sub-AC 2-1).
-  await registerResumeBatchHook();
+  if (resumeEnabled()) {
+    await registerResumeBatchHook();
+  }
 
   // Register granular event triggers so that external data-source updates
   // (commit/slack/session collected via POST /api/work-log/event) schedule a
