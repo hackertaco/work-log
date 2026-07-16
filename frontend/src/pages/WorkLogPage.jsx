@@ -201,26 +201,28 @@ export function WorkLogPage() {
     const now = Date.now();
     const remaining = BATCH_THROTTLE_MS - (now - lastBatchRunAtRef.current);
     if (isRunningBatch || remaining > 0) {
-      setStatus(remaining > 0 ? `배치 재실행은 ${Math.ceil(remaining / 1000)}초 후 가능합니다.` : '배치 실행 중...');
+      setStatus(remaining > 0 ? `재실행은 ${Math.ceil(remaining / 1000)}초 후 가능합니다.` : '생성 중...');
       return;
     }
+
+    const kstToday = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
 
     lastBatchRunAtRef.current = now;
     setIsRunningBatch(true);
     setError('');
-    setStatus(`${dateInput} 배치 실행 중...`);
+    setStatus(`${kstToday} 오늘 기록 생성 중...`);
 
     try {
       const response = await fetch('/api/run-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: dateInput }),
+        body: JSON.stringify({ date: kstToday }),
       });
 
       if (handleAuthFailure(response)) return;
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error || `배치를 실행하지 못했습니다. HTTP ${response.status}`);
+        throw new Error(body?.error || `기록을 생성하지 못했습니다. HTTP ${response.status}`);
       }
 
       const payload = await response.json();
@@ -228,7 +230,7 @@ export function WorkLogPage() {
       setSelectedDate(payload.date);
       setDateInput(payload.date);
       selectedDateRef.current = payload.date;
-      setStatus(`${payload.date} 배치 완료`);
+      setStatus(`${payload.date} 기록 완료`);
 
       const daysRes = await fetch('/api/days');
       const nextDays = daysRes.ok ? await daysRes.json() : days;
@@ -238,8 +240,8 @@ export function WorkLogPage() {
         syncDateInUrl(payload.date, false);
       }
     } catch (err) {
-      setError(err.message || '배치를 실행하지 못했습니다.');
-      setStatus('배치 실행 실패');
+      setError(err.message || '기록을 생성하지 못했습니다.');
+      setStatus('생성 실패');
     } finally {
       setIsRunningBatch(false);
     }
@@ -342,7 +344,7 @@ export function WorkLogPage() {
             </div>
             <div class="worklog-action-row">
               <button class="worklog-primary-action" type="button" onClick={handleRunBatch} disabled={isRunningBatch}>
-                {isRunningBatch ? 'Generating...' : 'Generate Record'}
+                {isRunningBatch ? '생성 중...' : '오늘 기록 생성'}
               </button>
               {RESUME_ENABLED ? (
                 <a class="worklog-back-link worklog-back-link--secondary" href="/resume">Living Resume</a>
