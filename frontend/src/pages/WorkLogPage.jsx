@@ -259,6 +259,9 @@ export function WorkLogPage() {
   const sessionCount = dayPayload?.sessionCount ?? ((dayPayload?.counts?.claudeSessions || 0) + (dayPayload?.counts?.codexSessions || 0));
   const hasSession = sessionCount > 0 && sessionAreas.length > 0;
   const breakdownSegments = hasSession ? buildSessionSegments(dayPayload) : buildWorkEstimateSegments(dayPayload);
+  const usingSessionAreas = sessionAreas.length > 0;
+  const areaBars = usingSessionAreas ? sessionAreas : breakdownSegments.map((s) => ({ area: s.label, count: s.count }));
+  const areaBasisLabel = usingSessionAreas ? '세션 기준' : '커밋 기준';
 
   function handleDateInput(event) {
     setDateInput(event.currentTarget.value);
@@ -460,9 +463,9 @@ export function WorkLogPage() {
                 <section class="worklog-areas">
                   <div class="worklog-sec-head">
                     <h2>무엇에 시간을 썼나</h2>
-                    <span class="worklog-sec-count">세션 기준</span>
+                    <span class="worklog-sec-count">{areaBasisLabel}</span>
                   </div>
-                  {(sessionAreas.length ? sessionAreas : breakdownSegments.map((s) => ({ area: s.label, count: s.count }))).map((a, index, list) => {
+                  {areaBars.map((a, index, list) => {
                     const max = list[0]?.count || 1;
                     return (
                       <div class="worklog-area-row" key={a.area}>
