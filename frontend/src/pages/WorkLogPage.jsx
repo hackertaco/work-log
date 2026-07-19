@@ -262,6 +262,7 @@ export function WorkLogPage() {
   const usingSessionAreas = sessionAreas.length > 0;
   const areaBars = usingSessionAreas ? sessionAreas : breakdownSegments.map((s) => ({ area: s.label, count: s.count }));
   const areaBasisLabel = usingSessionAreas ? '세션 기준' : '커밋 기준';
+  const areaMax = Math.max(1, ...areaBars.map((a) => a.count || 0));
 
   function handleDateInput(event) {
     setDateInput(event.currentTarget.value);
@@ -465,16 +466,13 @@ export function WorkLogPage() {
                     <h2>무엇에 시간을 썼나</h2>
                     <span class="worklog-sec-count">{areaBasisLabel}</span>
                   </div>
-                  {areaBars.map((a, index, list) => {
-                    const max = list[0]?.count || 1;
-                    return (
-                      <div class="worklog-area-row" key={a.area}>
-                        <span class="worklog-area-name">{a.area}</span>
-                        <span class="worklog-area-bar"><i style={{ width: `${Math.round((a.count / max) * 100)}%` }} /></span>
-                        <span class="worklog-area-count">{a.count}</span>
-                      </div>
-                    );
-                  })}
+                  {areaBars.map((a) => (
+                    <div class="worklog-area-row" key={a.area}>
+                      <span class="worklog-area-name">{a.area}</span>
+                      <span class="worklog-area-bar"><i style={{ width: `${Math.round((a.count / areaMax) * 100)}%` }} /></span>
+                      <span class="worklog-area-count">{a.count}</span>
+                    </div>
+                  ))}
                 </section>
                 <SnapshotCard profile={profile} />
               </section>

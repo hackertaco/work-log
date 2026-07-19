@@ -500,6 +500,7 @@
   height: 6px;
   background: rgba(26, 24, 21, 0.08);
   position: relative;
+  overflow: hidden;
 }
 
 .worklog-area-bar > i {
