@@ -741,8 +741,11 @@ function SnapshotCard({ profile }) {
             <ol class="worklog-principles">
               {principles.map((p, i) => (
                 <li key={i} class="worklog-principle">
-                  <p class="worklog-principle-title">{p.title}</p>
-                  {p.description ? <p class="worklog-principle-desc">{p.description}</p> : null}
+                  <span class="worklog-principle-num">{String(i + 1).padStart(2, '0')}</span>
+                  <div>
+                    <blockquote class="worklog-principle-quote">{p.title}</blockquote>
+                    {p.description ? <p class="worklog-principle-desc">{p.description}</p> : null}
+                  </div>
                 </li>
               ))}
             </ol>

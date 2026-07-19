@@ -1911,18 +1911,12 @@
 .worklog-workstyle-meta { color: var(--muted); font-size: 12px; }
 .worklog-workstyle-block { margin-top: 8px; }
 .worklog-workstyle-did { margin: 4px 0 0; color: var(--ink); font-size: 14px; }
-/* 관통 판단 기준 — 이 섹션의 주인공 */
-.worklog-principles { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 12px; }
-.worklog-principle {
-  border: 1px solid var(--border-input);
-  border-radius: var(--radius-card);
-  background: #fff;
-  box-shadow: var(--shadow-xs);
-  padding: 16px 18px;
-  border-left: 3px solid var(--primary);
-}
-.worklog-principle-title { margin: 0; color: var(--ink-strong); font-size: 15px; font-weight: 700; line-height: 1.4; }
-.worklog-principle-desc { margin: 6px 0 0; color: var(--ink); font-size: 13px; line-height: 1.6; }
+/* 관통 판단 기준 — 이 섹션의 주인공 (세리프 풀쿼트) */
+.worklog-principles { list-style: none; margin: 22px 0 0; padding: 0; }
+.worklog-principle { padding: 30px 0; border-bottom: 1px solid var(--rule-soft); display: grid; grid-template-columns: 40px 1fr; gap: 20px; }
+.worklog-principle-num { font-family: var(--font-serif); font-size: 15px; color: var(--muted); font-weight: 600; padding-top: 8px; }
+.worklog-principle-quote { margin: 0; font-family: var(--font-serif); font-weight: 600; font-size: 25px; line-height: 1.5; color: var(--ink); letter-spacing: -0.01em; }
+.worklog-principle-desc { margin-top: 12px; font-size: 15px; line-height: 1.7; color: var(--ink-body); }
 
 /* 영역별 근거는 접어서 부차적으로 */
 .worklog-workstyle-evidence-wrap { margin-top: 16px; }
