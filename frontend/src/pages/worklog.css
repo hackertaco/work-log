@@ -1,9 +1,9 @@
 .worklog-page {
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(111, 140, 255, 0.13), transparent 30%),
-    radial-gradient(circle at top right, rgba(170, 188, 255, 0.10), transparent 24%),
-    linear-gradient(180deg, #f7f8fb 0%, #f2f5fb 100%);
+    radial-gradient(circle at top left, rgba(26, 24, 21, 0.05), transparent 30%),
+    radial-gradient(circle at top right, rgba(26, 24, 21, 0.035), transparent 24%),
+    linear-gradient(180deg, #faf8f5 0%, #f5f0eb 100%);
 }
 
 .worklog-shell {
@@ -63,7 +63,7 @@
 .worklog-section-kicker {
   font-size: 10px;
   letter-spacing: 0.14em;
-  color: #7a88ad;
+  color: var(--muted);
 }
 
 .worklog-eyebrow {
@@ -76,7 +76,7 @@
 
 .worklog-hero h1 {
   margin: 0;
-  font-family: var(--font-serif);
+  font-family: var(--font-display);
   color: var(--ink);
   font-size: clamp(38px, 4.8vw, 64px);
   font-weight: 700;
@@ -92,14 +92,14 @@
 .worklog-story-title,
 .worklog-compact-title,
 .worklog-stat-value {
-  font-family: var(--font-serif);
+  font-family: var(--font-display);
   color: var(--ink);
 }
 
 .worklog-lede {
   max-width: 52ch;
   margin: 0;
-  font-family: var(--font-serif);
+  font-family: var(--font-display);
   font-weight: 500;
   color: var(--ink);
   font-size: 21px;
@@ -222,7 +222,7 @@
 }
 
 .worklog-back-link--secondary:hover {
-  background: #f8fafc;
+  background: #f5f0eb;
 }
 
 .worklog-actions input,
@@ -282,7 +282,7 @@
 
 .worklog-status {
   margin: 0;
-  color: #7b89a8;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.03em;
@@ -357,13 +357,13 @@
 }
 
 .worklog-archive-option:hover {
-  background: #f1f5f9;
+  background: #f5f0eb;
 }
 
 .worklog-state {
   padding: 14px;
   border-radius: 12px;
-  border: 1px solid rgba(30, 41, 59, 0.08);
+  border: 1px solid rgba(26, 24, 21, 0.08);
   background: rgba(255, 255, 255, 0.6);
 }
 
@@ -428,10 +428,10 @@
 
 .worklog-info-card {
   padding: 24px;
-  border: 1px solid rgba(72, 92, 198, 0.08);
+  border: 1px solid var(--rule);
   border-radius: 24px;
   background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 14px 28px rgba(24, 44, 120, 0.05);
+  box-shadow: 0 14px 28px rgba(26, 24, 21, 0.05);
 }
 
 .worklog-stat-label {
@@ -463,12 +463,12 @@
 }
 
 .worklog-sec-head h2 {
-  font-family: var(--font-serif);
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-weight: 800;
   font-size: 22px;
   color: var(--ink);
   margin: 0;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
 }
 
 .worklog-sec-count {
@@ -582,7 +582,7 @@
   margin-top: 6px;
   font-size: 14px;
   line-height: 1.65;
-  color: #667085;
+  color: var(--muted);
   text-wrap: pretty;
 }
 
@@ -604,12 +604,12 @@
   min-height: 100%;
   position: relative;
   overflow: hidden;
-  border-color: rgba(58, 88, 214, 0.14);
+  border-color: rgba(26, 24, 21, 0.14);
   background:
-    radial-gradient(circle at top right, rgba(84, 115, 255, 0.10), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(246, 249, 255, 0.94) 100%);
+    radial-gradient(circle at top right, rgba(26, 24, 21, 0.05), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(250, 248, 245, 0.94) 100%);
   box-shadow:
-    0 18px 36px rgba(37, 99, 235, 0.06),
+    0 18px 36px rgba(26, 24, 21, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
   animation: worklog-judgment-enter 420ms ease-out both;
   transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
@@ -622,7 +622,7 @@
   pointer-events: none;
   border-radius: inherit;
   padding: 1px;
-  background: linear-gradient(135deg, rgba(91, 119, 255, 0.28), rgba(123, 92, 255, 0.10) 42%, rgba(255, 255, 255, 0.00) 78%);
+  background: linear-gradient(135deg, rgba(26, 24, 21, 0.22), rgba(26, 24, 21, 0.08) 42%, rgba(255, 255, 255, 0.00) 78%);
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
@@ -637,7 +637,7 @@
   top: 0;
   height: 3px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(64, 93, 230, 0.92), rgba(99, 102, 241, 0.64), rgba(129, 140, 248, 0.18));
+  background: linear-gradient(90deg, rgba(26, 24, 21, 0.9), rgba(26, 24, 21, 0.12));
   pointer-events: none;
 }
 
@@ -655,9 +655,9 @@
 .worklog-judgment-card:hover {
   transform: translateY(-1px);
   box-shadow:
-    0 22px 44px rgba(37, 99, 235, 0.09),
+    0 22px 44px rgba(26, 24, 21, 0.09),
     inset 0 1px 0 rgba(255, 255, 255, 0.94);
-  border-color: rgba(58, 88, 214, 0.22);
+  border-color: rgba(26, 24, 21, 0.22);
 }
 
 .worklog-judgment-layout {
@@ -676,7 +676,7 @@
   padding: 18px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.46);
-  border: 1px solid rgba(37, 99, 235, 0.1);
+  border: 1px solid var(--rule);
 }
 
 .worklog-judgment-line {
@@ -703,12 +703,12 @@
   padding: 16px 18px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.46);
-  border: 1px solid rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(26, 24, 21, 0.08);
 }
 
 .worklog-judgment-column--analysis {
   padding-left: 18px;
-  border-left: 1px solid rgba(37, 99, 235, 0.14);
+  border-left: 1px solid rgba(26, 24, 21, 0.14);
   background: rgba(255, 255, 255, 0.58);
 }
 
@@ -717,7 +717,7 @@
   gap: 12px;
   margin-top: 14px;
   padding: 14px 16px 0;
-  border-top: 1px solid rgba(30, 41, 59, 0.08);
+  border-top: 1px solid rgba(26, 24, 21, 0.08);
   position: relative;
 }
 
@@ -727,8 +727,8 @@
   top: -9px;
   left: 0;
   padding-right: 10px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92) 0%, rgba(243, 247, 255, 0.88) 100%);
-  color: #7c8cab;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92) 0%, rgba(250, 248, 245, 0.88) 100%);
+  color: var(--muted);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.16em;
@@ -741,11 +741,11 @@
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #46618f;
+  color: var(--muted);
 }
 
 .worklog-judgment-column--analysis > .worklog-worknotes-label {
-  color: #274690;
+  color: var(--ink);
 }
 
 .worklog-notes-layout--feature {
@@ -758,7 +758,7 @@
   border: 1px solid var(--rule);
   border-left: 3px solid var(--ink);
   background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 12px 24px rgba(24, 44, 120, 0.05);
+  box-shadow: 0 12px 24px rgba(26, 24, 21, 0.05);
   display: grid;
   gap: 14px;
   transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
@@ -766,7 +766,7 @@
 
 .worklog-lead-story:hover {
   transform: translateY(-1px);
-  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.07);
+  box-shadow: 0 18px 36px rgba(26, 24, 21, 0.07);
   background: rgba(255, 255, 255, 0.98);
 }
 
@@ -805,7 +805,7 @@
 
 .worklog-lead-aside {
   padding: 10px 14px;
-  border-left: 2px solid rgba(17, 24, 39, 0.12);
+  border-left: 2px solid rgba(26, 24, 21, 0.12);
   border-radius: 0;
   background: transparent;
 }
@@ -823,7 +823,7 @@
   gap: 16px;
   margin-top: 0;
   padding-top: 12px;
-  border-top: 1px solid rgba(17, 24, 39, 0.06);
+  border-top: 1px solid rgba(26, 24, 21, 0.06);
 }
 
 .worklog-story-meta {
@@ -931,13 +931,13 @@
   border-radius: 20px;
   border: 1px solid var(--rule);
   background: rgba(255, 255, 255, 0.93);
-  box-shadow: 0 8px 20px rgba(24, 44, 120, 0.04);
+  box-shadow: 0 8px 20px rgba(26, 24, 21, 0.04);
   transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
 }
 
 .worklog-compact-story:hover {
   transform: translateY(-1px);
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 14px 28px rgba(26, 24, 21, 0.06);
   background: rgba(255, 255, 255, 0.98);
 }
 
@@ -991,7 +991,7 @@
   display: grid;
   place-items: center;
   text-align: center;
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 4px rgba(26, 24, 21, 0.06);
 }
 
 .worklog-donut-hole strong {
@@ -1017,7 +1017,7 @@
 .worklog-breakdown-item {
   padding: 10px 0;
   border: 0;
-  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  border-top: 1px solid rgba(26, 24, 21, 0.08);
   border-radius: 0;
   background: transparent;
 }
@@ -1045,7 +1045,7 @@
   height: 12px;
   border-radius: 50%;
   flex: 0 0 auto;
-  box-shadow: 0 0 0 4px rgba(68, 98, 230, 0.08);
+  box-shadow: 0 0 0 4px rgba(26, 24, 21, 0.08);
 }
 
 .worklog-snapshot-grid {
@@ -1107,8 +1107,8 @@
 .worklog-strength-card {
   padding: 14px 16px;
   border-radius: 16px;
-  border: 1px solid rgba(72, 92, 198, 0.08);
-  background: rgba(250, 251, 255, 0.98);
+  border: 1px solid var(--rule);
+  background: rgba(250, 248, 245, 0.98);
 }
 
 .worklog-strength-card-head {
@@ -1134,8 +1134,8 @@
   height: 28px;
   padding: 0 8px;
   border-radius: 999px;
-  background: rgba(68, 98, 230, 0.10);
-  color: #3d56d7;
+  background: rgba(26, 24, 21, 0.10);
+  color: var(--ink);
   font-size: 12px;
   font-weight: 700;
   flex: 0 0 auto;
@@ -1167,14 +1167,14 @@
 .worklog-strength-track {
   height: 6px;
   border-radius: 3px;
-  background: rgba(17, 24, 39, 0.06);
+  background: rgba(26, 24, 21, 0.06);
   overflow: hidden;
 }
 
 .worklog-strength-fill {
   height: 100%;
   border-radius: 3px;
-  background: #475569;
+  background: var(--ink-body);
   min-width: 4px;
 }
 
@@ -1228,7 +1228,7 @@
 }
 
 .worklog-list li::marker {
-  color: rgba(17, 24, 39, 0.42);
+  color: rgba(26, 24, 21, 0.42);
 }
 
 .worklog-list li + li {
@@ -1296,7 +1296,7 @@
   padding: 4px 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(17,24,39,0.04);
+  background: rgba(26,24,21,0.04);
   font-size: 11px;
   white-space: nowrap;
 }
@@ -1319,7 +1319,7 @@
   color: var(--ink);
   padding: 14px 18px;
   border-left: 3px solid var(--accent-subtle);
-  background: rgba(17,24,39,0.02);
+  background: rgba(26,24,21,0.02);
   border-radius: 0 12px 12px 0;
 }
 
@@ -1333,7 +1333,7 @@
   padding: 4px 0 0;
   border-radius: 0;
   border: 0;
-  border-top: 1px solid rgba(30, 41, 59, 0.08);
+  border-top: 1px solid rgba(26, 24, 21, 0.08);
   background: transparent;
 }
 
@@ -1341,7 +1341,7 @@
   display: inline-flex;
   gap: var(--space-1);
   padding: var(--space-1);
-  border: 1px solid rgba(30, 41, 59, 0.1);
+  border: 1px solid rgba(26, 24, 21, 0.1);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.6);
 }
@@ -1358,7 +1358,7 @@
 }
 
 .worklog-toggle.is-active {
-  background: #1e293b;
+  background: var(--ink);
   color: #fff;
 }
 
@@ -1367,7 +1367,7 @@
   padding: 12px 0;
   border-radius: 0;
   border: 0;
-  border-bottom: 1px solid rgba(30, 41, 59, 0.06);
+  border-bottom: 1px solid rgba(26, 24, 21, 0.06);
   background: transparent;
   color: var(--muted);
   font-size: 14px;
@@ -1382,7 +1382,7 @@
   color: var(--ink);
   font-weight: 600;
   text-decoration: underline;
-  text-decoration-color: rgba(17,24,39,0.2);
+  text-decoration-color: rgba(26,24,21,0.2);
   text-underline-offset: 3px;
 }
 
@@ -1419,7 +1419,7 @@
   height: 28px;
   padding: 0 var(--space-2);
   border-radius: 999px;
-  background: rgba(17, 24, 39, 0.08);
+  background: rgba(26, 24, 21, 0.08);
   color: var(--ink);
   font-size: 13px;
   font-weight: 700;
@@ -1445,17 +1445,17 @@
   display: grid;
   gap: 18px;
   padding: 22px;
-  border: 1px solid rgba(17, 24, 39, 0.08);
+  border: 1px solid rgba(26, 24, 21, 0.08);
   border-radius: 24px;
   background: rgba(255, 255, 255, 0.88);
 }
 
 .worklog-batch-disclosure {
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(26, 24, 21, 0.08);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.84);
   overflow: hidden;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 10px 24px rgba(26, 24, 21, 0.04);
 }
 
 .worklog-batch-disclosure__summary {
@@ -1527,12 +1527,12 @@
   border-radius: 999px;
   font-size: 13px;
   font-weight: 600;
-  background: rgba(17, 24, 39, 0.08);
+  background: rgba(26, 24, 21, 0.08);
 }
 
 .worklog-status-pill--generated {
-  background: rgba(68, 98, 230, 0.10);
-  color: #304bbf;
+  background: rgba(26, 24, 21, 0.1);
+  color: var(--ink);
 }
 
 .worklog-status-pill--below_threshold,
@@ -1547,8 +1547,8 @@
 }
 
 .worklog-status-pill--skipped {
-  background: rgba(59, 130, 246, 0.12);
-  color: #1d4ed8;
+  background: rgba(111, 106, 96, 0.16);
+  color: var(--muted);
 }
 
 .worklog-batch-summary__stats {
@@ -1559,7 +1559,7 @@
 .worklog-batch-summary__panel,
 .worklog-batch-summary__candidate,
 .worklog-batch-summary__follow-up {
-  border: 1px solid rgba(17, 24, 39, 0.08);
+  border: 1px solid rgba(26, 24, 21, 0.08);
   border-radius: 18px;
   background: #fff;
 }
@@ -1613,7 +1613,7 @@
   margin-top: 14px;
   padding: 14px;
   border-radius: 16px;
-  background: rgba(17, 24, 39, 0.04);
+  background: rgba(26, 24, 21, 0.04);
 }
 
 .worklog-batch-summary__candidate-list,
@@ -1700,7 +1700,7 @@
 .worklog-batch-summary__badge,
 .worklog-batch-summary__action {
   padding: 5px 10px;
-  background: rgba(17, 24, 39, 0.08);
+  background: rgba(26, 24, 21, 0.08);
 }
 
 .worklog-batch-summary__action {
@@ -1713,7 +1713,7 @@
 
 .worklog-inline-action,
 .worklog-reason-chip {
-  border: 1px solid rgba(17, 24, 39, 0.12);
+  border: 1px solid rgba(26, 24, 21, 0.12);
   background: #fff;
   color: var(--ink);
   cursor: pointer;
@@ -1788,7 +1788,7 @@
     padding-left: 0;
     border-left: 0;
     padding-top: 12px;
-    border-top: 1px solid rgba(30, 41, 59, 0.08);
+    border-top: 1px solid rgba(26, 24, 21, 0.08);
   }
 
   .worklog-lead-head,
@@ -1870,7 +1870,7 @@
 }
 
 .worklog-user-logout:hover {
-  background: #f1f5f9;
+  background: #f5f0eb;
   color: var(--ink-strong);
 }
 
@@ -1915,8 +1915,8 @@
 /* 관통 판단 기준 — 이 섹션의 주인공 (세리프 풀쿼트) */
 .worklog-principles { list-style: none; margin: 22px 0 0; padding: 0; }
 .worklog-principle { padding: 30px 0; border-bottom: 1px solid var(--rule-soft); display: grid; grid-template-columns: 40px 1fr; gap: 20px; }
-.worklog-principle-num { font-family: var(--font-serif); font-size: 15px; color: var(--muted); font-weight: 600; padding-top: 8px; }
-.worklog-principle-quote { margin: 0; font-family: var(--font-serif); font-weight: 600; font-size: 25px; line-height: 1.5; color: var(--ink); letter-spacing: -0.01em; }
+.worklog-principle-num { font-family: var(--font-display); font-size: 15px; color: var(--muted); font-weight: 600; padding-top: 8px; }
+.worklog-principle-quote { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1.5; color: var(--ink); letter-spacing: -0.02em; }
 .worklog-principle-desc { margin-top: 12px; font-size: 15px; line-height: 1.7; color: var(--ink-body); }
 
 /* 영역별 근거는 접어서 부차적으로 */
