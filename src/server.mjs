@@ -21,6 +21,7 @@ import { getAuthUsers } from "./lib/authUsers.mjs";
 import { listWorklogDates, readWorklogDaily, readWorklogProfile, readWorkStyleAnalysis } from "./lib/blob.mjs";
 import { buildProfileSummary, readProfileSummary } from "./lib/profile.mjs";
 import { runServerCollection, runWorkStyleAnalysis } from "./lib/serverCollect.mjs";
+import { runProfileExport } from "./lib/profileExport.mjs";
 import { fileExists } from "./lib/utils.mjs";
 import { resumeEnabled, stripResumeFields, stripResumeDraft } from "./lib/resumeVisibility.mjs";
 import { authRouter } from "./routes/auth.mjs";
@@ -101,7 +102,8 @@ export function createApp() {
         .catch((err) => ({ skipped: true, reason: err.message ?? String(err) }));
       perUser.push({ userId, ...collection, workStyle });
     }
-    return c.json({ users: userIds, results: perUser });
+    const profiles = await runProfileExport({ userIds }).catch((err) => ({ error: err.message ?? String(err) }));
+    return c.json({ users: userIds, results: perUser, profiles });
   });
 
   // ---------- Resume API routes (protected by cookieAuth above) ----------
