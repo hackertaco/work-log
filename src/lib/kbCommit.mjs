@@ -18,37 +18,47 @@ async function gh(fetchImpl, token, url, init = {}) {
 
 export async function commitProfilesToKb({ owner, repo, base, branch, files, token, fetchImpl = fetch }) {
   const changed = [], skipped = [];
-  // 1) base head + ensure work branch
+  // 1) base head sha — base is the source of truth, not the (possibly stale) work branch
   const refRes = await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/git/ref/heads/${base}`);
   const baseSha = (await refRes.json())?.object?.sha;
-  if (baseSha) {
-    // ensure work branch exists at base head: check first, create if missing, else fast-forward
-    const branchRefRes = await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/git/ref/heads/${branch}`);
-    const branchSha = branchRefRes.status === 200 ? (await branchRefRes.json())?.object?.sha : null;
-    if (!branchSha) {
-      const created = await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/git/refs`, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseSha }) });
-      if (created.status === 422) {
-        await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/git/refs/heads/${branch}`, { method: "PATCH", body: JSON.stringify({ sha: baseSha, force: true }) });
-      }
-    }
-  }
-  // 2) per file: get existing on branch, PUT if changed
+
+  // 2) per file: compare against base content, collect only changed files (keep base blob sha for the PUT)
+  const toWrite = [];
   for (const f of files) {
-    const getRes = await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/contents/${f.path}?ref=${branch}`);
+    const getRes = await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/contents/${f.path}?ref=${base}`);
     const existing = getRes.status === 200 ? await getRes.json() : null;
     if (!contentChanged(existing?.content ?? null, f.content)) { skipped.push(f.path); continue; }
-    await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/contents/${f.path}`, {
+    toWrite.push({ path: f.path, content: f.content, sha: existing?.sha });
+  }
+
+  // 3) no changes -> no-op: zero branch writes, zero PR, zero merge
+  if (!toWrite.length) return { changed, skipped, committed: false };
+
+  // 4) make the work branch a thin, always-fresh mirror of base: create it if missing,
+  // or reset it to base head (force) if it already exists — never build on a stale branch.
+  const branchRefRes = await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/git/ref/heads/${branch}`);
+  const branchSha = branchRefRes.status === 200 ? (await branchRefRes.json())?.object?.sha : null;
+  if (branchSha) {
+    await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/git/refs/heads/${branch}`, { method: "PATCH", body: JSON.stringify({ sha: baseSha, force: true }) });
+  } else {
+    await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/git/refs`, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseSha }) });
+  }
+
+  // 5) PUT each changed file (using its base blob sha), only counting it as changed if the write succeeded
+  for (const f of toWrite) {
+    const putRes = await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/contents/${f.path}`, {
       method: "PUT",
       body: JSON.stringify({
         message: `chore(profiles): update ${f.path}`,
         content: Buffer.from(f.content, "utf8").toString("base64"),
-        branch, ...(existing?.sha ? { sha: existing.sha } : {})
+        branch, ...(f.sha ? { sha: f.sha } : {})
       })
     });
-    changed.push(f.path);
+    if (putRes.ok) changed.push(f.path);
   }
+
   if (!changed.length) return { changed, skipped, committed: false };
-  // 3) open (or reuse) PR and merge
+  // 6) open (or reuse) PR and merge
   const prRes = await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/pulls`, { method: "POST", body: JSON.stringify({ title: "chore: member work-style profiles", head: branch, base }) });
   let pr = prRes.status === 201 ? (await prRes.json())?.number : undefined;
   if (!pr) {

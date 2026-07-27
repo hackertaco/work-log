@@ -49,3 +49,29 @@ test("commitProfilesToKb PUTs changed file with prev sha, then opens+merges PR",
   assert.equal(Buffer.from(puts[0].content, "base64").toString("utf8"), "new\n");
   assert.equal(puts[0].branch, "profiles/auto");
 });
+
+test("commitProfilesToKb resets an existing work branch to base head", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const m = init?.method ?? "GET";
+    calls.push({ method: m, url, body: init?.body ? JSON.parse(init.body) : undefined });
+    if (url.endsWith("/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: "basesha" } }), { status: 200 });
+    if (url.endsWith("/git/ref/heads/profiles/auto")) return new Response(JSON.stringify({ object: { sha: "stalebranchsha" } }), { status: 200 });
+    if (url.includes("/git/refs/heads/profiles/auto") && m === "PATCH") return new Response(JSON.stringify({}), { status: 200 });
+    if (url.includes("/contents/") && m === "GET") return new Response(JSON.stringify({ sha: "oldsha", content: b64("old\n") }), { status: 200 });
+    if (url.includes("/contents/") && m === "PUT") return new Response(JSON.stringify({}), { status: 200 });
+    if (url.endsWith("/pulls") && m === "POST") return new Response(JSON.stringify({ number: 9 }), { status: 201 });
+    if (url.includes("/pulls/9/merge") && m === "PUT") return new Response(JSON.stringify({ merged: true }), { status: 200 });
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  const out = await commitProfilesToKb({ owner: "o", repo: "r", base: "main", branch: "profiles/auto",
+    files: [{ path: "raw/people/x.md", content: "new\n" }], token: "t", fetchImpl });
+
+  const patchIdx = calls.findIndex((c) => c.method === "PATCH" && c.url.includes("/git/refs/heads/profiles/auto"));
+  const putIdx = calls.findIndex((c) => c.method === "PUT" && c.url.includes("/contents/"));
+  assert.ok(patchIdx !== -1, "must reset the existing work branch");
+  assert.deepEqual(calls[patchIdx].body, { sha: "basesha", force: true });
+  assert.ok(patchIdx < putIdx, "branch reset must happen before the file PUT");
+  assert.equal(out.committed, true);
+  assert.deepEqual(out.changed, ["raw/people/x.md"]);
+});
