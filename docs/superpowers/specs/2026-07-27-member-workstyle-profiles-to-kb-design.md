@@ -114,14 +114,14 @@ KB의 기존 AI설명이 "X라면?" 질의에 이 블록을 근거로 답할 수
 - **재빌드 트리거**: `refresh-kb.yml`은 `on: push` (branches: main, `paths: raw/**` 포함)
   → `raw/people/`는 `raw/**`에 커버됨 ✅. **profiles/auto → main 자동머지가 곧 트리거.**
   동시성 그룹 `kb-pipeline`으로 sync-notion과 race 방지(우리 머지도 안전하게 큐잉).
+- **토큰(해결됨)**: work-log의 **기존 `GITHUB_TOKEN`(hackertaco)이 KB 레포에 `push:True`**
+  (2026-07-27 API 확인). 커밋 검색 + KB write 겸용 가능 → **새 env 불필요, 별도
+  `KB_GITHUB_TOKEN` 안 만듦**. Vercel work-log에 이미 존재. (플랜 1단계에서 실제
+  테스트 write 1회로 재확인.)
 
 ## 검증 필요한 전제 (플랜에서 먼저 확인)
 
-1. **⚠️ 토큰(가장 큰 리스크)**: KB 레포 owner가 `driving-teacher-bot`(봇 계정)이라,
-   work-log의 현재 GITHUB_TOKEN(hackertaco, 커밋 *검색*용)은 **write 권한이 없을 가능성
-   높음**. → KB write 가능한 토큰(= KB Actions가 쓰는 봇 토큰 계열)을 **별도 env
-   `KB_GITHUB_TOKEN`**으로 분리해서 커밋에 사용. 플랜에서 먼저 이 토큰 확보/검증.
-2. `graph_v2_build.py`가 **신규 `raw/people/` 하위 폴더를 사람 노드로 잡는지** 확인
+1. `graph_v2_build.py`가 **신규 `raw/people/` 하위 폴더를 사람 노드로 잡는지** 확인
    (안 잡으면 KB 쪽 소폭 수정 필요 — 별도 크로스레포 작업일 수 있어 플랜에서 분리 판단).
 
 ## 리스크 / 한계 (설계에 명시)
@@ -143,6 +143,7 @@ KB의 기존 AI설명이 "X라면?" 질의에 이 블록을 근거로 답할 수
 
 ## 배포
 
-- work-log Vercel env: `KB_GITHUB_TOKEN`(필요 시), KB 레포 좌표. 기존 env 유지.
+- work-log Vercel env: **추가 토큰 불필요** — 기존 `GITHUB_TOKEN` 재사용(KB write 확인됨).
+  KB 레포 좌표(`driving-teacher-bot/driving-teacher-knowledge-base`)만 상수/env로.
 - KB: `refresh-kb.yml` path 필터에 `raw/people/**` 확인/추가.
 - 첫 실행은 수동 트리거(`/api/collect?…` 또는 export 엔드포인트)로 검증 후 크론 상시화.
