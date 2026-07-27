@@ -21,6 +21,7 @@ export async function commitProfilesToKb({ owner, repo, base, branch, files, tok
   // 1) base head sha — base is the source of truth, not the (possibly stale) work branch
   const refRes = await gh(fetchImpl, token, `${API}/repos/${owner}/${repo}/git/ref/heads/${base}`);
   const baseSha = (await refRes.json())?.object?.sha;
+  if (!baseSha) return { changed: [], skipped: [], committed: false, reason: "no base ref" };
 
   // 2) per file: compare against base content, collect only changed files (keep base blob sha for the PUT)
   const toWrite = [];

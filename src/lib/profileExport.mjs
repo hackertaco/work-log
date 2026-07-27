@@ -34,12 +34,14 @@ export async function runProfileExport({ userIds, now = new Date().toISOString()
 
   // best-effort notify for changed members
   const slackToken = process.env.SLACK_TOKEN || process.env.SLACK_USER_TOKEN || "";
-  for (const path of commit.changed ?? []) {
-    const id = path.replace(/^raw\/people\//, "").replace(/\.md$/, "");
-    const config = await Promise.resolve(loadConfig({ userId: id })).catch(() => null);
-    const slackUserId = config?.slackUserId || "";
-    const url = `https://github.com/${OWNER}/${REPO}/blob/${BASE}/${path}`;
-    await notifyMemberProfile({ slackUserId, url, token: slackToken, fetchImpl }).catch(() => false);
+  if (commit.merged) {
+    for (const path of commit.changed ?? []) {
+      const id = path.replace(/^raw\/people\//, "").replace(/\.md$/, "");
+      const config = await Promise.resolve(loadConfig({ userId: id })).catch(() => null);
+      const slackUserId = config?.slackUserId || "";
+      const url = `https://github.com/${OWNER}/${REPO}/blob/${BASE}/${path}`;
+      await notifyMemberProfile({ slackUserId, url, token: slackToken, fetchImpl }).catch(() => false);
+    }
   }
   return { built, commit };
 }
