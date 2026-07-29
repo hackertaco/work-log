@@ -19,6 +19,17 @@ if (command === "batch") {
   process.exit(0);
 }
 
+if (command === "export-profiles") {
+  // Manual/on-demand trigger for the member work-style profile pipeline —
+  // an emergency handle when the daily cron is down or a refresh is needed now.
+  // Optional positional args = specific user ids; none = all configured users.
+  const { runProfileExport } = await import("./lib/profileExport.mjs");
+  const userIds = rest.filter((a) => !a.startsWith("--"));
+  const result = await runProfileExport(userIds.length ? { userIds } : {});
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(0);
+}
+
 if (command === "serve") {
   const port = Number(readFlag(rest, "--port") || 4310);
   const host = readFlag(rest, "--host") || "localhost";

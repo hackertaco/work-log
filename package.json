@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "batch": "node src/cli.mjs batch",
+    "export-profiles": "node --env-file-if-exists=.env.local src/cli.mjs export-profiles",
     "serve": "node src/cli.mjs serve",
     "serve:watch": "node scripts/watch-serve.mjs",
     "dev": "vite",
