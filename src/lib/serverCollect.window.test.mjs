@@ -39,8 +39,10 @@ test("maps window rows and passes days param; returns local commit-window shape"
   // 기계가 만든 프롬프트(Codex 자동리뷰 등)는 조회 단계에서 빠져야 한다
   assert.ok(capturedBody.includes("The following is the Codex agent history"));
   assert.ok(capturedBody.includes("trimLeft(prompt_text)"));
-  // 경로 없는 기록은 영역에 못 붙으므로 창을 낭비하지 않게 뺀다
-  assert.ok(capturedBody.includes("project_path != ''"));
+  // 경로 없는 기록도 가져온다 — 영역엔 못 붙지만 원칙 합성에는 쓴다.
+  // 대신 창이 며칠로 줄지 않도록 상한에 여유가 있어야 한다.
+  assert.ok(!capturedBody.includes("project_path != ''"));
+  assert.ok(capturedBody.includes("LIMIT 4000"));
 
   for (const [k, v] of [["CLICKHOUSE_URL", saved.url], ["CLICKHOUSE_USER", saved.user], ["CLICKHOUSE_PASSWORD", saved.pw], ["WORK_LOG_ZEUDE_EMAIL", saved.email]]) {
     if (v === undefined) delete process.env[k]; else process.env[k] = v;

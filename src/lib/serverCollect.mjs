@@ -303,12 +303,12 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
       AND prompt_type = 'natural'
       AND length(prompt_text) >= 12
 ${HUMAN_PROMPT_FILTER}
-      -- 경로 없는 기록(Codex 로거는 cwd 를 안 보낸다)은 작업 영역에 못 붙는다. 남겨두면
-      -- LIMIT 을 다 먹어 창이 30일에서 며칠로 줄어든다(2026-07-31: 4일치로 붕괴).
-      AND project_path != ''
     GROUP BY prompt_id
     ORDER BY max(timestamp) DESC
-    LIMIT 2000
+    -- 경로 없는 기록까지 포함하므로 30일이 다 들어갈 만큼 여유를 둔다. 이 상한을 넘기면
+    -- 최신순 정렬 때문에 창이 조용히 며칠로 줄어든다(2026-07-31에 실제로 4일까지 붕괴).
+    -- 여기서 많이 가져와도 LLM 에 가는 건 영역당 상위 60건뿐이라 비용은 거의 안 는다.
+    LIMIT 4000
     FORMAT JSON`;
 
   const endpoint = `${url.replace(/\/$/, "")}/?param_email=${encodeURIComponent(emails.join(","))}`;
@@ -346,7 +346,7 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
   const prompts = await collectZeudePromptWindow(userId, windowDays).catch(() => []);
   if (!prompts.length) return { skipped: true, reason: "no prompts" };
 
-  const { areas, droppedAreas } = groupWorkAreas(prompts, { topN: 5 });
+  const { areas, droppedAreas, arealess } = groupWorkAreas(prompts, { topN: 5 });
   const prior = await readWorkStyleAnalysis(userId).catch(() => null);
 
   const llmStale = force || !prior?.llmGeneratedAt ||
@@ -357,6 +357,7 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
   let llmGeneratedAt = prior?.llmGeneratedAt ?? null;
 
   let behaviorSessions = null;
+  let arealessCount = null;
 
   if (llmStale) {
     // 행동신호는 LLM 재생성 때만 필요하다 — FRESH 경로에서 ClickHouse 를 두드리지 않는다.
@@ -369,11 +370,24 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
       const r = await extractWorkStyleForArea(area, behavior).catch(() => ({ did: [], judgments: [] }));
       enriched.push({ area: area.area, promptCount: area.promptCount, firstDate: area.firstDate, lastDate: area.lastDate, did: r.did ?? [], judgments: r.judgments ?? [] });
     }
+    // 작업 경로가 없는 기록(주로 Codex 데스크톱)은 영역 섹션엔 못 넣지만 판단은 뽑을 수
+    // 있다. 원칙 합성엔 폴더가 필요 없으므로 여기까지만 태운다 — 저장되는 areas 에는
+    // 넣지 않아 화면의 영역 목록은 그대로다. 사람이 친 프롬프트의 약 1/5 이 여기 있다.
+    let arealessJudgments = [];
+    if (arealess?.prompts?.length) {
+      const r = await extractWorkStyleForArea({ ...arealess, area: "영역 미상" }, null)
+        .catch(() => ({ judgments: [] }));
+      arealessJudgments = r.judgments ?? [];
+    }
+
     // 영역별 개별 판단을 가로질러 관통 원칙으로 승격 (이게 화면의 주인공)
     principles = await synthesizeWorkStylePrinciples(
-      enriched,
+      arealessJudgments.length
+        ? [...enriched, { area: "영역 미상", judgments: arealessJudgments }]
+        : enriched,
       behaviorByArea(signals, enriched.map((a) => a.area))
     ).catch(() => []);
+    arealessCount = arealess?.promptCount ?? 0;
     llmGeneratedAt = new Date().toISOString();
   } else {
     enriched = areas.map((a) => {
@@ -392,5 +406,5 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
     droppedAreas
   }, userId);
 
-  return { skipped: false, areaCount: enriched.length, principleCount: principles.length, llmRefreshed: llmStale, behaviorSessions };
+  return { skipped: false, areaCount: enriched.length, principleCount: principles.length, llmRefreshed: llmStale, behaviorSessions, arealessCount };
 }

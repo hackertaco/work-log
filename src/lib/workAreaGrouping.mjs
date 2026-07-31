@@ -22,15 +22,19 @@ export function groupWorkAreas(prompts, { topN = 5 } = {}) {
   }
 
   // "unknown"(작업 경로가 없는 기록)은 작업 영역이 아니다. Codex 로거는 경로를 안 남겨
-  // 이 버킷이 수천 건까지 불어나는데, 그대로 두면 실제 영역들을 밀어내고 1위를 차지한다
-  // (2026-07-31: unknown 1639건이 상위 5개를 잠식). 영역 목록에서 빼고 드롭으로 센다.
+  // 이 버킷이 수천 건까지 불어나는데, 영역으로 두면 실제 영역들을 밀어내고 1위를 차지한다
+  // (2026-07-31: unknown 1639건이 상위 5개를 잠식).
+  //
+  // 그렇다고 버리지는 않는다. 영역별 섹션에는 못 쓰지만 "어떤 기준으로 일하나"를 뽑는
+  // 원칙 합성에는 그대로 쓸 수 있다 — 거기엔 폴더가 필요 없다. arealess 로 따로 돌려준다.
+  const arealess = map.get("unknown") ?? null;
   const sorted = [...map.values()]
     .filter((a) => a.area !== "unknown")
     .sort((a, b) => b.promptCount - a.promptCount);
-  const unknownDropped = map.has("unknown") ? 1 : 0;
   return {
     areas: sorted.slice(0, topN),
-    droppedAreas: Math.max(0, sorted.length - topN) + unknownDropped
+    droppedAreas: Math.max(0, sorted.length - topN) + (arealess ? 1 : 0),
+    arealess
   };
 }
 

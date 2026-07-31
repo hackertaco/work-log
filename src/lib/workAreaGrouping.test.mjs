@@ -57,7 +57,7 @@ test("경로 없는 프롬프트만 있으면 작업 영역이 하나도 안 나
 });
 
 test("empty input returns empty areas", () => {
-  assert.deepEqual(groupWorkAreas([]), { areas: [], droppedAreas: 0 });
+  assert.deepEqual(groupWorkAreas([]), { areas: [], droppedAreas: 0, arealess: null });
 });
 
 test("groupWorkAreas: 경로 없는 unknown 은 영역 목록에서 빠지고 드롭으로 센다", () => {
@@ -74,4 +74,17 @@ test("groupWorkAreas: 경로 없는 unknown 은 영역 목록에서 빠지고 �
   assert.ok(!areas.some((a) => a.area === "unknown"));
   assert.deepEqual(areas.map((a) => a.area), ["work-log", "kb"]);
   assert.equal(droppedAreas, 1);
+});
+
+test("groupWorkAreas: 경로 없는 묶음은 arealess 로 따로 돌려준다 (버리지 않는다)", () => {
+  const { areas, arealess } = groupWorkAreas([
+    P("", "폴더 없는 질문", "2026-07-30"),
+    P("", "또 하나", "2026-07-31"),
+    P("/Users/x/company-code/work-log", "영역 있는 질문", "2026-07-30")
+  ]);
+
+  assert.deepEqual(areas.map((a) => a.area), ["work-log"]);
+  assert.equal(arealess.promptCount, 2);
+  // 원칙 합성에 넣으려면 프롬프트 원문이 살아 있어야 한다
+  assert.deepEqual(arealess.prompts, ["폴더 없는 질문", "또 하나"]);
 });

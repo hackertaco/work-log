@@ -189,3 +189,36 @@ test("FRESH: prior <7d old reuses prior did/judgments and llmRefreshed:false", a
     clearClickHouseEnv();
   }
 });
+
+test("경로 없는 프롬프트는 원칙 합성에만 들어가고 영역 목록엔 안 남는다", async () => {
+  setClickHouseEnv();
+  stored = null;
+  extractCalls = [];
+  extractBehaviorFor = {};
+  synthesizeCalls = [];
+  synthesizeBehavior = null;
+  priorAnalysis = { llmGeneratedAt: "2020-01-01T00:00:00.000Z", areas: [] };
+
+  const rows = [
+    { text: "work-log 관련 질문입니다", proj_path: "/Users/x/company-code/work-log", source: "claude", kst_date: "2026-07-30" },
+    { text: "폴더 없는 코덱스 질문", proj_path: "", source: "codex", kst_date: "2026-07-30" },
+    { text: "폴더 없는 코덱스 질문 둘", proj_path: "", source: "codex", kst_date: "2026-07-31" }
+  ];
+  const restoreFetch = mockFetchWithRows(rows);
+
+  try {
+    const r = await runWorkStyleAnalysis({ userId: "default" });
+
+    // 저장되는 영역 목록엔 경로 있는 것만 남는다
+    assert.deepEqual(stored.areas.map((a) => a.area), ["work-log"]);
+    // 추출기는 "영역 미상" 묶음에도 한 번 불린다
+    assert.ok(extractCalls.includes("영역 미상"));
+    // 그 판단이 합성 입력에는 들어간다
+    assert.ok(synthesizeCalls[0].includes("영역 미상"));
+    // 운영 관측용 카운트
+    assert.equal(r.arealessCount, 2);
+  } finally {
+    restoreFetch();
+    clearClickHouseEnv();
+  }
+});
