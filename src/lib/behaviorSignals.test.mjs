@@ -131,6 +131,13 @@ test("collectBehaviorSignals: 브리지 → 신호 조회를 이어 붙여 영�
         { session_id: "s1", tool_name: "Read", is_verification: 1, use_count: "20" }
       ] }), { status: 200 });
     }
+    if (q.includes("FROM retry_analysis")) {
+      return new Response(JSON.stringify({ data: [{ session_id: "s1", rate: "0.2" }] }), { status: 200 });
+    }
+    if (q.includes("FROM efficiency_metrics_daily")) {
+      // 이 테이블엔 session_id 가 없다 — 유저 전체 한 줄만 온다
+      return new Response(JSON.stringify({ data: [{ efficiency: "0.9" }] }), { status: 200 });
+    }
     throw new Error(`unexpected query: ${q.slice(0, 60)}`);
   };
 
@@ -148,6 +155,12 @@ test("collectBehaviorSignals: 브리지 → 신호 조회를 이어 붙여 영�
     assert.equal(wl.avgFrustration, 0.2);
     assert.equal(wl.verificationRatio, 1);
     assert.equal(r.meta.fallback, false);
+
+    // retry 는 세션이 있어 영역에 붙는다
+    assert.equal(wl.retryRate, 0.2);
+    // efficiency 는 세션이 없어 영역엔 안 붙고 유저 전체에만 반영된다
+    assert.equal(wl.efficiency, null);
+    assert.equal(r.overall.efficiency, 0.9);
   } finally {
     clearEnv();
   }
@@ -224,4 +237,64 @@ test("behaviorByArea: 값 있는 영역만 객체로 모은다", () => {
   const signals = { byArea: new Map([["work-log", SUMMARY_A]]), overall: SUMMARY_ALL, meta: { fallback: false } };
   assert.deepEqual(behaviorByArea(signals, ["work-log", "neo-fetch"]), { "work-log": SUMMARY_A });
   assert.deepEqual(behaviorByArea(null, ["work-log"]), {});
+});
+
+// ─── retry / efficiency ──────────────────────────────────────────────────────
+
+test("aggregateSignals: 재시도율·효율을 영역별로 평균한다", () => {
+  const sessionArea = new Map([["s1", "work-log"], ["s2", "work-log"]]);
+  const r = aggregateSignals({
+    sessionArea,
+    frustrationRows: [{ session_id: "s1", score: "0.1", density: "0.01" }],
+    toolRows: [],
+    retryRows: [
+      { session_id: "s1", rate: "0.1" },
+      { session_id: "s2", rate: "0.3" }
+    ],
+    efficiencyRows: [
+      { session_id: "s1", efficiency: "0.8" },
+      { session_id: "s2", efficiency: "0.6" }
+    ]
+  });
+
+  const wl = r.byArea.get("work-log");
+  assert.equal(wl.retryRate, 0.2);
+  assert.equal(wl.efficiency, 0.7);
+  assert.equal(r.overall.retryRate, 0.2);
+});
+
+test("aggregateSignals: 세션 없는 효율 행은 전체에만 쌓이고 조인율을 깎지 않는다", () => {
+  const r = aggregateSignals({
+    sessionArea: new Map([["s1", "work-log"]]),
+    frustrationRows: [{ session_id: "s1", score: "0.1", density: "0.01" }],
+    efficiencyRows: [{ session_id: "", efficiency: "0.9" }]
+  });
+
+  assert.equal(r.meta.joinRatio, 1, "세션 없는 행은 조인율 분모에서 빠져야 한다");
+  assert.equal(r.meta.fallback, false);
+  assert.equal(r.byArea.get("work-log").efficiency, null);
+  assert.equal(r.overall.efficiency, 0.9);
+});
+
+test("aggregateSignals: 재시도·효율 행이 없으면 두 지표는 null", () => {
+  const r = aggregateSignals({
+    sessionArea: new Map([["s1", "work-log"]]),
+    frustrationRows: [{ session_id: "s1", score: "0.1", density: "0.01" }],
+    toolRows: []
+  });
+  assert.equal(r.byArea.get("work-log").retryRate, null);
+  assert.equal(r.byArea.get("work-log").efficiency, null);
+});
+
+test("aggregateSignals: 명시적 null 행 배열을 넘겨도 던지지 않는다", () => {
+  assert.doesNotThrow(() =>
+    aggregateSignals({
+      sessionArea: new Map(),
+      frustrationRows: null,
+      toolRows: null,
+      retryRows: null,
+      efficiencyRows: null
+    })
+  );
+  assert.doesNotThrow(() => aggregateSignals());
 });

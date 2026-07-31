@@ -76,14 +76,29 @@ async function queryClickHouse(query, params, fetchImpl) {
  * 순수 집계. 세션→영역 맵과 신호 행들을 영역별/전체 요약으로 접는다.
  * 조인율이 MIN_JOIN_RATIO 미만이면 byArea 를 비우고 fallback 을 세운다.
  */
-export function aggregateSignals({ sessionArea, frustrationRows = [], toolRows = [] }) {
+export function aggregateSignals({
+  sessionArea,
+  frustrationRows = [],
+  toolRows = [],
+  retryRows = [],
+  efficiencyRows = []
+} = {}) {
   const areaOf = sessionArea instanceof Map ? sessionArea : new Map();
+  // 기본값은 undefined 만 막는다 — 호출자가 명시적 null 을 넘겨도 던지지 않도록 좁힌다.
+  const rowsOf = (v) => (Array.isArray(v) ? v : []);
 
   // 영역 키 → 누산기. null 키는 "전체(overall)".
   const buckets = new Map();
   const bucket = (key) => {
     if (!buckets.has(key)) {
-      buckets.set(key, { sessions: new Set(), scores: [], densities: [], tools: new Map() });
+      buckets.set(key, {
+        sessions: new Set(),
+        scores: [],
+        densities: [],
+        tools: new Map(),
+        retries: [],
+        efficiencies: []
+      });
     }
     return buckets.get(key);
   };
@@ -96,7 +111,7 @@ export function aggregateSignals({ sessionArea, frustrationRows = [], toolRows =
     fn(bucket(key));
   };
 
-  for (const row of frustrationRows) {
+  for (const row of rowsOf(frustrationRows)) {
     const session = String(row?.session_id ?? "");
     const area = areaOf.get(session);
     totalRows += 1;
@@ -113,7 +128,7 @@ export function aggregateSignals({ sessionArea, frustrationRows = [], toolRows =
     }
   }
 
-  for (const row of toolRows) {
+  for (const row of rowsOf(toolRows)) {
     const session = String(row?.session_id ?? "");
     const area = areaOf.get(session);
     totalRows += 1;
@@ -132,6 +147,34 @@ export function aggregateSignals({ sessionArea, frustrationRows = [], toolRows =
     }
   }
 
+  // 세션 단위 단일 수치 신호(재시도율·효율)는 같은 방식으로 누산한다.
+  // efficiency 행은 session_id 가 없어(테이블에 컬럼 자체가 없다) 전체 버킷에만 쌓인다.
+  const addNumeric = (rows, valueKey, field) => {
+    for (const row of rowsOf(rows)) {
+      const session = String(row?.session_id ?? "");
+      const area = areaOf.get(session);
+      // 세션이 없는 행(efficiency 처럼 테이블에 컬럼 자체가 없는 경우)은 조인율 계산에서 뺀다 —
+      // 애초에 맞출 세션이 없으니 조인 성공률을 낮게 왜곡시키면 안 된다.
+      if (session) {
+        totalRows += 1;
+        if (area) matchedRows += 1;
+      }
+
+      const value = num(row?.[valueKey]);
+      if (value == null) continue;
+      for (const key of [null, ...(area ? [area] : [])]) {
+        addTo(key, (b) => {
+          if (session) b.sessions.add(session);
+          b[field].push(value);
+        });
+      }
+    }
+  };
+  addNumeric(retryRows, "rate", "retries");
+  addNumeric(efficiencyRows, "efficiency", "efficiencies");
+
+  const mean = (list) => (list.length ? round(list.reduce((a, c) => a + c, 0) / list.length) : null);
+
   const summarize = (b) => {
     if (!b) return emptySummary();
     const toolEntries = [...b.tools.entries()];
@@ -139,10 +182,10 @@ export function aggregateSignals({ sessionArea, frustrationRows = [], toolRows =
     const verifyUse = toolEntries.reduce((sum, [, v]) => sum + (v.isVerification ? v.count : 0), 0);
     return {
       sessionCount: b.sessions.size,
-      avgFrustration: b.scores.length ? round(b.scores.reduce((a, c) => a + c, 0) / b.scores.length) : null,
-      frustrationDensity: b.densities.length ? round(b.densities.reduce((a, c) => a + c, 0) / b.densities.length) : null,
-      retryRate: null,
-      efficiency: null,
+      avgFrustration: mean(b.scores),
+      frustrationDensity: mean(b.densities),
+      retryRate: mean(b.retries),
+      efficiency: mean(b.efficiencies),
       verificationRatio: totalUse > 0 ? round(verifyUse / totalUse) : null,
       topTools: toolEntries
         .sort((a, b2) => b2[1].count - a[1].count)
@@ -219,12 +262,11 @@ export async function collectBehaviorSignals({ userId = "default", days = 30, fe
     const ids = [...userIds].join(",");
 
     // 2) 신호: user_id 로 좁힌다 (session_id 조인이 실패해도 overall 은 살아남게)
-    const [frustrationRows, toolRows] = await Promise.all([
+    const [frustrationRows, toolRows, retryRows, efficiencyRows] = await Promise.all([
       queryClickHouse(
         `
         SELECT
           session_id,
-          sum(total_requests) AS requests,
           avg(frustration_score) AS score,
           avg(frustration_density) AS density
         FROM frustration_analysis
@@ -249,10 +291,39 @@ export async function collectBehaviorSignals({ userId = "default", days = 30, fe
         FORMAT JSON`,
         { ids },
         fetchImpl
+      ),
+      // 아래 두 테이블은 스키마 확신도가 낮아 개별적으로 비치명적이다 —
+      // 쿼리가 깨져도 좌절·툴 신호는 살린다.
+      queryClickHouse(
+        `
+        SELECT
+          session_id,
+          avg(retry_density) AS rate
+        FROM retry_analysis
+        WHERE user_id IN splitByChar(',', {ids:String})
+          AND date >= today() - ${windowDays}
+        GROUP BY session_id
+        FORMAT JSON`,
+        { ids },
+        fetchImpl
+      ).catch(() => []),
+      // efficiency_metrics_daily 에는 session_id 컬럼이 없다(2026-07-31 실측) —
+      // 영역 귀속은 불가능하고 유저 전체 집계로만 반영한다.
+      queryClickHouse(
+        `
+        SELECT avg(cache_hit_rate) AS efficiency
+        FROM efficiency_metrics_daily
+        WHERE user_id IN splitByChar(',', {ids:String})
+          AND date >= today() - ${windowDays}
+        FORMAT JSON`,
+        { ids },
+        fetchImpl
       )
+        .then((rows) => rows.map((row) => ({ ...row, session_id: "" })))
+        .catch(() => [])
     ]);
 
-    return aggregateSignals({ sessionArea, frustrationRows, toolRows });
+    return aggregateSignals({ sessionArea, frustrationRows, toolRows, retryRows, efficiencyRows });
   } catch (err) {
     return emptySignals(err?.message ?? String(err));
   }
