@@ -397,14 +397,17 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
     principles = prior?.principles ?? [];
   }
 
-  await saveWorkStyleAnalysis({
+  const analysis = {
     generatedAt: new Date().toISOString(),
     llmGeneratedAt,
     windowDays,
     principles,
     areas: enriched,
     droppedAreas
-  }, userId);
+  };
+  await saveWorkStyleAnalysis(analysis, userId);
 
-  return { skipped: false, areaCount: enriched.length, principleCount: principles.length, llmRefreshed: llmStale, behaviorSessions, arealessCount };
+  // analysis 를 그대로 돌려준다 — 프로필 발행이 Blob 을 다시 읽지 않아도 되도록.
+  // 쓰자마자 읽으면 직전 내용이 돌아와 프로필이 한 판 뒤처졌다(2026-07-31).
+  return { skipped: false, areaCount: enriched.length, principleCount: principles.length, llmRefreshed: llmStale, behaviorSessions, arealessCount, analysis };
 }

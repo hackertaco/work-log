@@ -95,14 +95,17 @@ export function createApp() {
     const userIds = configured.length ? configured : ["default"];
 
     const perUser = [];
+    const analyses = {};
     for (const userId of userIds) {
       const collection = await runServerCollection({ userId, dates })
         .catch((err) => ({ error: err.message ?? String(err) }));
       const workStyle = await runWorkStyleAnalysis({ userId, force })
         .catch((err) => ({ skipped: true, reason: err.message ?? String(err) }));
-      perUser.push({ userId, ...collection, workStyle });
+      // 방금 만든 분석을 그대로 넘겨 프로필이 Blob 재읽기에 의존하지 않게 한다.
+      if (workStyle?.analysis) analyses[userId] = workStyle.analysis;
+      perUser.push({ userId, ...collection, workStyle: { ...workStyle, analysis: undefined } });
     }
-    const profiles = await runProfileExport({ userIds }).catch((err) => ({ error: err.message ?? String(err) }));
+    const profiles = await runProfileExport({ userIds, analyses }).catch((err) => ({ error: err.message ?? String(err) }));
     return c.json({ users: userIds, results: perUser, profiles });
   });
 

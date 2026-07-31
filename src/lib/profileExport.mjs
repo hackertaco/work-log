@@ -11,14 +11,20 @@ const REPO = process.env.KB_REPO_NAME || "driving-teacher-knowledge-base";
 const BASE = process.env.KB_BASE_BRANCH || "main";
 const BRANCH = "profiles/auto";
 
-export async function runProfileExport({ userIds, now = new Date().toISOString(), fetchImpl = fetch } = {}) {
+/**
+ * @param {{ userIds?: string[], analyses?: Record<string, object>, now?: string, fetchImpl?: typeof fetch }} [opts]
+ *   analyses — 방금 만든 분석을 유저별로 넘기면 Blob 을 다시 읽지 않는다. 같은 요청 안에서
+ *   쓰자마자 읽으면 직전 내용이 돌아와 프로필이 한 판 뒤처지는 일이 있었다(2026-07-31).
+ *   호출자가 안 넘기면 종전대로 Blob 에서 읽는다.
+ */
+export async function runProfileExport({ userIds, analyses, now = new Date().toISOString(), fetchImpl = fetch } = {}) {
   const users = getAuthUsers();
   const nameOf = (id) => users.find((u) => u.id === id)?.name || id;
   const ids = userIds ?? users.map((u) => u.id);
 
   const built = [], files = [];
   for (const id of ids) {
-    const analysis = await readWorkStyleAnalysis(id).catch(() => null);
+    const analysis = analyses?.[id] ?? await readWorkStyleAnalysis(id).catch(() => null);
     if (!analysis?.principles?.length) continue;
     const handover = await synthesizeHandover(analysis, fetchImpl).catch(() => null);
     const content = renderMemberProfile({ name: nameOf(id), analysis, handover, generatedAt: now, windowDays: analysis.windowDays ?? 30 });

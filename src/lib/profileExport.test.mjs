@@ -36,3 +36,46 @@ test("does not notify when commit changed files but PR did not merge", async () 
   assert.equal(notifySpy.mock.callCount(), 0);
   if (saved === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = saved;
 });
+
+test("analyses 를 넘기면 Blob 의 낡은 내용 대신 그걸 쓴다", async () => {
+  mock.reset();
+  // Blob 은 직전(낡은) 분석을 돌려준다 — 쓰자마자 읽을 때 실제로 일어난 상황
+  mock.module("./blob.mjs", {
+    namedExports: {
+      readWorkStyleAnalysis: async () => ({
+        windowDays: 30,
+        principles: [{ title: "낡은-원칙", description: "d" }],
+        areas: [{ area: "낡은영역", promptCount: 1, judgments: [] }]
+      })
+    }
+  });
+  mock.module("./handoverSynthesis.mjs", { namedExports: { synthesizeHandover: async () => null } });
+  let committedFiles = null;
+  mock.module("./kbCommit.mjs", {
+    namedExports: {
+      commitProfilesToKb: async ({ files }) => {
+        committedFiles = files;
+        return { committed: true, changed: files.map((f) => f.path), skipped: [], pr: 1, merged: false };
+      }
+    }
+  });
+  mock.module("./slackNotify.mjs", { namedExports: { notifyMemberProfile: async () => true } });
+  mock.module("./config.mjs", { namedExports: { loadConfig: () => ({ slackUserId: "" }) } });
+
+  const saved = process.env.GITHUB_TOKEN; process.env.GITHUB_TOKEN = "t";
+  const { runProfileExport } = await import("./profileExport.mjs?" + Math.random());
+
+  const fresh = {
+    windowDays: 30,
+    principles: [{ title: "새-원칙", description: "d" }],
+    areas: [{ area: "새영역", promptCount: 9, judgments: [] }]
+  };
+  const out = await runProfileExport({ userIds: ["seungah"], analyses: { seungah: fresh } });
+
+  assert.deepEqual(out.built, ["seungah"]);
+  assert.match(committedFiles[0].content, /새-원칙/);
+  assert.match(committedFiles[0].content, /새영역/);
+  assert.doesNotMatch(committedFiles[0].content, /낡은/);
+
+  if (saved === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = saved;
+});
