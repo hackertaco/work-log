@@ -31,8 +31,12 @@ export function renderMemberProfile({ name, analysis, handover, generatedAt, win
     L.push("");
   }
 
-  L.push("## 많이 한 일");
-  for (const a of (analysis?.areas ?? []).slice(0, 8)) L.push(`- ${a.area} · ${a.promptCount}회`);
+  // "많이 한 일 · 1599회" 는 성과처럼 읽히지만 실제로는 AI 와 주고받은 횟수다. 프로젝트가
+  // 크면 자연히 커지는 값이라 중요도 순으로 오해할 수 있어, 무엇을 센 건지 라벨에 밝힌다.
+  L.push("## 주로 일한 영역");
+  L.push("_AI 와 주고받은 프롬프트 수 기준입니다. 프로젝트 규모에 비례하므로 중요도 순은 아닙니다._");
+  L.push("");
+  for (const a of (analysis?.areas ?? []).slice(0, 8)) L.push(`- ${a.area} · 프롬프트 ${a.promptCount}건`);
   L.push("");
 
   if (handover && (handover.howToWork.length || handover.whatToAsk.length || handover.strengths.length)) {

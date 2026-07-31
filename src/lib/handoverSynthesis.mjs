@@ -20,7 +20,7 @@ export async function synthesizeHandover(analysis, fetchImpl = fetch) {
     const text = data.output_text || extractOutputText(data) || "";
     if (!text) return null;
     const p = JSON.parse(text);
-    const strs = (v) => (Array.isArray(v) ? v : []).map((s) => String(s).trim()).filter(Boolean).slice(0, 8);
+    const strs = (v) => (Array.isArray(v) ? v : []).map((s) => String(s).trim()).filter(Boolean).slice(0, 5);
     return {
       oneLiner: String(p.oneLiner ?? "").trim(),
       personaPrompt: String(p.personaPrompt ?? "").trim(),
@@ -28,7 +28,7 @@ export async function synthesizeHandover(analysis, fetchImpl = fetch) {
       heuristics: (Array.isArray(p.heuristics) ? p.heuristics : []).map((h) => ({
         principle: String(h?.principle ?? "").trim(), whenApplies: String(h?.whenApplies ?? "").trim(),
         example: String(h?.example ?? "").trim(), howToApply: String(h?.howToApply ?? "").trim()
-      })).filter((h) => h.principle).slice(0, 8)
+      })).filter((h) => h.principle).slice(0, 5)
     };
   } catch { return null; }
 }
@@ -40,8 +40,15 @@ export function buildHandoverPayload(analysis) {
   const instruction =
     `아래는 한 사람의 판단 기준(원칙)과 영역별 판단(근거 포함)이다. 이것을 "남이 그대로 적용할 수 있는" 형태로 변환하라. 한국어. ` +
     `heuristics: 각 원칙을 principle(원칙)·whenApplies(어떤 상황에서 발동)·example(근거 프롬프트에서 온 실제 사례)·howToApply(남이 적용하는 법)로. ` +
+    // 8개까지 뽑으면 서로 겹치면서 힘이 흩어진다. 겹치는 건 합치고 굵은 것만 남긴다.
+    `heuristics 는 3~5개로만. 비슷한 것끼리는 합치고, 가장 반복적으로 드러나는 것만 남겨라. ` +
+    // 원칙 설명에는 "말뿐 아니라 실제 도구 사용·재시도로 뒷받침된다" 같은 행동 근거가 들어
+    // 있는데, 다시 쓰면서 이게 통째로 사라졌다(2026-07-31 발행본 확인). 명시적으로 지킨다.
+    `원칙 설명에 "실제 행동으로 뒷받침된다/어긋난다"는 언급이 있으면 그 근거를 heuristics 와 ` +
+    `personaPrompt 에 반드시 남겨라. 수치를 옮겨 적지는 말고 문장으로. 이건 이 사람이 말로만 ` +
+    `그러는지 실제로 그러는지를 가르는 정보라 빼면 안 된다. ` +
     `personaPrompt: 원칙들을 증류한, 사람 체크리스트로도 AI 시스템 프롬프트로도 재사용 가능한 "이 사람처럼 판단하기" 한 단락. ` +
-    `oneLiner: 한 줄 요약. howToWork/whatToAsk/strengths: 인수인계용 짧은 목록. ` +
+    `oneLiner: 한 줄 요약. howToWork/whatToAsk/strengths: 인수인계용 짧은 목록(각 5개 이내). ` +
     `제공된 근거로 뒷받침되는 것만. 근거 없는 성격 규정·일반론·미화 금지.`;
   const item = (name, req) => ({ type: "array", items: { type: "object", additionalProperties: false, required: req, properties: Object.fromEntries(req.map((k) => [k, { type: "string" }])) } });
   return {
