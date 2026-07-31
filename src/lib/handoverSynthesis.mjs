@@ -39,7 +39,11 @@ export function buildHandoverPayload(analysis) {
     .flatMap((a) => (a.judgments ?? []).map((j) => `[${a.area}] ${j.text} (근거: ${j.evidence})`)).slice(0, 40).join("\n");
   const instruction =
     `아래는 한 사람의 판단 기준(원칙)과 영역별 판단(근거 포함)이다. 이것을 "남이 그대로 적용할 수 있는" 형태로 변환하라. 한국어. ` +
-    `heuristics: 각 원칙을 principle(원칙)·whenApplies(어떤 상황에서 발동)·example(근거 프롬프트에서 온 실제 사례)·howToApply(남이 적용하는 법)로. ` +
+    `heuristics: 각 원칙을 principle(원칙)·whenApplies(어떤 상황에서 발동)·example(실제 사례)·howToApply(남이 적용하는 법)로. ` +
+    // 이 사람이 실제로 친 말이 이 문서에서 제일 믿음직한 부분이다. 요약하면 다른 누구의
+    // 프로필이라 해도 말이 되는 일반론이 된다(2026-07-31 발행본에서 실제로 그렇게 됐다).
+    `example 은 반드시 아래 근거에 있는 **원문을 그대로 따옴표로 인용**하라. 여러 개면 " / " 로 잇는다. ` +
+    `말투·오타를 고치지 말고, 요약하거나 바꿔 쓰지 마라. 인용할 원문이 없으면 그 heuristic 은 빼라. ` +
     // 8개까지 뽑으면 서로 겹치면서 힘이 흩어진다. 겹치는 건 합치고 굵은 것만 남긴다.
     `heuristics 는 3~5개로만. 비슷한 것끼리는 합치고, 가장 반복적으로 드러나는 것만 남겨라. ` +
     // 원칙 설명에는 "말뿐 아니라 실제 도구 사용·재시도로 뒷받침된다" 같은 행동 근거가 들어

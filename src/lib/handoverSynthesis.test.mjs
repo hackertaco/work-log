@@ -36,3 +36,18 @@ test("synthesizeHandover returns null when disabled or key missing", async () =>
   assert.equal(await synthesizeHandover(ANALYSIS, () => { throw new Error("no fetch"); }), null);
   if (saved !== undefined) process.env.OPENAI_API_KEY = saved;
 });
+
+test("사례는 원문 인용을 요구한다 (요약하면 남의 프로필과 구분이 안 된다)", () => {
+  const payload = buildHandoverPayload({
+    principles: [{ title: "P", description: "d" }],
+    areas: [{ area: "work-log", judgments: [{ text: "t", evidence: "너무... 복잡스럽다 화면이" }] }]
+  });
+  const instruction = payload.input[0].content;
+
+  assert.ok(instruction.includes("원문을 그대로 따옴표로 인용"));
+  assert.ok(instruction.includes("요약하거나 바꿔 쓰지 마라"));
+  // 근거 원문이 실제로 모델에 전달돼야 인용이 가능하다
+  assert.ok(payload.input[1].content.includes("너무... 복잡스럽다 화면이"));
+  // 항목 수도 함께 제한한다
+  assert.ok(instruction.includes("3~5개"));
+});
