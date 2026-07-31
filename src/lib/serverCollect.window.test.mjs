@@ -36,6 +36,11 @@ test("maps window rows and passes days param; returns local commit-window shape"
   ]);
   assert.ok(capturedBody.includes("INTERVAL 30 DAY"));
   assert.ok(capturedUrl.includes("param_email=seungah.jung%40tgsociety.co.kr"));
+  // 기계가 만든 프롬프트(Codex 자동리뷰 등)는 조회 단계에서 빠져야 한다
+  assert.ok(capturedBody.includes("The following is the Codex agent history"));
+  assert.ok(capturedBody.includes("trimLeft(prompt_text)"));
+  // 경로 없는 기록은 영역에 못 붙으므로 창을 낭비하지 않게 뺀다
+  assert.ok(capturedBody.includes("project_path != ''"));
 
   for (const [k, v] of [["CLICKHOUSE_URL", saved.url], ["CLICKHOUSE_USER", saved.user], ["CLICKHOUSE_PASSWORD", saved.pw], ["WORK_LOG_ZEUDE_EMAIL", saved.email]]) {
     if (v === undefined) delete process.env[k]; else process.env[k] = v;

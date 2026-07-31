@@ -31,6 +31,28 @@ import { groupWorkAreas, areaKey } from "./workAreaGrouping.mjs";
 import { extractWorkStyleForArea, synthesizeWorkStylePrinciples } from "./workStyleExtract.mjs";
 import { behaviorByArea, behaviorForArea, collectBehaviorSignals } from "./behaviorSignals.mjs";
 
+/**
+ * 사람이 직접 친 프롬프트만 남기는 SQL 조건.
+ *
+ * Codex 는 자기가 자기에게 보내는 요청도 프롬프트로 기록한다 — 자동 코드리뷰, 안전성
+ * 판정, 이미지 생성 지시, in-app-browser 상태 주입 같은 것들. 2026-07-31 실측으로 경로
+ * 없는 codex 기록 3400여 건 중 대부분이 이 부류였다. 업무방식 프로필은 "이 사람이 무엇을
+ * 어떻게 물었나"를 보는 것이라, 기계가 만든 문장이 섞이면 프로필이 봇 말투로 오염된다.
+ *
+ * 여는 문구로 판별한다. 앞쪽 공백을 먼저 떼는 게 중요하다 — 실제 데이터에 " <heartbeat>"
+ * 처럼 공백이 붙어 들어와 기존 '<' 검사만으로는 새어나갔다.
+ */
+const HUMAN_PROMPT_FILTER = `
+      AND NOT arrayExists(pre -> startsWith(trimLeft(prompt_text), pre), [
+        '<',
+        'The following is the Codex agent history',
+        'You are a helpful assistant.',
+        'You are an expert at upholding safety',
+        'Use your built-in image_generation tool',
+        '# In app browser:',
+        '# Overview'
+      ])`;
+
 /** 오늘 날짜 (KST) — 서버는 UTC 이므로 명시적으로 변환한다. */
 export function seoulDate(offsetDays = 0) {
   const now = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
@@ -207,7 +229,7 @@ export async function collectZeudePrompts(date, config = {}, fetchImpl = fetch) 
       AND timestamp <  toDateTime({date:String}) + INTERVAL 15 HOUR
       AND prompt_type = 'natural'
       AND length(prompt_text) >= 12
-      AND NOT startsWith(prompt_text, '<')  -- task-notification 등 시스템 생성 XML 제외
+${HUMAN_PROMPT_FILTER}
     GROUP BY prompt_id, source
     ORDER BY min(timestamp)
     LIMIT 200
@@ -280,7 +302,7 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
       AND timestamp >= now() - INTERVAL ${windowDays} DAY
       AND prompt_type = 'natural'
       AND length(prompt_text) >= 12
-      AND NOT startsWith(prompt_text, '<')
+${HUMAN_PROMPT_FILTER}
       -- 경로 없는 기록(Codex 로거는 cwd 를 안 보낸다)은 작업 영역에 못 붙는다. 남겨두면
       -- LIMIT 을 다 먹어 창이 30일에서 며칠로 줄어든다(2026-07-31: 4일치로 붕괴).
       AND project_path != ''
