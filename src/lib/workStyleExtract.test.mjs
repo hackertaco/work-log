@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 
 import {
   buildExtractPayload,
@@ -282,4 +283,17 @@ test("buildSynthesisPayload: behavior 가 있으면 판단만이 아니라 행�
   assert.ok(withB.includes("제공된 판단과 행동신호에서"));
   assert.ok(withoutB.includes("제공된 판단에서 실제로"));
   assert.ok(!withoutB.includes("행동신호"));
+});
+
+// ─── v1 페이로드 고정 ─────────────────────────────────────────────────────────
+
+test("행동신호가 없으면 v2 이전(00084f4) 페이로드와 글자 하나까지 같다", async () => {
+  // 지금까지의 하위호환 테스트는 새 코드끼리 비교해서, 두 쪽이 함께 틀어지면 못 잡았다.
+  // 이 테스트는 v2 도입 직전 커밋이 만들던 실제 페이로드를 스냅샷으로 박아 비교한다.
+  const golden = JSON.parse(
+    await readFile(new URL("./__fixtures__/workstyle-payload-v1.json", import.meta.url), "utf8")
+  );
+
+  assert.deepEqual(buildExtractPayload("work-log", ["p1", "p2"]), golden.extract);
+  assert.deepEqual(buildSynthesisPayload([{ area: "work-log", text: "t" }]), golden.synth);
 });

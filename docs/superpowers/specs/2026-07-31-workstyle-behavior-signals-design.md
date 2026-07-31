@@ -157,6 +157,23 @@ agent_key 로 `zeude_users` 를 조회해 user_id·user_email 을 붙인다. 따
 `/api/collect` 가 `runProfileExport({ analyses })` 로 넘긴다. Blob 읽기는 분석을 안 들고
 오는 호출자를 위한 폴백으로 남는다. 한 번의 실행으로 최신 프로필이 발행되는 것을 확인했다.
 
+## 후속 항목 처리 (2026-07-31)
+
+- **v1 페이로드 고정 완료.** 기존 하위호환 테스트는 새 코드끼리 비교해서 양쪽이 함께
+  틀어지면 못 잡았다. v2 직전 커밋(`00084f4`)이 만들던 실제 페이로드를
+  `src/lib/__fixtures__/workstyle-payload-v1.json` 에 스냅샷으로 박고 대조한다. 통과 —
+  신호 없는 경로는 지금도 글자 하나까지 v1 과 같다.
+- **공용 아이디 배제가 보이게 됐다.** 조용히 버리면 남의 기록이 섞일 뻔했다는 사실을 아무도
+  모른다. `meta.sharedIdsExcluded` → `runWorkStyleAnalysis` 반환값으로 올라온다.
+- **조인율 전 멤버 실측 완료(30일).** 전원 0.2 임계값 상회 — 폴백은 아무에게도 안 걸린다.
+  jjs01hwang 0.949 / limjaee@gmail 1.0 / thkim 1.0 / jay9304 1.0 / chloe412 1.0 /
+  seungah 0.66 / limjaee@tgsociety 0.273 / only.subscription.sa 0.363.
+  낮은 둘은 Codex 쪽 신원이고, 이제 별칭으로 합쳐지거나 공용 아이디로 배제된다.
+- **handoverSynthesis 에 신호를 넘기는 건 하지 않기로 한다.** 그 층은 이미 분석을 읽고,
+  분석의 원칙 설명 안에 행동 근거가 문장으로 들어 있다 — 정보는 이미 닿아 있다. 여기에
+  수치를 다시 먹이면 가장 사람이 많이 보는 산출물에 지표 블록이 생길 위험만 커진다.
+  발행본에서 근거가 옅어지는 건 요약이 하는 일이지 결함이 아니다.
+
 ## 리스크
 
 - **세션id 조인 불일치(추측·최우선 검증):** ai_prompts 의 session_id 와 신호 테이블의

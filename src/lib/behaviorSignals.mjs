@@ -225,7 +225,10 @@ export function aggregateSignals({
  * 쓰면 남의 기록이 섞인다. 판별에 실패하면(조회 오류) 안전하게 후보를 그대로 돌려준다 —
  * 신호가 조금 섞이는 것이 신호를 통째로 잃는 것보다는 낫다.
  *
- * @returns {Promise<string[]>} 이 사람 전용으로 판단되는 user_id 목록
+ * 걸러낸 아이디는 호출자에게 알린다 — 조용히 버리면 남의 기록이 섞일 뻔했다는 사실을
+ * 아무도 모른 채 지나간다. meta.sharedIdsExcluded 로 올라간다.
+ *
+ * @returns {Promise<{owned: string[], excluded: string[]}>}
  */
 async function excludeSharedIds(candidateIds, emails, windowDays, fetchImpl) {
   const all = [...candidateIds];
@@ -246,9 +249,10 @@ async function excludeSharedIds(candidateIds, emails, windowDays, fetchImpl) {
     );
     const owned = all.filter((id) => !shared.has(id));
     // 전부 공용으로 판정되면 판별을 신뢰하지 않고 후보를 그대로 쓴다.
-    return owned.length ? owned : all;
+    if (!owned.length) return { owned: all, excluded: [] };
+    return { owned, excluded: all.filter((id) => shared.has(id)) };
   } catch {
-    return all;
+    return { owned: all, excluded: [] };
   }
 }
 
@@ -303,7 +307,8 @@ export async function collectBehaviorSignals({ userId = "default", days = 30, fe
     //    그건 개인이 아니라 여러 사람이 돌려쓰는 서비스 계정이다(실측: Codex 로거가
     //    하나의 아이디로 여러 사람 이메일을 찍는다). 그런 아이디로 신호를 긁으면
     //    남의 좌절·툴 기록이 이 사람 프로필에 섞인다.
-    const ownedIds = await excludeSharedIds(candidateIds, emails, windowDays, fetchImpl);
+    const { owned: ownedIds, excluded: sharedIdsExcluded } =
+      await excludeSharedIds(candidateIds, emails, windowDays, fetchImpl);
     if (!ownedIds.length) return emptySignals();
 
     // user_id 목록은 IN splitByChar 로 넘긴다 — Array 파라미터 인용 규칙을 피한다.
@@ -371,7 +376,9 @@ export async function collectBehaviorSignals({ userId = "default", days = 30, fe
         .catch(() => [])
     ]);
 
-    return aggregateSignals({ sessionArea, frustrationRows, toolRows, retryRows, efficiencyRows });
+    const signals = aggregateSignals({ sessionArea, frustrationRows, toolRows, retryRows, efficiencyRows });
+    if (sharedIdsExcluded.length) signals.meta.sharedIdsExcluded = sharedIdsExcluded;
+    return signals;
   } catch (err) {
     return emptySignals(err?.message ?? String(err));
   }

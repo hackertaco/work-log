@@ -358,11 +358,13 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
 
   let behaviorSessions = null;
   let arealessCount = null;
+  let sharedIdsExcluded = null;
 
   if (llmStale) {
     // 행동신호는 LLM 재생성 때만 필요하다 — FRESH 경로에서 ClickHouse 를 두드리지 않는다.
     const signals = await collectBehaviorSignals({ userId, days: windowDays }).catch(() => null);
     behaviorSessions = signals?.meta?.sessions ?? null;
+    sharedIdsExcluded = signals?.meta?.sharedIdsExcluded ?? null;
 
     enriched = [];
     for (const area of areas) {
@@ -409,5 +411,5 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
 
   // analysis 를 그대로 돌려준다 — 프로필 발행이 Blob 을 다시 읽지 않아도 되도록.
   // 쓰자마자 읽으면 직전 내용이 돌아와 프로필이 한 판 뒤처졌다(2026-07-31).
-  return { skipped: false, areaCount: enriched.length, principleCount: principles.length, llmRefreshed: llmStale, behaviorSessions, arealessCount, analysis };
+  return { skipped: false, areaCount: enriched.length, principleCount: principles.length, llmRefreshed: llmStale, behaviorSessions, arealessCount, sharedIdsExcluded, analysis };
 }
