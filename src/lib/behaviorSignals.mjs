@@ -257,3 +257,26 @@ export async function collectBehaviorSignals({ userId = "default", days = 30, fe
     return emptySignals(err?.message ?? String(err));
   }
 }
+
+/**
+ * 이 영역의 판단 추출에 쓸 신호를 고른다.
+ * 영역 귀속이 유효하면 영역 신호, 폴백이면 유저 전체 신호, 아무것도 없으면 null.
+ */
+export function behaviorForArea(signals, area) {
+  if (!signals) return null;
+  const byArea = signals.byArea instanceof Map ? signals.byArea : new Map();
+  const hit = byArea.get(area);
+  if (hit?.sessionCount) return hit;
+  if (signals.meta?.fallback && signals.overall?.sessionCount) return signals.overall;
+  return null;
+}
+
+/** 여러 영역에 대해 behaviorForArea 를 한 번에 — 값 있는 영역만 담는다. */
+export function behaviorByArea(signals, areaNames = []) {
+  const out = {};
+  for (const area of Array.isArray(areaNames) ? areaNames : []) {
+    const b = behaviorForArea(signals, area);
+    if (b) out[area] = b;
+  }
+  return out;
+}

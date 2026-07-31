@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { aggregateSignals, collectBehaviorSignals, emptySummary } from "./behaviorSignals.mjs";
+import { aggregateSignals, behaviorByArea, behaviorForArea, collectBehaviorSignals, emptySummary } from "./behaviorSignals.mjs";
 
 const CH_KEYS = ["CLICKHOUSE_URL", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD", "WORK_LOG_ZEUDE_EMAIL"];
 
@@ -185,4 +185,43 @@ test("collectBehaviorSignals: 브리지가 비면 신호 조회를 하지 않는
   } finally {
     clearEnv();
   }
+});
+
+// ─── behaviorForArea / behaviorByArea ────────────────────────────────────────
+
+const SUMMARY_A = { ...emptySummary(), sessionCount: 3, avgFrustration: 0.2 };
+const SUMMARY_ALL = { ...emptySummary(), sessionCount: 9, avgFrustration: 0.5 };
+
+test("behaviorForArea: 영역 신호가 있으면 그걸 쓴다", () => {
+  const signals = {
+    byArea: new Map([["work-log", SUMMARY_A]]),
+    overall: SUMMARY_ALL,
+    meta: { fallback: false }
+  };
+  assert.deepEqual(behaviorForArea(signals, "work-log"), SUMMARY_A);
+});
+
+test("behaviorForArea: 폴백이면 모든 영역이 유저 전체 신호를 쓴다", () => {
+  const signals = { byArea: new Map(), overall: SUMMARY_ALL, meta: { fallback: true } };
+  assert.deepEqual(behaviorForArea(signals, "work-log"), SUMMARY_ALL);
+  assert.deepEqual(behaviorForArea(signals, "knowledge-base"), SUMMARY_ALL);
+});
+
+test("behaviorForArea: 신호가 아예 없으면 null (v1 동작)", () => {
+  assert.equal(behaviorForArea(null, "work-log"), null);
+  assert.equal(
+    behaviorForArea({ byArea: new Map(), overall: emptySummary(), meta: { fallback: true } }, "work-log"),
+    null
+  );
+});
+
+test("behaviorForArea: 폴백 아닌데 그 영역 신호가 없으면 null", () => {
+  const signals = { byArea: new Map([["work-log", SUMMARY_A]]), overall: SUMMARY_ALL, meta: { fallback: false } };
+  assert.equal(behaviorForArea(signals, "neo-fetch"), null);
+});
+
+test("behaviorByArea: 값 있는 영역만 객체로 모은다", () => {
+  const signals = { byArea: new Map([["work-log", SUMMARY_A]]), overall: SUMMARY_ALL, meta: { fallback: false } };
+  assert.deepEqual(behaviorByArea(signals, ["work-log", "neo-fetch"]), { "work-log": SUMMARY_A });
+  assert.deepEqual(behaviorByArea(null, ["work-log"]), {});
 });
