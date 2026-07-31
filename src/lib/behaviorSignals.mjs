@@ -111,11 +111,18 @@ export function aggregateSignals({
     fn(bucket(key));
   };
 
+  // 조인율은 "세션끼리 실제로 맞는가"를 재는 값이다. 세션이 없는 행은 맞출 대상이
+  // 애초에 없으므로 분모에서 뺀다 — 넣으면 폴백 쪽으로 부당하게 끌린다.
+  const countJoin = (session, area) => {
+    if (!session) return;
+    totalRows += 1;
+    if (area) matchedRows += 1;
+  };
+
   for (const row of rowsOf(frustrationRows)) {
     const session = String(row?.session_id ?? "");
     const area = areaOf.get(session);
-    totalRows += 1;
-    if (area) matchedRows += 1;
+    countJoin(session, area);
 
     const score = num(row?.score);
     const density = num(row?.density);
@@ -131,8 +138,7 @@ export function aggregateSignals({
   for (const row of rowsOf(toolRows)) {
     const session = String(row?.session_id ?? "");
     const area = areaOf.get(session);
-    totalRows += 1;
-    if (area) matchedRows += 1;
+    countJoin(session, area);
 
     const tool = String(row?.tool_name ?? "").trim();
     const count = num(row?.use_count) ?? 0;
@@ -153,12 +159,7 @@ export function aggregateSignals({
     for (const row of rowsOf(rows)) {
       const session = String(row?.session_id ?? "");
       const area = areaOf.get(session);
-      // 세션이 없는 행(efficiency 처럼 테이블에 컬럼 자체가 없는 경우)은 조인율 계산에서 뺀다 —
-      // 애초에 맞출 세션이 없으니 조인 성공률을 낮게 왜곡시키면 안 된다.
-      if (session) {
-        totalRows += 1;
-        if (area) matchedRows += 1;
-      }
+      countJoin(session, area);
 
       const value = num(row?.[valueKey]);
       if (value == null) continue;

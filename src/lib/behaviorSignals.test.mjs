@@ -298,3 +298,21 @@ test("aggregateSignals: 명시적 null 행 배열을 넘겨도 던지지 않는�
   );
   assert.doesNotThrow(() => aggregateSignals());
 });
+
+test("aggregateSignals: 세션이 빈 좌절/툴 행도 조인율 분모에서 빠진다", () => {
+  const r = aggregateSignals({
+    sessionArea: new Map([["s1", "work-log"]]),
+    frustrationRows: [
+      { session_id: "s1", score: "0.1", density: "0.01" },
+      { session_id: "", score: "0.9", density: "0.09" }
+    ],
+    toolRows: [{ session_id: "", tool_name: "Bash", is_verification: 0, use_count: "3" }]
+  });
+
+  // 맞출 세션이 없는 행 2개는 분모에 안 들어간다 → 1/1
+  assert.equal(r.meta.joinRatio, 1);
+  assert.equal(r.meta.totalRows, 1);
+  assert.equal(r.meta.fallback, false);
+  // 값 자체는 전체 집계에 여전히 반영된다
+  assert.equal(r.overall.avgFrustration, 0.5);
+});
