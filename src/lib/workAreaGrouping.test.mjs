@@ -48,12 +48,30 @@ test("caps at topN and reports dropped count", () => {
   assert.equal(areas[0].area, "repo-7");
 });
 
-test("missing projectPath falls back to 'unknown'", () => {
-  const { areas } = groupWorkAreas([P("", "뭔가", "2026-07-01"), P(null, "또", "2026-07-01")]);
-  assert.equal(areas[0].area, "unknown");
-  assert.equal(areas[0].promptCount, 2);
+test("경로 없는 프롬프트만 있으면 작업 영역이 하나도 안 나온다", () => {
+  // areaKey 는 여전히 "unknown" 을 돌려주지만(위 areaKey 테스트), 그건 영역 이름이 아니라
+  // "모른다"는 표시다. 영역 목록에 넣으면 실제 영역을 밀어내므로 드롭으로만 센다.
+  const { areas, droppedAreas } = groupWorkAreas([P("", "뭔가", "2026-07-01"), P(null, "또", "2026-07-01")]);
+  assert.deepEqual(areas, []);
+  assert.equal(droppedAreas, 1);
 });
 
 test("empty input returns empty areas", () => {
   assert.deepEqual(groupWorkAreas([]), { areas: [], droppedAreas: 0 });
+});
+
+test("groupWorkAreas: 경로 없는 unknown 은 영역 목록에서 빠지고 드롭으로 센다", () => {
+  const prompts = [
+    ...Array.from({ length: 50 }, () => ({ text: "no path", projectPath: "", date: "2026-07-30" })),
+    { text: "a", projectPath: "/Users/x/company-code/work-log", date: "2026-07-30" },
+    { text: "b", projectPath: "/Users/x/company-code/work-log", date: "2026-07-31" },
+    { text: "c", projectPath: "/Users/x/company-code/kb", date: "2026-07-31" }
+  ];
+
+  const { areas, droppedAreas } = groupWorkAreas(prompts, { topN: 5 });
+
+  // 건수로는 unknown 이 압도적이지만 영역이 아니다
+  assert.ok(!areas.some((a) => a.area === "unknown"));
+  assert.deepEqual(areas.map((a) => a.area), ["work-log", "kb"]);
+  assert.equal(droppedAreas, 1);
 });

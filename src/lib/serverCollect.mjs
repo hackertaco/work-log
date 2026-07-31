@@ -279,6 +279,9 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
       AND prompt_type = 'natural'
       AND length(prompt_text) >= 12
       AND NOT startsWith(prompt_text, '<')
+      -- 경로 없는 기록(Codex 로거는 cwd 를 안 보낸다)은 작업 영역에 못 붙는다. 남겨두면
+      -- LIMIT 을 다 먹어 창이 30일에서 며칠로 줄어든다(2026-07-31: 4일치로 붕괴).
+      AND project_path != ''
     GROUP BY prompt_id
     ORDER BY max(timestamp) DESC
     LIMIT 2000

@@ -21,10 +21,16 @@ export function groupWorkAreas(prompts, { topN = 5 } = {}) {
     map.set(area, entry);
   }
 
-  const sorted = [...map.values()].sort((a, b) => b.promptCount - a.promptCount);
+  // "unknown"(작업 경로가 없는 기록)은 작업 영역이 아니다. Codex 로거는 경로를 안 남겨
+  // 이 버킷이 수천 건까지 불어나는데, 그대로 두면 실제 영역들을 밀어내고 1위를 차지한다
+  // (2026-07-31: unknown 1639건이 상위 5개를 잠식). 영역 목록에서 빼고 드롭으로 센다.
+  const sorted = [...map.values()]
+    .filter((a) => a.area !== "unknown")
+    .sort((a, b) => b.promptCount - a.promptCount);
+  const unknownDropped = map.has("unknown") ? 1 : 0;
   return {
     areas: sorted.slice(0, topN),
-    droppedAreas: Math.max(0, sorted.length - topN)
+    droppedAreas: Math.max(0, sorted.length - topN) + unknownDropped
   };
 }
 
