@@ -108,7 +108,9 @@ export function formatBehaviorContext(behavior) {
   if (behavior.retryRate != null) lines.push(`- 재시도 비율 ${pct(behavior.retryRate)}`);
   if (behavior.efficiency != null) lines.push(`- 효율 지표 ${behavior.efficiency}`);
   if (behavior.verificationRatio != null) lines.push(`- 검증 목적 툴 사용 비중 ${pct(behavior.verificationRatio)}`);
-  const tools = (behavior.topTools ?? []).filter((t) => t?.tool);
+  const tools = (Array.isArray(behavior.topTools) ? behavior.topTools : []).filter(
+    (t) => t?.tool && t?.count != null
+  );
   if (tools.length) {
     lines.push(
       `- 많이 쓴 툴: ${tools.map((t) => `${t.tool} ${t.count}회${t.isVerification ? "(검증)" : ""}`).join(", ")}`

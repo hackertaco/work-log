@@ -196,6 +196,21 @@ test("formatBehaviorContext: null 지표는 줄을 만들지 않는다", () => {
   assert.ok(text.includes("검증"));
 });
 
+test("formatBehaviorContext: topTools 가 배열이 아니어도 던지지 않는다", () => {
+  assert.doesNotThrow(() => formatBehaviorContext({ ...BEHAVIOR, topTools: { tool: "Read", count: 1 } }));
+  const text = formatBehaviorContext({ ...BEHAVIOR, topTools: { tool: "Read", count: 1 } });
+  assert.equal(typeof text, "string");
+});
+
+test("formatBehaviorContext: count 없는 툴 항목은 걸러진다", () => {
+  const text = formatBehaviorContext({
+    ...BEHAVIOR,
+    topTools: [{ tool: "Read" }, { tool: "Bash", count: 5 }]
+  });
+  assert.ok(!text.includes("undefined"));
+  assert.ok(text.includes("Bash 5회"));
+});
+
 test("buildExtractPayload: behavior 없으면 v1 페이로드와 완전히 동일", () => {
   const a = buildExtractPayload("work-log", ["p1", "p2"]);
   const b = buildExtractPayload("work-log", ["p1", "p2"], null);
