@@ -76,6 +76,17 @@ work-log 수집(`runWorkStyleAnalysis`) 안에서 판단 추출 **직전에** �
   - `runWorkStyleAnalysis` 가 LLM 재생성 분기에서 `collectBehaviorSignals` 를 한 번 호출,
     영역별로 `extractWorkStyleForArea` 에 전달. 7일 staleness 게이트 그대로.
 
+## 스키마 실측 결과 (2026-07-31, Task 1)
+
+- `retry_analysis` 컬럼: `source LowCardinality(String), user_id String, session_id String, date Date, total_requests UInt64, likely_retries UInt64, retry_density Float64`
+- `efficiency_metrics_daily` 컬럼: `user_id String, source String, date Date, total_input Int64, total_output Int64, total_requests UInt64, total_cache_read Int64, total_cache_creation Int64, cache_hit_rate Float64, avg_input_per_request Float64, avg_output_per_request Float64, avg_duration_ms Float64`
+- 재시도율로 쓸 컬럼: `likely_retries` / `retry_density` (session_id 있음, 세션 단위 귀속 가능)
+- 효율로 쓸 컬럼: `cache_hit_rate`, `avg_duration_ms` (단, **session_id 없음** — user_id + date 단위로만 조인 가능, 영역별 귀속은 안 되고 유저 전체 집계만 가능)
+- 세션 조인율 (seungah.jung@tgsociety.co.kr, 30일, prompt_sessions=261, user_ids=2 — `diag` 소스 1건 섞여있음, 실질 유저는 1명):
+  - frustration_analysis: matched 65 / signal 101 = 0.644
+  - tool_usage_daily: matched 92 / signal 93 = 0.989
+- 결론: **영역별 귀속 유효** — 두 신호 테이블 모두 조인율이 0.2 임계값을 크게 상회(0.644, 0.989). Task 2 는 폴백 경로를 유지하되 기본 경로로 영역별 귀속을 기대해도 됨. `efficiency_metrics_daily` 는 session_id 부재로 애초에 영역별 귀속 대상이 아니며, Task 6 에서 유저 전체 집계 경로로만 다룬다.
+
 ## 리스크
 
 - **세션id 조인 불일치(추측·최우선 검증):** ai_prompts 의 session_id 와 신호 테이블의
