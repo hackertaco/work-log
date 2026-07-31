@@ -270,7 +270,9 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
   const query = `
     SELECT
       argMax(prompt_text, timestamp) AS text,
-      argMax(project_path, timestamp) AS project_path,
+      -- 별칭을 원본 컬럼과 같은 이름으로 두면 아래 WHERE 의 project_path 가 이 집계식으로
+      -- 해석돼 ClickHouse 가 거부한다(Code 184). 별칭 이름을 따로 준다.
+      argMax(project_path, timestamp) AS proj_path,
       argMax(source, timestamp) AS source,
       toString(toDate(max(timestamp) + INTERVAL 9 HOUR)) AS kst_date
     FROM ai_prompts
@@ -303,7 +305,7 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
   return (body.data ?? [])
     .map((row) => ({
       text: String(row.text ?? "").slice(0, 300),
-      projectPath: String(row.project_path ?? ""),
+      projectPath: String(row.proj_path ?? ""),
       source: row.source === "codex" ? "codex" : "claude",
       date: String(row.kst_date ?? "")
     }))

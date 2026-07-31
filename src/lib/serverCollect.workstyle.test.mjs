@@ -99,9 +99,9 @@ test("STALE: prior >7d old triggers LLM re-extract and llmRefreshed:true", async
   priorAnalysis = { llmGeneratedAt: "2020-01-01T00:00:00.000Z", areas: [] };
 
   const rows = [
-    { text: "work-log 리팩토링 관련 질문", project_path: "/Users/x/company-code/work-log", source: "claude", kst_date: "2026-06-01" },
-    { text: "work-log 배포 관련 질문", project_path: "/Users/x/company-code/work-log", source: "claude", kst_date: "2026-06-02" },
-    { text: "knowledge-base 문서 정리", project_path: "/Users/x/company-code/knowledge-base", source: "codex", kst_date: "2026-06-03" }
+    { text: "work-log 리팩토링 관련 질문", proj_path: "/Users/x/company-code/work-log", source: "claude", kst_date: "2026-06-01" },
+    { text: "work-log 배포 관련 질문", proj_path: "/Users/x/company-code/work-log", source: "claude", kst_date: "2026-06-02" },
+    { text: "knowledge-base 문서 정리", proj_path: "/Users/x/company-code/knowledge-base", source: "codex", kst_date: "2026-06-03" }
   ];
   const restoreFetch = mockFetchWithRows(rows);
 
@@ -161,7 +161,7 @@ test("FRESH: prior <7d old reuses prior did/judgments and llmRefreshed:false", a
   };
 
   const rows = [
-    { text: "work-log 관련 프롬프트", project_path: "/Users/x/company-code/work-log", source: "claude", kst_date: "2026-06-01" }
+    { text: "work-log 관련 프롬프트", proj_path: "/Users/x/company-code/work-log", source: "claude", kst_date: "2026-06-01" }
   ];
   const restoreFetch = mockFetchWithRows(rows);
 

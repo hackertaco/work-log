@@ -21,8 +21,8 @@ test("maps window rows and passes days param; returns local commit-window shape"
     // ClickHouse 는 ORDER BY max(timestamp) DESC 로 최신순으로 반환한다
     return new Response(JSON.stringify({
       data: [
-        { text: "검정 데이터 저장", project_path: "/x/neo-fetch", source: "codex", kst_date: "2026-06-27" },
-        { text: "카피 번역체 고쳐", project_path: "/x/dt-frontend", source: "claude", kst_date: "2026-06-26" }
+        { text: "검정 데이터 저장", proj_path: "/x/neo-fetch", source: "codex", kst_date: "2026-06-27" },
+        { text: "카피 번역체 고쳐", proj_path: "/x/dt-frontend", source: "claude", kst_date: "2026-06-26" }
       ]
     }), { status: 200 });
   };
@@ -80,9 +80,9 @@ test("reverses DESC rows back to chronological ascending order", async () => {
   // 서버가 LIMIT 2000 으로 잘라도 최신 데이터가 남도록 DESC(최신순)로 온다고 가정한 3행 fixture
   const fetchImpl = async () => new Response(JSON.stringify({
     data: [
-      { text: "third newest", project_path: "/x/a", source: "claude", kst_date: "2026-06-28" },
-      { text: "second", project_path: "/x/b", source: "claude", kst_date: "2026-06-27" },
-      { text: "oldest", project_path: "/x/c", source: "codex", kst_date: "2026-06-26" }
+      { text: "third newest", proj_path: "/x/a", source: "claude", kst_date: "2026-06-28" },
+      { text: "second", proj_path: "/x/b", source: "claude", kst_date: "2026-06-27" },
+      { text: "oldest", proj_path: "/x/c", source: "codex", kst_date: "2026-06-26" }
     ]
   }), { status: 200 });
 
