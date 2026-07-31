@@ -22,7 +22,7 @@
  */
 
 import { buildSummary } from "./batch.mjs";
-import { loadConfig } from "./config.mjs";
+import { loadConfig, zeudeEmailsOf } from "./config.mjs";
 import { readWorklogDaily, saveWorklogDaily, saveWorklogProfile, saveWorkStyleAnalysis, readWorkStyleAnalysis } from "./blob.mjs";
 import { rebuildProfileFromBlob } from "./profile.mjs";
 import { detectPrBranchMentions } from "./resumePrBranchParser.mjs";
@@ -195,14 +195,14 @@ export async function collectZeudePrompts(date, config = {}, fetchImpl = fetch) 
   const url = process.env.CLICKHOUSE_URL;
   const user = process.env.CLICKHOUSE_USER;
   const password = process.env.CLICKHOUSE_PASSWORD;
-  const email = config.zeudeEmail || process.env.WORK_LOG_ZEUDE_EMAIL || "";
-  if (!url || !user || !email) return [];
+  const emails = zeudeEmailsOf(config);
+  if (!url || !user || !emails.length) return [];
 
   // ai_prompts 는 MergeTree 라 PATCH 업데이트가 중복 행으로 쌓인다 — prompt_id 로 dedupe
   const query = `
     SELECT source, argMax(prompt_text, timestamp) AS text, argMax(project_path, timestamp) AS project_path
     FROM ai_prompts
-    WHERE user_email = {email:String}
+    WHERE lower(user_email) IN splitByChar(',', {email:String})
       AND timestamp >= toDateTime({date:String}) - INTERVAL 9 HOUR
       AND timestamp <  toDateTime({date:String}) + INTERVAL 15 HOUR
       AND prompt_type = 'natural'
@@ -213,7 +213,7 @@ export async function collectZeudePrompts(date, config = {}, fetchImpl = fetch) 
     LIMIT 200
     FORMAT JSON`;
 
-  const endpoint = `${url.replace(/\/$/, "")}/?param_email=${encodeURIComponent(email)}&param_date=${encodeURIComponent(`${date} 00:00:00`)}`;
+  const endpoint = `${url.replace(/\/$/, "")}/?param_email=${encodeURIComponent(emails.join(","))}&param_date=${encodeURIComponent(`${date} 00:00:00`)}`;
   const res = await fetchImpl(endpoint, {
     method: "POST",
     headers: {
@@ -260,11 +260,11 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
   const url = process.env.CLICKHOUSE_URL;
   const user = process.env.CLICKHOUSE_USER;
   const password = process.env.CLICKHOUSE_PASSWORD;
-  // 유저별 Zeude 이메일로 조회한다 (WORK_LOG_USERS_JSON 의 sources.zeudeEmail).
-  // config.zeudeEmail 은 loadConfig 안에서 WORK_LOG_ZEUDE_EMAIL 로 폴백된다.
+  // 유저별 Zeude 이메일로 조회한다 (WORK_LOG_USERS_JSON 의 sources.zeudeEmail/zeudeEmails).
+  // 도구별로 계정이 다를 수 있어 별칭을 모두 본다 — zeudeEmailsOf 주석 참고.
   const config = await loadConfig({ userId }).catch(() => null);
-  const email = config?.zeudeEmail || process.env.WORK_LOG_ZEUDE_EMAIL || "";
-  if (!url || !user || !email) return [];
+  const emails = zeudeEmailsOf(config ?? {});
+  if (!url || !user || !emails.length) return [];
 
   const windowDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 30;
   const query = `
@@ -274,7 +274,7 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
       argMax(source, timestamp) AS source,
       toString(toDate(max(timestamp) + INTERVAL 9 HOUR)) AS kst_date
     FROM ai_prompts
-    WHERE user_email = {email:String}
+    WHERE lower(user_email) IN splitByChar(',', {email:String})
       AND timestamp >= now() - INTERVAL ${windowDays} DAY
       AND prompt_type = 'natural'
       AND length(prompt_text) >= 12
@@ -284,7 +284,7 @@ export async function collectZeudePromptWindow(userId = "default", days = 30, fe
     LIMIT 2000
     FORMAT JSON`;
 
-  const endpoint = `${url.replace(/\/$/, "")}/?param_email=${encodeURIComponent(email)}`;
+  const endpoint = `${url.replace(/\/$/, "")}/?param_email=${encodeURIComponent(emails.join(","))}`;
   const res = await fetchImpl(endpoint, {
     method: "POST",
     headers: {

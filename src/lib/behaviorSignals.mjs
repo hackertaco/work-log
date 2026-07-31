@@ -12,7 +12,7 @@
  *
  * 모든 실패는 비치명적. 호출자는 빈 결과를 받으면 v1(프롬프트만) 동작을 한다.
  */
-import { loadConfig } from "./config.mjs";
+import { loadConfig, zeudeEmailsOf } from "./config.mjs";
 import { areaKey } from "./workAreaGrouping.mjs";
 
 /** 이 비율 미만이면 영역별 귀속을 신뢰하지 않고 overall 로 폴백한다. */
@@ -113,10 +113,13 @@ export function aggregateSignals({
 
   // 조인율은 "세션끼리 실제로 맞는가"를 재는 값이다. 세션이 없는 행은 맞출 대상이
   // 애초에 없으므로 분모에서 뺀다 — 넣으면 폴백 쪽으로 부당하게 끌린다.
+  const matchedSessions = new Set();
   const countJoin = (session, area) => {
     if (!session) return;
     totalRows += 1;
-    if (area) matchedRows += 1;
+    if (!area) return;
+    matchedRows += 1;
+    matchedSessions.add(session);
   };
 
   for (const row of rowsOf(frustrationRows)) {
@@ -210,8 +213,43 @@ export function aggregateSignals({
   return {
     byArea,
     overall,
-    meta: { sessions: overall.sessionCount, matchedRows, totalRows, joinRatio: round(joinRatio), fallback }
+    // sessions 는 "이 사람 세션 중 신호가 붙은 수". overall.sessionCount 를 쓰면 브리지에
+    // 없는 세션까지 세어 부풀려진다(실측 542 vs 실제 262) — 운영 지표가 거짓말을 하게 된다.
+    meta: { sessions: matchedSessions.size, matchedRows, totalRows, joinRatio: round(joinRatio), fallback }
   };
+}
+
+/**
+ * 이 사람 것이 아닌 이메일까지 달고 있는 user_id 를 걸러낸다.
+ * 그런 아이디는 개인 계정이 아니라 여러 사람이 공유하는 서비스 계정이라, 신호를 그대로
+ * 쓰면 남의 기록이 섞인다. 판별에 실패하면(조회 오류) 안전하게 후보를 그대로 돌려준다 —
+ * 신호가 조금 섞이는 것이 신호를 통째로 잃는 것보다는 낫다.
+ *
+ * @returns {Promise<string[]>} 이 사람 전용으로 판단되는 user_id 목록
+ */
+async function excludeSharedIds(candidateIds, emails, windowDays, fetchImpl) {
+  const all = [...candidateIds];
+  try {
+    const rows = await queryClickHouse(
+      `
+      SELECT user_id, countIf(lower(user_email) NOT IN splitByChar(',', {email:String})) AS foreign_rows
+      FROM ai_prompts
+      WHERE user_id IN splitByChar(',', {ids:String})
+        AND timestamp >= now() - INTERVAL ${windowDays} DAY
+      GROUP BY user_id
+      FORMAT JSON`,
+      { email: emails.join(","), ids: all.join(",") },
+      fetchImpl
+    );
+    const shared = new Set(
+      rows.filter((r) => (Number(r?.foreign_rows) || 0) > 0).map((r) => String(r?.user_id ?? ""))
+    );
+    const owned = all.filter((id) => !shared.has(id));
+    // 전부 공용으로 판정되면 판별을 신뢰하지 않고 후보를 그대로 쓴다.
+    return owned.length ? owned : all;
+  } catch {
+    return all;
+  }
 }
 
 /**
@@ -225,12 +263,14 @@ export async function collectBehaviorSignals({ userId = "default", days = 30, fe
     if (!process.env.CLICKHOUSE_URL || !process.env.CLICKHOUSE_USER) return emptySignals();
 
     const config = await loadConfig({ userId }).catch(() => null);
-    const email = config?.zeudeEmail || process.env.WORK_LOG_ZEUDE_EMAIL || "";
-    if (!email) return emptySignals();
+    const emails = zeudeEmailsOf(config ?? {});
+    if (!emails.length) return emptySignals();
+    const email = emails.join(",");
 
     const windowDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 30;
 
     // 1) 브리지: 이메일 → (세션, user_id, project_path)
+    //    user_id 마다 그 아이디가 달고 다니는 이메일도 함께 본다 — 아래 공용 아이디 판별용.
     const bridgeRows = await queryClickHouse(
       `
       SELECT
@@ -238,7 +278,7 @@ export async function collectBehaviorSignals({ userId = "default", days = 30, fe
         any(user_id) AS user_id,
         argMax(project_path, timestamp) AS project_path
       FROM ai_prompts
-      WHERE user_email = {email:String}
+      WHERE lower(user_email) IN splitByChar(',', {email:String})
         AND timestamp >= now() - INTERVAL ${windowDays} DAY
         AND session_id != ''
       GROUP BY session_id
@@ -250,17 +290,24 @@ export async function collectBehaviorSignals({ userId = "default", days = 30, fe
     if (!bridgeRows.length) return emptySignals();
 
     const sessionArea = new Map();
-    const userIds = new Set();
+    const candidateIds = new Set();
     for (const row of bridgeRows) {
       const session = String(row?.session_id ?? "");
       if (session) sessionArea.set(session, areaKey(row?.project_path));
       const uid = String(row?.user_id ?? "").trim();
-      if (uid) userIds.add(uid);
+      if (uid) candidateIds.add(uid);
     }
-    if (!userIds.size) return emptySignals();
+    if (!candidateIds.size) return emptySignals();
+
+    // 2) 공용 아이디 걸러내기. 한 user_id 가 이 사람 별칭 밖의 이메일까지 달고 있으면
+    //    그건 개인이 아니라 여러 사람이 돌려쓰는 서비스 계정이다(실측: Codex 로거가
+    //    하나의 아이디로 여러 사람 이메일을 찍는다). 그런 아이디로 신호를 긁으면
+    //    남의 좌절·툴 기록이 이 사람 프로필에 섞인다.
+    const ownedIds = await excludeSharedIds(candidateIds, emails, windowDays, fetchImpl);
+    if (!ownedIds.length) return emptySignals();
 
     // user_id 목록은 IN splitByChar 로 넘긴다 — Array 파라미터 인용 규칙을 피한다.
-    const ids = [...userIds].join(",");
+    const ids = ownedIds.join(",");
 
     // 2) 신호: user_id 로 좁힌다 (session_id 조인이 실패해도 overall 은 살아남게)
     const [frustrationRows, toolRows, retryRows, efficiencyRows] = await Promise.all([

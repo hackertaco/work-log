@@ -316,3 +316,72 @@ test("aggregateSignals: 세션이 빈 좌절/툴 행도 조인율 분모에서 �
   // 값 자체는 전체 집계에 여전히 반영된다
   assert.equal(r.overall.avgFrustration, 0.5);
 });
+
+// ─── 이메일 별칭 + 공용 아이디 배제 ──────────────────────────────────────────
+
+test("collectBehaviorSignals: 별칭 이메일을 모두 조회하고 공용 아이디는 뺀다", async () => {
+  setEnv();
+  process.env.WORK_LOG_ZEUDE_EMAILS = "me@corp.com,me@gmail.com";
+  const bodies = [];
+  const params = [];
+
+  const fetchImpl = async (url, init) => {
+    const q = String(init.body);
+    bodies.push(q);
+    params.push(String(url));
+
+    if (q.includes("FROM ai_prompts") && q.includes("GROUP BY session_id")) {
+      return new Response(JSON.stringify({ data: [
+        { session_id: "s1", user_id: "mine", project_path: "/Users/x/company-code/work-log" },
+        { session_id: "s9", user_id: "shared-codex", project_path: "/Users/x/company-code/work-log" }
+      ] }), { status: 200 });
+    }
+    // 공용 아이디 판별: shared-codex 에는 별칭 밖 이메일 행이 있다
+    if (q.includes("foreign_rows")) {
+      return new Response(JSON.stringify({ data: [
+        { user_id: "mine", foreign_rows: "0" },
+        { user_id: "shared-codex", foreign_rows: "40" }
+      ] }), { status: 200 });
+    }
+    if (q.includes("FROM frustration_analysis")) {
+      return new Response(JSON.stringify({ data: [{ session_id: "s1", score: "0.2", density: "0.02" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+
+  try {
+    const r = await collectBehaviorSignals({ userId: "default", days: 30, fetchImpl });
+
+    // 두 이메일이 모두 조회 파라미터에 실린다
+    const bridgeUrl = params[0];
+    assert.ok(decodeURIComponent(bridgeUrl).includes("me@corp.com"));
+    assert.ok(decodeURIComponent(bridgeUrl).includes("me@gmail.com"));
+
+    // 공용 아이디는 신호 조회 대상에서 빠진다
+    const signalUrls = params.filter((u) => decodeURIComponent(u).includes("param_ids"));
+    assert.ok(signalUrls.length > 0, "signal queries should carry an ids param");
+    for (const u of signalUrls.slice(1)) {
+      assert.ok(!decodeURIComponent(u).includes("shared-codex"), "shared id must not be queried for signals");
+    }
+
+    assert.equal(r.byArea.get("work-log")?.avgFrustration, 0.2);
+  } finally {
+    delete process.env.WORK_LOG_ZEUDE_EMAILS;
+    clearEnv();
+  }
+});
+
+test("aggregateSignals: meta.sessions 는 내 세션 중 신호가 붙은 수만 센다", () => {
+  const r = aggregateSignals({
+    sessionArea: new Map([["s1", "work-log"]]),
+    frustrationRows: [
+      { session_id: "s1", score: "0.1", density: "0.01" },
+      { session_id: "other-1", score: "0.9", density: "0.09" },
+      { session_id: "other-2", score: "0.9", density: "0.09" }
+    ]
+  });
+
+  // overall 버킷엔 3개 세션이 있지만, 내 세션은 1개뿐이다
+  assert.equal(r.overall.sessionCount, 3);
+  assert.equal(r.meta.sessions, 1);
+});
