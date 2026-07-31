@@ -125,13 +125,21 @@ const BEHAVIOR_INSTRUCTION =
   `이건 판단을 뒷받침하거나 정정하는 근거로만 쓰라. 수치를 그대로 나열하지 말고 ` +
   `판단의 근거 설명 안에 자연스럽게 녹여라(예: "검증을 먼저 돌린다" — 실제로 검증 툴 비중이 높음). ` +
   `프롬프트에서 읽은 판단이 행동신호와 어긋나면 단정하지 말고 약하게 서술하라. ` +
-  `행동신호만으로 새 판단을 만들어내지 말 것.`;
+  `행동신호만으로 새 판단을 만들어내지 말 것. ` +
+  `단, 행동신호가 어떤 판단을 뚜렷하게 뒷받침하거나 약화시키면 그 사실이 judgment 문장 자체에 ` +
+  `드러나야 한다(수치는 빼고 — 예: "말뿐 아니라 실제로 확인 도구를 먼저 돌린다").`;
 
 export function buildExtractPayload(area, prompts, behavior = null) {
   const behaviorContext = formatBehaviorContext(behavior);
+  // 행동신호를 줄 때 "프롬프트만 근거로"를 그대로 두면 두 지시가 모순돼 모델이
+  // 신호를 통째로 무시한다 (2026-07-31 프로덕션 1차 검증에서 실측).
+  const basis = behaviorContext
+    ? `이 프롬프트와 함께 주는 행동신호를 근거로, `
+    : `이 프롬프트만 근거로, `;
   const instruction =
     `아래는 사용자가 "${area}" 작업을 하며 AI에게 입력한 프롬프트들이다. ` +
-    `이 프롬프트만 근거로, (1) 이 영역에서 무슨 일을 했는지(did), ` +
+    basis +
+    `(1) 이 영역에서 무슨 일을 했는지(did), ` +
     `(2) 어떤 판단·기준·원칙을 가지고 일했는지(judgments)를 한국어로 추출하라. ` +
     `각 judgment는 실제 프롬프트에서 인용 가능한 근거(evidence)가 있어야 한다. ` +
     `근거 없는 일반론이나 성격 규정은 금지. 프롬프트는 주로 '묻는' 기록이므로 단정하지 말고 근거에서 드러나는 것만.` +
@@ -193,7 +201,10 @@ export function buildSynthesisPayload(items, behaviorByArea = null) {
     `여러 영역에 걸쳐 반복되는 상위 패턴으로 승격할 것. ` +
     `각 원칙은 title(한 문장 원칙 — 예: "공유·합의 가능성을 품질 기준으로 둔다")과 ` +
     `description(그 원칙이 어떻게 드러나는지 1~2문장)으로. 한국어로. ` +
-    `제공된 판단에서 실제로 뒷받침되는 것만. 근거 없는 성격 규정·일반론 금지.` +
+    (behaviorBlocks.length
+      ? `제공된 판단과 행동신호에서 실제로 뒷받침되는 것만. `
+      : `제공된 판단에서 실제로 뒷받침되는 것만. `) +
+    `근거 없는 성격 규정·일반론 금지.` +
     (behaviorBlocks.length ? BEHAVIOR_INSTRUCTION : "");
 
   const judgmentText = items.map((j) => `[${j.area}] ${j.text}`).join("\n");

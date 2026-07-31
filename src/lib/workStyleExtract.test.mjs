@@ -261,3 +261,25 @@ test("extractWorkStyleForArea: behavior 를 페이로드까지 실어 보낸다"
 
   if (saved === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = saved;
 });
+
+test("buildExtractPayload: behavior 가 있으면 '프롬프트만 근거로' 제약이 빠진다", () => {
+  const withB = buildExtractPayload("work-log", ["p1"], BEHAVIOR).input[0].content;
+  const withoutB = buildExtractPayload("work-log", ["p1"]).input[0].content;
+
+  // 신호를 주면서 "프롬프트만"이라고 하면 두 지시가 모순돼 모델이 신호를 무시한다
+  assert.ok(!withB.includes("프롬프트만 근거로"));
+  assert.ok(withB.includes("행동신호를 근거로"));
+  // 신호가 없으면 기존 제약은 그대로 유지된다
+  assert.ok(withoutB.includes("프롬프트만 근거로"));
+  // evidence 는 여전히 프롬프트 인용이어야 한다 (정직성 가드 유지)
+  assert.ok(withB.includes("실제 프롬프트에서 인용 가능한 근거"));
+});
+
+test("buildSynthesisPayload: behavior 가 있으면 판단만이 아니라 행동신호도 근거로 인정한다", () => {
+  const withB = buildSynthesisPayload([{ area: "work-log", text: "t" }], { "work-log": BEHAVIOR }).input[0].content;
+  const withoutB = buildSynthesisPayload([{ area: "work-log", text: "t" }]).input[0].content;
+
+  assert.ok(withB.includes("제공된 판단과 행동신호에서"));
+  assert.ok(withoutB.includes("제공된 판단에서 실제로"));
+  assert.ok(!withoutB.includes("행동신호"));
+});
