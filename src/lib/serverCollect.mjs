@@ -29,6 +29,7 @@ import { detectPrBranchMentions } from "./resumePrBranchParser.mjs";
 import { collectSlackContexts } from "./slack.mjs";
 import { groupWorkAreas, areaKey } from "./workAreaGrouping.mjs";
 import { extractWorkStyleForArea, synthesizeWorkStylePrinciples } from "./workStyleExtract.mjs";
+import { behaviorByArea, behaviorForArea, collectBehaviorSignals } from "./behaviorSignals.mjs";
 
 /** 오늘 날짜 (KST) — 서버는 UTC 이므로 명시적으로 변환한다. */
 export function seoulDate(offsetDays = 0) {
@@ -328,14 +329,24 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
   let principles;
   let llmGeneratedAt = prior?.llmGeneratedAt ?? null;
 
+  let behaviorSessions = null;
+
   if (llmStale) {
+    // 행동신호는 LLM 재생성 때만 필요하다 — FRESH 경로에서 ClickHouse 를 두드리지 않는다.
+    const signals = await collectBehaviorSignals({ userId, days: windowDays }).catch(() => null);
+    behaviorSessions = signals?.meta?.sessions ?? null;
+
     enriched = [];
     for (const area of areas) {
-      const r = await extractWorkStyleForArea(area).catch(() => ({ did: [], judgments: [] }));
+      const behavior = behaviorForArea(signals, area.area);
+      const r = await extractWorkStyleForArea(area, behavior).catch(() => ({ did: [], judgments: [] }));
       enriched.push({ area: area.area, promptCount: area.promptCount, firstDate: area.firstDate, lastDate: area.lastDate, did: r.did ?? [], judgments: r.judgments ?? [] });
     }
     // 영역별 개별 판단을 가로질러 관통 원칙으로 승격 (이게 화면의 주인공)
-    principles = await synthesizeWorkStylePrinciples(enriched).catch(() => []);
+    principles = await synthesizeWorkStylePrinciples(
+      enriched,
+      behaviorByArea(signals, enriched.map((a) => a.area))
+    ).catch(() => []);
     llmGeneratedAt = new Date().toISOString();
   } else {
     enriched = areas.map((a) => {
@@ -354,5 +365,5 @@ export async function runWorkStyleAnalysis({ userId = "default", force = false, 
     droppedAreas
   }, userId);
 
-  return { skipped: false, areaCount: enriched.length, principleCount: principles.length, llmRefreshed: llmStale };
+  return { skipped: false, areaCount: enriched.length, principleCount: principles.length, llmRefreshed: llmStale, behaviorSessions };
 }

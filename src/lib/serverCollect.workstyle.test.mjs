@@ -4,7 +4,11 @@ import { mock, test } from "node:test";
 let stored = null;
 let priorAnalysis = null;
 let extractCalls = [];
+// 영역명으로 키를 잡는다 — 아래 STALE 테스트가 extractCalls 를 제자리 정렬(.sort())하므로
+// 배열 인덱스로 짝을 맞추면 어긋난다.
+let extractBehaviorFor = {};
 let synthesizeCalls = [];
+let synthesizeBehavior = null;
 
 mock.module("./blob.mjs", {
   namedExports: {
@@ -24,13 +28,33 @@ mock.module("./blob.mjs", {
 });
 mock.module("./workStyleExtract.mjs", {
   namedExports: {
-    extractWorkStyleForArea: async (g) => {
+    extractWorkStyleForArea: async (g, behavior) => {
       extractCalls.push(g.area);
+      extractBehaviorFor[g.area] = behavior;
       return { area: g.area, did: ["did-" + g.area], judgments: [{ text: "j", evidence: "e" }] };
     },
-    synthesizeWorkStylePrinciples: async (areas) => {
+    synthesizeWorkStylePrinciples: async (areas, behaviorByArea) => {
       synthesizeCalls.push(areas.map((a) => a.area));
+      synthesizeBehavior = behaviorByArea;
       return [{ title: "원칙-A", description: "설명-A" }];
+    }
+  }
+});
+mock.module("./behaviorSignals.mjs", {
+  namedExports: {
+    collectBehaviorSignals: async () => ({
+      byArea: new Map([["work-log", { sessionCount: 4, avgFrustration: 0.2, topTools: [] }]]),
+      overall: { sessionCount: 6, avgFrustration: 0.3, topTools: [] },
+      meta: { fallback: false, sessions: 6 }
+    }),
+    behaviorForArea: (signals, area) => signals?.byArea?.get(area) ?? null,
+    behaviorByArea: (signals, names) => {
+      const out = {};
+      for (const n of names ?? []) {
+        const b = signals?.byArea?.get(n);
+        if (b) out[n] = b;
+      }
+      return out;
     }
   }
 });
@@ -68,7 +92,9 @@ test("STALE: prior >7d old triggers LLM re-extract and llmRefreshed:true", async
   setClickHouseEnv();
   stored = null;
   extractCalls = [];
+  extractBehaviorFor = {};
   synthesizeCalls = [];
+  synthesizeBehavior = null;
   // 8 days before a fixed, well-in-the-past instant — avoids relying on "now" drifting.
   priorAnalysis = { llmGeneratedAt: "2020-01-01T00:00:00.000Z", areas: [] };
 
@@ -96,6 +122,15 @@ test("STALE: prior >7d old triggers LLM re-extract and llmRefreshed:true", async
     assert.equal(synthesizeCalls.length, 1);
     assert.deepEqual(stored.principles, [{ title: "원칙-A", description: "설명-A" }]);
     assert.equal(r.principleCount, 1);
+
+    // 행동신호가 영역별로 추출기에 전달돼야 한다
+    assert.equal(extractBehaviorFor["work-log"]?.sessionCount, 4);
+    // 신호 없는 영역은 null 로 넘어간다 (v1 동작)
+    assert.equal(extractBehaviorFor["knowledge-base"], null);
+    // 합성에도 영역별 신호가 전달된다
+    assert.equal(synthesizeBehavior?.["work-log"]?.sessionCount, 4);
+    // 운영 관측용 카운트
+    assert.equal(r.behaviorSessions, 6);
   } finally {
     restoreFetch();
     clearClickHouseEnv();
@@ -106,7 +141,9 @@ test("FRESH: prior <7d old reuses prior did/judgments and llmRefreshed:false", a
   setClickHouseEnv();
   stored = null;
   extractCalls = [];
+  extractBehaviorFor = {};
   synthesizeCalls = [];
+  synthesizeBehavior = null;
   const recentIso = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
   priorAnalysis = {
     llmGeneratedAt: recentIso,
@@ -144,6 +181,9 @@ test("FRESH: prior <7d old reuses prior did/judgments and llmRefreshed:false", a
     assert.equal(synthesizeCalls.length, 0);
     // principles are carried over from the prior analysis unchanged
     assert.deepEqual(stored.principles, [{ title: "이전-원칙", description: "이전-설명" }]);
+
+    // FRESH 경로는 신호를 아예 수집하지 않는다 (불필요한 ClickHouse 조회 금지)
+    assert.equal(r.behaviorSessions, null);
   } finally {
     restoreFetch();
     clearClickHouseEnv();
