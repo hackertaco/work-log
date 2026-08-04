@@ -29,7 +29,7 @@ describe("buildSummaryPayload", () => {
     assert.match(userText, /사전 설문/);
   });
 
-  test("system prompt treats Slack as behavior signal rather than shipped-work evidence", () => {
+  test("system prompt counts prompts as evidence of work, but not of shipping", () => {
     const payload = buildSummaryPayload({
       date: "2026-03-31",
       heuristic_themes: [],
@@ -41,7 +41,13 @@ describe("buildSummaryPayload", () => {
     });
 
     const systemText = payload.input[0].content[0].text;
-    assert.match(systemText, /Slack are not the source of shipped work/);
+    // 커밋만 근거로 치면 AI 로 일한 날이 통째로 빈손이 된다 — 2026-08-03 은 커밋 2건에
+    // 프롬프트 91건이었고, 스토리가 "핵심 흐름을 정리하고 개선함" 으로 떨어졌다.
+    assert.match(systemText, /first-class evidence of what was worked on/);
+    assert.doesNotMatch(systemText, /Slack are not the source of shipped work/);
+    // 다만 "출시했다"는 주장은 여전히 커밋이 있어야 한다
+    assert.match(systemText, /cannot establish on their own is that something SHIPPED/);
+    assert.match(systemText, /resume_bullets must stay strictly commit-backed/);
     assert.match(systemText, /behavior signals/);
     assert.match(systemText, /working style, intent, and judgment/);
   });

@@ -3,6 +3,8 @@ import path from "node:path";
 import { readBulletCache, writeBulletCache } from "./bulletCache.mjs";
 import { readSuggestionsData, saveBatchSummary, saveWorklogDaily, saveWorklogProfile } from "./blob.mjs";
 import { loadConfig } from "./config.mjs";
+import { groupPromptsByRepo, summarizeDayStories } from "./dayStory.mjs";
+import { areaKey } from "./workAreaGrouping.mjs";
 import { summarizeWithOpenAI } from "./openai.mjs";
 import { buildProfileSummary } from "./profile.mjs";
 import { buildBatchSummary } from "./resumeBatchSummary.mjs";
@@ -182,7 +184,7 @@ export async function runDailyBatch(inputDate, options = {}) {
 }
 
 // serverCollect.mjs 가 원격 소스(GitHub API·Zeude)로 같은 요약을 만들 때 재사용한다.
-export async function buildSummary({ date, codexSessions, claudeSessions, slackContexts, gitCommits, gitWorkingTree, shellHistory, prBranchSignals }) {
+export async function buildSummary({ date, codexSessions, claudeSessions, slackContexts, gitCommits, gitWorkingTree, shellHistory, prBranchSignals, dayPrompts = [] }) {
   const repoGroups = groupBy(gitCommits, "repo");
   const codexSummaries = uniqueStrings(codexSessions.map((session) => session.summary).filter(Boolean), 8);
   const claudeSummaries = uniqueStrings(claudeSessions.map((session) => session.summary).filter(Boolean), 8);
@@ -259,7 +261,9 @@ export async function buildSummary({ date, codexSessions, claudeSessions, slackC
   }));
   const weightSortedProjects = sortProjectsByPrWeight(rawProjects, sortWeights);
   const categorizedProjects = categorizeProjects(weightSortedProjects);
-  const storyThreads = deriveStoryThreadsFromProjects(categorizedProjects, []);
+  // 그날 실제 기록으로 스토리를 쓴다. 실패하면 커밋 제목 기반 폴백으로 내려간다 —
+  // 어느 쪽이든 지어낸 문장은 쓰지 않는다.
+  const storyThreads = await buildStoryThreads({ date, categorizedProjects, dayPrompts });
 
   const resumeCandidates = uniqueStrings([
     ...Object.entries(repoGroups).map(([repo, commits]) => {
@@ -783,159 +787,85 @@ function deriveBusinessOutcomesFromCommits(gitCommits) {
   return bullets;
 }
 
-function deriveStoryThreadsFromProjects(categorizedProjects, decisionNotes = []) {
-  const projects = [...categorizedProjects.company, ...categorizedProjects.opensource]
-    .sort((a, b) => {
-      const rank = (project) => (project.category === "company" ? 0 : project.category === "opensource" ? 1 : 2);
-      return rank(a) - rank(b) || b.commitCount - a.commitCount;
-    })
-    .slice(0, 3);
+/**
+ * 그날의 스토리 카드를 만든다. LLM 이 그날 커밋·프롬프트를 읽어 쓰고, 실패하면
+ * 커밋 제목을 그대로 쓰는 폴백으로 내려간다. LLM 이 일부 레포만 돌려줘도
+ * 나머지는 폴백으로 채워, 카드가 통째로 비지 않게 한다.
+ */
+async function buildStoryThreads({ date, categorizedProjects, dayPrompts }) {
+  const promptsByRepo = groupPromptsByRepo(dayPrompts, areaKey);
+  const fallback = deriveStoryThreadsFromProjects(categorizedProjects, [], promptsByRepo);
+  if (!fallback.length) return fallback;
 
-  return projects.map((project, index) => summarizeProjectStory(project, decisionNotes[index] || ""));
+  const commitsByRepo = new Map(
+    [...categorizedProjects.company, ...categorizedProjects.opensource]
+      .map((p) => [p.repo, (p.commits ?? []).map((c) => c.subject)])
+  );
+
+  const stories = await summarizeDayStories({
+    date,
+    projects: fallback.map((thread) => ({
+      repo: thread.repo,
+      commits: commitsByRepo.get(thread.repo) ?? [],
+      prompts: promptsByRepo.get(thread.repo) ?? []
+    }))
+  }).catch(() => []);
+
+  if (!stories.length) return fallback;
+
+  const byRepo = new Map(stories.map((s) => [s.repo, s]));
+  return fallback.map((thread) => {
+    const story = byRepo.get(thread.repo);
+    if (!story) return thread;
+    return { ...thread, ...story, decision: thread.decision };
+  });
 }
 
-function summarizeProjectStory(project, decision = "") {
-  const subjects = project.commits.map((commit) => commit.subject).join(" ");
-  const repo = project.repo;
+/**
+ * LLM 이 없을 때 쓰는 사실 기반 폴백.
+ *
+ * 예전에는 레포별 if 문에 미리 써둔 문장을 키워드로 골랐고, 목록에 없는 레포는
+ * "<레포>에서 진행한 핵심 흐름을 정리하고 개선함" 으로 떨어졌다. impact/why 는
+ * 모든 날 같은 상수였다. 어떤 날에 갖다 놔도 참인 문장이라 아무것도 알려주지 못했다.
+ *
+ * 그래서 지어내지 않는다. 실제 커밋 제목을 그대로 쓰고, 모르는 칸은 비운다.
+ * 화면은 빈 칸을 감추게 되어 있어, 빈 칸이 그럴듯한 거짓말보다 낫다.
+ */
+export function deriveStoryThreadsFromProjects(categorizedProjects, decisionNotes = [], promptsByRepo = new Map()) {
+  const byRepo = new Map();
+  const rank = (project) => (project.category === "company" ? 0 : project.category === "opensource" ? 1 : 2);
 
-  if (repo === "driving-teacher-ai-native") {
-    return {
-      repo,
-      outcome: synthesizeStoryOutcome(subjects, [
-        {
-          test: /(설문|로드맵|커리큘럼|숙제-스킬|브랜드 디자인|현실적 목표)/,
-          outcome: "AI 캠프 커리큘럼과 기대치 정렬 흐름을 재설계함"
-        },
-        {
-          test: /(gdrive|mcp|도메인 지식 플로우)/i,
-          outcome: "AI 캠프 운영을 위한 도메인 지식 흐름을 정비함"
-        }
-      ], "학습 경험의 현실성과 안내 정확도를 높이는 흐름을 다듬음"),
-      keyChange: synthesizeKeyChange(subjects, [
-        /(설문|로드맵|커리큘럼|숙제-스킬|브랜드 디자인|현실적 목표)/,
-        /(gdrive|mcp|도메인 지식 플로우)/i
-      ]),
-      impact: "학습자 기대치와 실제 진행 흐름이 더 잘 맞도록 조정함",
-      why: "초기 안내와 실제 학습 경험의 오차를 줄여 운영 커뮤니케이션 비용을 낮춤",
-      decision
-    };
+  for (const project of [...categorizedProjects.company, ...categorizedProjects.opensource]) {
+    byRepo.set(project.repo, {
+      repo: project.repo,
+      rank: rank(project),
+      commitCount: project.commitCount ?? 0,
+      subjects: (project.commits ?? []).map((c) => cleanCommitSubject(c.subject)).filter(Boolean),
+      promptCount: 0
+    });
   }
 
-  if (repo === "driving-teacher-frontend") {
-    if (/(체크인|예약 성공|deposit|admission|merchant key|환불)/.test(subjects)) {
-      return {
-        repo,
-        outcome: "예약·결제·체크인 흐름의 오작동 가능성을 줄임",
-        keyChange: "체크인 상태 노출과 merchant key/환불 처리 분기를 정리",
-        impact: "운영자가 결제와 체크인 상태를 더 정확하게 확인함",
-        why: "실결제와 후속 안내 누락을 줄여 운영 신뢰도를 높임",
-        decision
-      };
-    }
-
-    if (/(gps|지도|셔틀|정류장|qa|cache|lottie|getstaticprops|router|kakao sdk)/i.test(subjects)) {
-      return {
-        repo,
-        outcome: "셔틀·지도·QA 흐름의 안정성을 높임",
-        keyChange: "GPS 인식 범위와 순서를 보정하고 지도/SDK 가드를 추가",
-        impact: "운영 화면의 오류와 테스트 중 잡음을 줄임",
-        why: "현장 사용성과 QA 신뢰도를 동시에 개선함",
-        decision
-      };
-    }
+  // 커밋이 없어도 그날 그 레포에서 프롬프트를 많이 남겼다면 그건 일한 것이다.
+  // 커밋만 세면 AI 로 일한 날이 통째로 빈손으로 보인다(2026-08-03: 커밋 2, 프롬프트 91).
+  for (const [repo, prompts] of promptsByRepo) {
+    if (repo === "unknown") continue;
+    const entry = byRepo.get(repo) ?? { repo, rank: 2, commitCount: 0, subjects: [], promptCount: 0 };
+    entry.promptCount = prompts.length;
+    byRepo.set(repo, entry);
   }
 
-  if (repo === "kakao-novel-generator") {
-    return {
-      repo,
-      outcome: "서사 생성 결과의 개연성과 형식 안정성을 높임",
-      keyChange: "causal graph·why-chain·deterministic control 파이프라인을 강화",
-      impact: "허용도 낮은 결과와 메타 출력이 줄어듦",
-      why: "생성 품질이 올라가면 후속 검수 비용이 줄어듦",
-      decision
-    };
-  }
-
-  if (repo === "ouroboros") {
-    return {
-      repo,
-      outcome: "에이전트 루프와 재개 흐름의 신뢰성을 높임",
-      keyChange: "loop/state restore/install 경로의 결함을 연속적으로 수정",
-      impact: "재시도·재개·설치 과정에서 실패 가능성을 줄임",
-      why: "도구 운영 안정성이 좋아지면 반복 작업 비용이 감소함",
-      decision
-    };
-  }
-
-  return {
-    repo,
-    outcome: synthesizeStoryOutcome(subjects, [], `${repo}에서 진행한 핵심 흐름을 정리하고 개선함`),
-    keyChange: synthesizeKeyChange(subjects),
-    impact: "주요 기능 흐름의 오류 가능성을 줄임",
-    why: "운영과 개발 모두에서 예외 상황 대응 비용을 줄일 수 있음",
-    decision
-  };
-}
-
-function synthesizeStoryOutcome(subjects, rules = [], fallback) {
-  for (const rule of rules) {
-    if (rule.test.test(subjects)) return rule.outcome;
-  }
-
-  if (/(filter|노이즈|sentry|beforeSend)/i.test(subjects)) {
-    return "운영 노이즈를 줄이고 판단 신호를 더 선명하게 만듦";
-  }
-  if (/(qa|guard|retry|resume|stability|안정|예외)/i.test(subjects)) {
-    return "불안정한 흐름을 더 안전하게 운영할 수 있도록 정리함";
-  }
-  if (/(roadmap|survey|curriculum|커리큘럼|설문|로드맵)/i.test(subjects)) {
-    return "기대치와 실제 흐름이 어긋나지 않도록 운영 구조를 조정함";
-  }
-  if (/(rewriter|timeline|blueprint|scene|story|서사|소설)/i.test(subjects)) {
-    return "생성 결과의 흐름과 품질이 더 자연스럽게 이어지도록 다듬음";
-  }
-  if (/(brand|design|리브랜딩|표현|일관성)/i.test(subjects)) {
-    return "브랜드 표현과 사용자 경험의 일관성을 높이는 방향으로 정리함";
-  }
-
-  return fallback;
-}
-
-function synthesizeKeyChange(subjects, preferredPatterns = []) {
-  const commits = subjects
-    .split(/(?:(?<=\))\s+|;\s+)/)
-    .map((text) => cleanCommitSubject(text))
-    .filter(Boolean);
-
-  const joined = commits.join(" ");
-
-  if (preferredPatterns.length > 0) {
-    const preferred = commits.filter((subject) =>
-      preferredPatterns.some((pattern) => pattern.test(subject))
-    );
-    const summarized = summarizeCommitChanges(preferred);
-    if (summarized) return summarized;
-  }
-
-  const summarized = summarizeCommitChanges(commits);
-  if (summarized) return summarized;
-
-  for (const pattern of preferredPatterns) {
-    const hit = commits.find((subject) => pattern.test(subject));
-    if (hit) return cleanCommitSubject(hit);
-  }
-
-  if (/(설문|로드맵|커리큘럼|숙제-스킬|브랜드 디자인|현실적 목표)/.test(joined)) {
-    return "사전 설문, 로드맵, 커리큘럼 흐름을 함께 손봐 학습 안내 구조를 다시 정리";
-  }
-  if (/(sentry|filter|beforeSend|retry|offline|오프라인|노이즈)/i.test(joined)) {
-    return "오류 필터와 예외 대응 설정을 조정해 운영 신호를 더 안정적으로 관리";
-  }
-  if (/(timeline|blueprint|rewriter|scene|dedup|중복|서사|소설)/i.test(joined)) {
-    return "서사 생성 파이프라인의 구조와 후처리 규칙을 다듬어 출력 품질을 개선";
-  }
-
-  return cleanCommitSubject(commits[0] || subjects);
+  return [...byRepo.values()]
+    .sort((a, b) => a.rank - b.rank || b.commitCount - a.commitCount || b.promptCount - a.promptCount)
+    .slice(0, 3)
+    .map((entry, index) => ({
+      repo: entry.repo,
+      // 커밋 제목이 그날에만 참인 유일한 문장이다. 그것도 없으면 지어내지 않는다.
+      outcome: entry.subjects[0] || `${entry.repo} 작업`,
+      keyChange: entry.subjects.slice(0, 3).join(" / "),
+      impact: "",
+      why: "",
+      decision: decisionNotes[index] || ""
+    }));
 }
 
 function cleanCommitSubject(subject) {

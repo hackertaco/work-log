@@ -117,7 +117,9 @@ export async function collectServerDay(date, { userId = "default" } = {}) {
     gitCommits,
     gitWorkingTree: [],
     shellHistory: [],
-    prBranchSignals
+    prBranchSignals,
+    // 커밋은 무엇을 바꿨는지만 담는다. 왜 그랬는지는 프롬프트에 있어서 같이 넘긴다.
+    dayPrompts: prompts
   });
   summary.collector = "server";
   // 그날 세션(프롬프트)을 영역별로 집계해 세션 중심 UI(카드·비중 차트)의 근거로 저장한다.

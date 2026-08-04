@@ -23,73 +23,6 @@ function handleAuthFailure(response) {
   return false;
 }
 
-const STRENGTH_COPY = {
-  'Reliability engineering': {
-    label: '안정성·운영 신뢰',
-    description: '오류를 줄이고 예외 상황을 막는 작업이 반복해서 잡힌 신호',
-  },
-  'Product judgment': {
-    label: '제품 판단력',
-    description: '기능보다 사용자 흐름과 운영 맥락까지 같이 본 흔적',
-  },
-  'Developer tooling': {
-    label: '개발 도구화',
-    description: '반복 작업을 줄이기 위한 자동화·설치·도구 개선 신호',
-  },
-  'System thinking': {
-    label: '구조적 사고',
-    description: '개별 기능보다 흐름·상태·구조를 함께 다룬 흔적',
-  },
-  Debugging: {
-    label: '문제 추적·진단',
-    description: '원인 파악, 재현, 추적, 캐시·로그 정리 같은 디버깅 신호',
-  },
-};
-
-const TECH_SIGNAL_COPY = {
-  'React / Next.js': {
-    label: '웹 프론트엔드',
-    description: '화면, 라우팅, UI 흐름 쪽 작업이 많이 잡힌 영역',
-  },
-  TypeScript: {
-    label: '타입 안정성',
-    description: '타입, 스키마, 구조 명세를 다룬 작업 비중',
-  },
-  'Maps / Location': {
-    label: '지도·위치',
-    description: '지도, GPS, 경로, 셔틀 같은 위치 기반 도메인 신호',
-  },
-  'Payments / Operations': {
-    label: '운영·정산',
-    description: '예약, 환불, 정산, 운영 처리 쪽 업무 신호',
-  },
-  'AI pipeline': {
-    label: 'AI 파이프라인',
-    description: 'LLM, 검증, 생성 흐름, 제어 로직 관련 작업 신호',
-  },
-  'Agent systems': {
-    label: '에이전트 시스템',
-    description: '에이전트 루프, 툴링, 자동화 오케스트레이션 신호',
-  },
-};
-
-const TODAY_STRENGTH_RULES = [
-  { label: 'Reliability engineering', patterns: [/fix/i, /guard/i, /error/i, /crash/i, /resume/i, /retry/i, /stability/i, /안정/i, /예외/i] },
-  { label: 'Product judgment', patterns: [/ux/i, /ui/i, /flow/i, /rollout/i, /리브랜딩/i, /운영/i, /가시성/i] },
-  { label: 'System thinking', patterns: [/pipeline/i, /state/i, /causal/i, /architecture/i, /loop/i, /구조/i, /파이프라인/i] },
-  { label: 'Debugging', patterns: [/debug/i, /trace/i, /diagn/i, /sentry/i, /qa/i, /gps/i, /cache/i] },
-  { label: 'Developer tooling', patterns: [/install/i, /mcp/i, /hooks/i, /automation/i, /tool/i, /codex/i, /claude/i] },
-];
-
-const TODAY_TECH_RULES = [
-  { label: 'React / Next.js', patterns: [/web/i, /getstaticprops/i, /router/i, /dialog/i, /lottie/i, /ui/i] },
-  { label: 'TypeScript', patterns: [/type/i, /types/i, /schema/i] },
-  { label: 'Maps / Location', patterns: [/gps/i, /map/i, /kakao/i, /route/i, /shuttle/i] },
-  { label: 'Payments / Operations', patterns: [/payment/i, /refund/i, /merchant/i, /deposit/i, /admission/i, /예약/i, /환불/i] },
-  { label: 'AI pipeline', patterns: [/causal/i, /deterministic/i, /scene/i, /plot/i, /validator/i, /llm/i] },
-  { label: 'Agent systems', patterns: [/mcp/i, /loop/i, /resume/i, /install/i, /agent/i, /ouroboros/i] },
-];
-
 export function WorkLogPage() {
   const [days, setDays] = useState([]);
   const [selectedDate, setSelectedDate] = useState('');
@@ -894,42 +827,8 @@ function deriveStoryCategories(dayPayload) {
     .filter(Boolean);
 }
 
-function buildTodaySnapshot(dayPayload) {
-  const texts = collectTodayTexts(dayPayload);
-  return {
-    strengths: rankTodaySignals(TODAY_STRENGTH_RULES, texts, STRENGTH_COPY).slice(0, 3),
-    techSignals: rankTodaySignals(TODAY_TECH_RULES, texts, TECH_SIGNAL_COPY).slice(0, 3),
-  };
-}
 
-function collectTodayTexts(dayPayload) {
-  const projectTexts = (dayPayload?.projects || []).flatMap((project) =>
-    (project.commits || []).map((commit) => commit.subject).filter(Boolean)
-  );
-  return [
-    ...(dayPayload?.highlights?.keyChanges || []),
-    ...(dayPayload?.highlights?.commitAnalysis || []),
-    ...(dayPayload?.highlights?.aiReview || []),
-    ...projectTexts,
-  ];
-}
 
-function rankTodaySignals(rules, texts, copyMap) {
-  const scores = new Map();
-
-  for (const text of texts) {
-    const normalized = String(text || '');
-    for (const rule of rules) {
-      if (rule.patterns.some((pattern) => pattern.test(normalized))) {
-        scores.set(rule.label, (scores.get(rule.label) || 0) + 1);
-      }
-    }
-  }
-
-  return [...scores.entries()]
-    .sort((left, right) => right[1] - left[1])
-    .map(([label]) => copyMap[label]?.label || label);
-}
 
 function buildShareSentence(dayPayload, leadStory) {
   const outcome = pickStrongestText([
