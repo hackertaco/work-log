@@ -52,3 +52,25 @@ describe("buildSummaryPayload", () => {
     assert.match(systemText, /working style, intent, and judgment/);
   });
 });
+
+test("open_threads 는 기록에 열려 있던 것만 — 내일 할 일 예측이 아니다", () => {
+  const payload = buildSummaryPayload({
+    date: "2026-08-04",
+    heuristic_themes: [],
+    git_commits: [],
+    shell_commands: [],
+    codex_sessions: [],
+    claude_sessions: [],
+    slack_contexts: []
+  });
+
+  const systemText = payload.input[0].content[0].text;
+  assert.match(systemText, /open_threads is what the record shows was left open/);
+  // 없으면 그럴듯한 다음 단계를 지어내지 말라는 지시가 핵심이다
+  assert.match(systemText, /return an empty array rather than inventing plausible next steps/);
+  assert.match(systemText, /NOT a prediction of tomorrow/);
+
+  const schema = payload.text.format.schema;
+  assert.ok(schema.required.includes("open_threads"));
+  assert.equal(schema.properties.open_threads.minItems, 0, "열린 게 없는 날도 있어야 한다");
+});

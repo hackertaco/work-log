@@ -308,6 +308,9 @@ export async function buildSummary({ date, codexSessions, claudeSessions, slackC
       commitAnalysis: finalCommitAnalysis,
       aiReview: finalAiReview,
       workingStyleSignals: finalWorkingStyleSignals,
+      // 그날 기록에 "열어둔 채 끝난 것"만 담는다. 내일 할 일 예측이 아니라,
+      // 실제로 미뤄졌거나 답을 못 받은 것 — 없으면 빈 배열이다.
+      openThreads: aiSummaries?.openThreads ?? [],
       shareableSentence: aiSummaries?.shareableSentence || '',
       storyThreads,
       mainWork: finalMainWork,

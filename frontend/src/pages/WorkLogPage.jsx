@@ -388,6 +388,7 @@ export function WorkLogPage() {
                   keyChanges={dayPayload.highlights?.keyChanges || dayPayload.highlights?.supportingWork}
                   aiReview={dayPayload.highlights?.aiReview}
                   workingStyleSignals={dayPayload.highlights?.workingStyleSignals}
+                  openThreads={dayPayload.highlights?.openThreads}
                 />
               </section>
 
@@ -523,12 +524,14 @@ function InfoCard({ kicker, title, subtitle, items, variant = 'list', maxItems }
   );
 }
 
-function AIJudgmentCard({ sentence, outcomes, whyItMatters, keyChanges, aiReview, workingStyleSignals }) {
+function AIJudgmentCard({ sentence, outcomes, whyItMatters, keyChanges, aiReview, workingStyleSignals, openThreads }) {
   const rankedOutcomes = rankImpactTexts(outcomes);
   const extraOutcomes = rankedOutcomes.slice(1, 3);
   const whyLines = rankImpactTexts(whyItMatters).slice(0, 2);
   const changes = Array.isArray(keyChanges) && keyChanges.length ? keyChanges : ['아직 핵심 작업 정리가 없습니다.'];
   const notes = Array.isArray(aiReview) && aiReview.length ? aiReview : ['아직 평가 메모가 없습니다.'];
+  // 기록에 실제로 열려 있던 것만 온다. 없으면 빈 배열이고 섹션도 안 그린다.
+  const open = Array.isArray(openThreads) ? openThreads.filter(Boolean) : [];
   const signals = Array.isArray(workingStyleSignals) && workingStyleSignals.length
     ? workingStyleSignals
     : ['아직 일하는 방식 신호가 없습니다.'];
@@ -578,6 +581,17 @@ function AIJudgmentCard({ sentence, outcomes, whyItMatters, keyChanges, aiReview
               ))}
             </ul>
           </div>
+          {/* 열어둔 게 없는 날은 섹션을 아예 감춘다 — "없음"을 보여주면 매일 빈칸이 남는다 */}
+          {open.length ? (
+            <div class="worklog-judgment-signal-block">
+              <p class="worklog-worknotes-label">이어서 할 일</p>
+              <ul class="worklog-list worklog-list--compact">
+                {open.map((item, index) => (
+                  <li key={`open-thread-${index}`}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </section>
       </div>
     </article>
