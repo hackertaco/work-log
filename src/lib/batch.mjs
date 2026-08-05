@@ -2,8 +2,9 @@ import path from "node:path";
 
 import { readBulletCache, writeBulletCache } from "./bulletCache.mjs";
 import { readSuggestionsData, saveBatchSummary, saveWorklogDaily, saveWorklogProfile } from "./blob.mjs";
-import { loadConfig } from "./config.mjs";
+import { loadConfig, zeudeEmailsOf } from "./config.mjs";
 import { groupPromptsByRepo, summarizeDayStories } from "./dayStory.mjs";
+import { buildUsageCoaching } from "./usageCoaching.mjs";
 import { areaKey } from "./workAreaGrouping.mjs";
 import { summarizeWithOpenAI } from "./openai.mjs";
 import { buildProfileSummary } from "./profile.mjs";
@@ -98,6 +99,11 @@ export async function runDailyBatch(inputDate, options = {}) {
     shellHistory,
     prBranchSignals
   });
+
+  // 내 사용 습관 코칭. 본인 것만 보고 다른 사람과 비교하지 않는다(usageCoaching.mjs 주석 참고).
+  // 최근 7일 창으로 보는 이유: 하루치는 표본이 너무 작아 임계값이 우연히 넘거나 안 넘는다.
+  // 조회가 실패하면 null 이고, 화면은 이 절을 아예 그리지 않는다.
+  summary.usageCoaching = await buildUsageCoaching({ emails: zeudeEmailsOf(config), days: 7 });
 
   const dailyJsonPath = path.join(config.dataDir, "daily", `${date}.json`);
   const resumeJsonPath = path.join(config.dataDir, "resume", `${date}.json`);

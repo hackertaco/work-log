@@ -1954,3 +1954,81 @@
 .worklog-workstyle-judgment { display: block; color: var(--ink); font-size: 14px; line-height: 1.5; }
 .worklog-workstyle-evidence { display: block; color: var(--muted); font-size: 12px; margin: 3px 0 0 17px; }
 .worklog-workstyle-range { margin: 8px 0 0; color: var(--muted); font-size: 11px; }
+
+/* ── 내가 쓰는 방식 (My Usage) ─────────────────────────────────────────────
+   본인 기록만 보여주는 카드. 다른 사람과 비교하는 표시는 넣지 않는다 —
+   비교가 들어가면 코칭이 아니라 감시로 읽힌다(src/lib/usageCoaching.mjs). */
+.worklog-usage-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 12px 20px;
+  margin: 18px 0 0;
+  padding: 16px 0 0;
+  border-top: 1px solid var(--hairline, rgba(0, 0, 0, 0.08));
+}
+
+.worklog-usage-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.worklog-usage-facts dt {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.worklog-usage-facts dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.worklog-usage-tips {
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.worklog-usage-tip {
+  padding-left: 14px;
+  border-left: 2px solid var(--accent, rgba(0, 0, 0, 0.18));
+}
+
+.worklog-usage-tip-head {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.worklog-usage-tip-evidence {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.worklog-usage-tip-action {
+  margin: 6px 0 0;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+
+.worklog-usage-clean {
+  margin: 20px 0 0;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--muted);
+}

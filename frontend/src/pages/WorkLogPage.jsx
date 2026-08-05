@@ -392,6 +392,8 @@ export function WorkLogPage() {
                 />
               </section>
 
+              <UsageCoachingCard coaching={dayPayload.usageCoaching} />
+
               <div class="worklog-divider" />
 
               <section class="worklog-insight-layout">
@@ -521,6 +523,55 @@ function InfoCard({ kicker, title, subtitle, items, variant = 'list', maxItems }
         </ul>
       )}
     </article>
+  );
+}
+
+/**
+ * 내 사용 습관 코칭. **본인 것만** 보여준다 — 다른 사람 숫자나 순위는 서버에서도
+ * 내려오지 않는다(src/lib/usageCoaching.mjs). 비교가 들어가면 코칭이 아니라 감시가 된다.
+ *
+ * 조언이 없으면(clean) 짧게 "이상 없음"만 적고, 데이터가 없으면 카드를 아예 안 그린다.
+ */
+function UsageCoachingCard({ coaching }) {
+  if (!coaching?.facts) return null;
+
+  const { facts, tips = [], window: win } = coaching;
+  const days = win?.days ?? 7;
+
+  return (
+    <section class="worklog-notes-layout">
+      <article class="ds-card worklog-info-card">
+        <CardHeader
+          kicker="My Usage"
+          title="내가 쓰는 방식"
+          subtitle={`최근 ${days}일 내 기록만 봅니다. 아껴 쓰라는 얘기가 아니라, 덜 막히고 한 번에 맞히는 쪽으로 바꿀 수 있는 것들입니다.`}
+        />
+
+        <dl class="worklog-usage-facts">
+          <div><dt>요청</dt><dd>{facts.reqs.toLocaleString()}회</dd></div>
+          <div><dt>대화</dt><dd>{facts.sessions}개</dd></div>
+          <div><dt>평균 컨텍스트</dt><dd>{facts.avgContextK.toLocaleString()}천 토큰</dd></div>
+          <div><dt>가장 컸을 때</dt><dd>{facts.maxContextK.toLocaleString()}천 토큰</dd></div>
+          <div><dt>동시에 최대</dt><dd>{facts.maxConcurrent}개</dd></div>
+        </dl>
+
+        {tips.length ? (
+          <ul class="worklog-usage-tips">
+            {tips.map((tip) => (
+              <li key={tip.id} class="worklog-usage-tip">
+                <p class="worklog-usage-tip-head">{tip.headline}</p>
+                <p class="worklog-usage-tip-evidence">{tip.evidence}</p>
+                <p class="worklog-usage-tip-action">{tip.action}</p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p class="worklog-usage-clean">
+            눈에 걸리는 습관이 없습니다. 컨텍스트도, 몰림도, 설정도 무리한 구간이 아닙니다.
+          </p>
+        )}
+      </article>
+    </section>
   );
 }
 
