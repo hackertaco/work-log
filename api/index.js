@@ -16,6 +16,7 @@
 import { handle } from "@hono/node-server/vercel";
 
 import { createApp } from "../src/server.mjs";
+import { ensureVercelRawBody } from "../src/lib/vercelRequestBody.mjs";
 
 export const config = {
   runtime: "nodejs",
@@ -25,5 +26,9 @@ export const config = {
 };
 
 const app = createApp();
+const honoHandler = handle(app);
 
-export default handle(app);
+export default async function vercelHandler(request, response) {
+  await ensureVercelRawBody(request);
+  return honoHandler(request, response);
+}
