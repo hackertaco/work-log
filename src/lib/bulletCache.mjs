@@ -151,7 +151,7 @@ export async function writeBulletCache(date, result, sourceEntryId = date) {
 
   try {
     await put(pathname, JSON.stringify(entry), {
-      access: "public",
+      access: "private",
       contentType: "application/json; charset=utf-8",
       addRandomSuffix: false,
       allowOverwrite: true,
@@ -289,7 +289,7 @@ export async function writeExtractCache(date, extract, sourceEntryId = date) {
 
   try {
     await put(pathname, JSON.stringify(entry), {
-      access: "public",
+      access: "private",
       contentType: "application/json; charset=utf-8",
       addRandomSuffix: false,
       allowOverwrite: true,
@@ -365,7 +365,7 @@ export async function invalidateBulletCache(date, reason = "explicit") {
 
   try {
     await put(pathname, JSON.stringify(invalidated), {
-      access: "public",
+      access: "private",
       contentType: "application/json; charset=utf-8",
       addRandomSuffix: false,
       allowOverwrite: true,
@@ -439,7 +439,7 @@ export async function invalidateExtractCache(date, reason = "explicit") {
 
   try {
     await put(pathname, JSON.stringify(invalidated), {
-      access: "public",
+      access: "private",
       contentType: "application/json; charset=utf-8",
       addRandomSuffix: false,
       allowOverwrite: true,

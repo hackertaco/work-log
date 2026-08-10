@@ -307,6 +307,33 @@ describe("workLogEventBus", () => {
     _clearGranularTriggers();
   });
 
+  test("granular-triggered batch cannot schedule itself again", async () => {
+    _clearGranularTriggers();
+
+    let batchCallCount = 0;
+    let receivedOptions = null;
+    const runner = async (date, options = {}) => {
+      batchCallCount++;
+      receivedOptions = options;
+
+      // Mirrors runDailyBatch: only ordinary/manual runs emit collection events.
+      // A granular-triggered run must receive the suppression flag, otherwise
+      // this event schedules the same batch forever.
+      if (options.emitGranularEvents !== false) {
+        emitCommitCollected(date, []);
+      }
+    };
+
+    registerGranularTriggers(runner, { debounceMs: 10 });
+    emitCommitCollected("2026-04-04", []);
+
+    await new Promise((r) => setTimeout(r, 60));
+    _clearGranularTriggers();
+
+    assert.strictEqual(batchCallCount, 1, "triggered batch must not recursively trigger itself");
+    assert.strictEqual(receivedOptions?.emitGranularEvents, false);
+  });
+
   test("granular trigger handles different dates independently", async () => {
     _clearGranularTriggers();
 

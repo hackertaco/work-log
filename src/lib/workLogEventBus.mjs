@@ -297,7 +297,7 @@ const _granularListeners = [];
  *
  * Idempotent — subsequent calls with the same batchRunner are no-ops.
  *
- * @param {(date: string) => Promise<any>} batchRunner
+ * @param {(date: string, options?: {userId?: string, emitGranularEvents?: boolean}) => Promise<any>} batchRunner
  *   Async function that runs the daily batch for a given date.
  *   Typically `runDailyBatch` from batch.mjs.
  * @param {object} [options]
@@ -364,7 +364,10 @@ function _scheduleBackgroundBatch(date, eventName, debounceMs, userId = "default
         ` (sources: ${sourceList})`
     );
 
-    _batchRunner(date, { userId }).catch((err) => {
+    // The batch itself emits the same granular collection events during an
+    // ordinary/manual run. Suppress them here so an event-triggered batch does
+    // not schedule itself again in an unbounded five-second loop.
+    _batchRunner(date, { userId, emitGranularEvents: false }).catch((err) => {
       console.warn(
         `[workLogEventBus] Background batch for ${date} failed (non-fatal):`,
         err?.message ?? String(err)

@@ -60,10 +60,14 @@ export async function runDailyBatch(inputDate, options = {}) {
   // waiting for the full summary to be built.
   //
   // These are fire-and-forget: the batch pipeline does not await them.
-  emitCommitCollected(date, gitData.commits, config.userId);
-  if (config.includeSlack) emitSlackCollected(date, slackContexts, config.userId);
-  if (config.includeSessionLogs) {
-    emitSessionCollected(date, [...codexSessions, ...claudeSessions], config.userId);
+  // A batch started by one of these events must not emit them again, otherwise
+  // registerGranularTriggers schedules the same batch forever every 5 seconds.
+  if (options.emitGranularEvents !== false) {
+    emitCommitCollected(date, gitData.commits, config.userId);
+    if (config.includeSlack) emitSlackCollected(date, slackContexts, config.userId);
+    if (config.includeSessionLogs) {
+      emitSessionCollected(date, [...codexSessions, ...claudeSessions], config.userId);
+    }
   }
 
   // ── PR/branch signal detection (Sub-AC 11b) ────────────────────────────────
