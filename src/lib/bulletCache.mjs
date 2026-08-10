@@ -34,7 +34,7 @@
 
 import { createHash } from "node:crypto";
 
-import { get, put } from "@vercel/blob";
+import { get, put } from "./meteredBlob.mjs";
 import { sanitizeUserId } from "./authUsers.mjs";
 import { getLlmModel } from "./llmGateway.mjs";
 import { getCurrentUserId } from "./requestContext.mjs";
@@ -98,7 +98,7 @@ async function readPrivateEntry(pathname, token, label) {
     if (!response) return null;
     return await new Response(response.stream).json();
   } catch (err) {
-    console.warn(`[${label}] private read failed for pathname=${pathname}:`, err.message ?? String(err));
+    console.warn(`[${label}] private read failed:`, err.message ?? String(err));
     if (cacheMustFailClosed()) throw err;
     return null;
   }

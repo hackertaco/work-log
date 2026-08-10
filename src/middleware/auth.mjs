@@ -30,6 +30,15 @@ export const COOKIE_NAME = "resume_token";
 export const USER_COOKIE_NAME = "worklog_user";
 const LOGIN_PATH = "/login";
 
+function telemetryRoute(url) {
+  const pathname = new URL(url).pathname;
+  if (pathname.startsWith("/api/resume/")) return "/api/resume/*";
+  if (pathname.startsWith("/api/day/")) return "/api/day/*";
+  if (pathname.startsWith("/api/linkedin/")) return "/api/linkedin/*";
+  if (pathname.startsWith("/resume/")) return "/resume/*";
+  return pathname;
+}
+
 /**
  * Parse a raw Cookie header string into a key→value map.
  * @param {string} cookieHeader
@@ -91,7 +100,11 @@ export function cookieAuth() {
         c.set("authUser", user);
         c.set("userId", user.id);
       }
-      await runWithRequestContext({ userId: user.id }, async () => {
+      await runWithRequestContext({
+        userId: user.id,
+        route: telemetryRoute(c.req.url),
+        trigger: "authenticated-http",
+      }, async () => {
         await next();
       });
       return;
@@ -142,7 +155,11 @@ export function bearerAuth() {
       c.set("userId", user.id);
     }
 
-    await runWithRequestContext({ userId: user.id }, async () => {
+    await runWithRequestContext({
+      userId: user.id,
+      route: telemetryRoute(c.req.url),
+      trigger: "authenticated-http",
+    }, async () => {
       await next();
     });
   };

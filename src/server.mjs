@@ -21,11 +21,13 @@ import {
   WORK_LOG_EVENTS
 } from "./lib/workLogEventBus.mjs";
 import { cookieAuth, resolveRequestUser } from "./middleware/auth.mjs";
-import { getAuthUsers } from "./lib/authUsers.mjs";
+import { getAuthUsers, MAX_AUTH_USERS } from "./lib/authUsers.mjs";
 import { listWorklogDates, readWorklogDaily, readWorklogProfile, readWorkStyleAnalysis } from "./lib/blob.mjs";
 import { buildProfileSummary, readProfileSummary } from "./lib/profile.mjs";
-import { runServerCollection, runWorkStyleAnalysis } from "./lib/serverCollect.mjs";
+import { runServerCollection, runWorkStyleAnalysis, seoulDate } from "./lib/serverCollect.mjs";
 import { runProfileExport } from "./lib/profileExport.mjs";
+import { claimCollectionLease } from "./lib/collectionLease.mjs";
+import { runWithRequestContext } from "./lib/requestContext.mjs";
 import { fileExists } from "./lib/utils.mjs";
 import { resumeEnabled, stripResumeFields, stripResumeDraft } from "./lib/resumeVisibility.mjs";
 import { authRouter } from "./routes/auth.mjs";
@@ -106,33 +108,71 @@ export function createApp() {
     if (!secret || auth !== `Bearer ${secret}`) {
       return c.json({ error: "Unauthorized" }, 401);
     }
-    const dateParam = c.req.query("date");
-    const dates = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? [dateParam] : undefined;
-    const force = c.req.query("forceLlm") === "1";
+    return runWithRequestContext({
+      userId: "cron",
+      route: "/api/collect",
+      trigger: "vercel-cron",
+    }, async () => {
+      const dateParam = c.req.query("date");
+      const requestedDates = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+        ? [dateParam]
+        : [seoulDate(-1), seoulDate(0)];
+      const force = c.req.query("forceLlm") === "1";
 
-    // 설정된 유저마다 각자 데이터로 수집한다. WORK_LOG_USERS_JSON 미설정(로컬
-    // 단일유저)이면 legacy "default" 네임스페이스로 폴백.
-    const configured = getAuthUsers().map((u) => u.id);
-    const userIds = configured.length ? configured : ["default"];
+      // 설정된 유저마다 각자 데이터로 수집한다. WORK_LOG_USERS_JSON 미설정(로컬
+      // 단일유저)이면 legacy "default" 네임스페이스로 폴백.
+      const configured = getAuthUsers().slice(0, MAX_AUTH_USERS).map((u) => u.id);
+      const userIds = configured.length ? configured : ["default"];
 
-    const perUser = [];
-    const analyses = {};
-    const localDerivations = !process.env.VERCEL;
-    for (const userId of userIds) {
-      const collection = await runServerCollection({ userId, dates })
-        .catch((err) => ({ error: err.message ?? String(err) }));
-      const workStyle = localDerivations
-        ? await runWorkStyleAnalysis({ userId, force })
-            .catch((err) => ({ skipped: true, reason: err.message ?? String(err) }))
-        : { skipped: true, reason: "local_llm_worker_required" };
-      // 방금 만든 분석을 그대로 넘겨 프로필이 Blob 재읽기에 의존하지 않게 한다.
-      if (workStyle?.analysis) analyses[userId] = workStyle.analysis;
-      perUser.push({ userId, ...collection, workStyle: { ...workStyle, analysis: undefined } });
-    }
-    const profiles = localDerivations
-      ? await runProfileExport({ userIds, analyses }).catch((err) => ({ error: err.message ?? String(err) }))
-      : { built: [], skipped: true, reason: "local_llm_worker_required" };
-    return c.json({ users: userIds, results: perUser, profiles });
+      const perUser = [];
+      const analyses = {};
+      const localDerivations = !process.env.VERCEL;
+      let leaseUnavailable = false;
+      for (const userId of userIds) {
+        const acquiredDates = [];
+        const unavailableDates = [];
+        for (const date of requestedDates) {
+          try {
+            const lease = await claimCollectionLease({ userId, date });
+            if (lease.acquired) acquiredDates.push(date);
+          } catch {
+            leaseUnavailable = true;
+            unavailableDates.push(date);
+          }
+        }
+
+        if (acquiredDates.length === 0) {
+          perUser.push({
+            userId,
+            skipped: true,
+            reason: unavailableDates.length ? "collection_lease_unavailable" : "already_collected",
+          });
+          continue;
+        }
+
+        const collection = await runServerCollection({ userId, dates: acquiredDates })
+          .catch((err) => ({ error: err.message ?? String(err) }));
+        const workStyle = localDerivations
+          ? await runWorkStyleAnalysis({ userId, force })
+              .catch((err) => ({ skipped: true, reason: err.message ?? String(err) }))
+          : { skipped: true, reason: "local_llm_worker_required" };
+        // 방금 만든 분석을 그대로 넘겨 프로필이 Blob 재읽기에 의존하지 않게 한다.
+        if (workStyle?.analysis) analyses[userId] = workStyle.analysis;
+        perUser.push({
+          userId,
+          ...collection,
+          unavailableDates: unavailableDates.length ? unavailableDates : undefined,
+          workStyle: { ...workStyle, analysis: undefined },
+        });
+      }
+      const profiles = localDerivations
+        ? await runProfileExport({ userIds, analyses }).catch((err) => ({ error: err.message ?? String(err) }))
+        : { built: [], skipped: true, reason: "local_llm_worker_required" };
+      return c.json(
+        { users: userIds, results: perUser, profiles },
+        leaseUnavailable ? 503 : 200,
+      );
+    });
   });
 
   // ---------- Resume API routes (protected by cookieAuth above) ----------

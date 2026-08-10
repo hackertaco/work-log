@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DEFAULT_USER_ID, findAuthUserByToken, getAuthUsers, sanitizeUserId } from "./authUsers.mjs";
+import { DEFAULT_USER_ID, MAX_AUTH_USERS, findAuthUserByToken, getAuthUsers, sanitizeUserId } from "./authUsers.mjs";
 
 test("sanitizeUserId normalizes ids", () => {
   assert.equal(sanitizeUserId(" Alice Kim "), "alice-kim");
@@ -48,4 +48,8 @@ test("getAuthUsers preserves optional sources metadata", () => {
   assert.deepEqual(users[0].sources.slack.channelIds, ["C1"]);
 
   if (savedUsers === undefined) delete process.env.WORK_LOG_USERS_JSON; else process.env.WORK_LOG_USERS_JSON = savedUsers;
+});
+
+test("MAX_AUTH_USERS defines the scheduled collection ceiling", () => {
+  assert.equal(MAX_AUTH_USERS, 20);
 });

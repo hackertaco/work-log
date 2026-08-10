@@ -1,4 +1,5 @@
 export const DEFAULT_USER_ID = "default";
+export const MAX_AUTH_USERS = 20;
 
 export function sanitizeUserId(value) {
   const raw = String(value || "").trim().toLowerCase();

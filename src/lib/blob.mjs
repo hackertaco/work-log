@@ -20,7 +20,7 @@
  *   BLOB_READ_WRITE_TOKEN — provisioned by Vercel Blob integration
  */
 
-import { list, put, del, get } from "@vercel/blob";
+import { list, put, del, get } from "./meteredBlob.mjs";
 import { migrateResumeDocument } from "./resumeMigration.mjs";
 import { DEFAULT_USER_ID, sanitizeUserId } from "./authUsers.mjs";
 import { getCurrentUserId } from "./requestContext.mjs";
@@ -669,12 +669,13 @@ export async function invalidateDailyBullets(date, reason = "explicit", userId =
 
   if (!match) return; // No document to invalidate — no-op.
 
-  // Fetch current content.
+  // Fetch current content through the same metered provider boundary as all
+  // other Blob reads; direct URL fetches would bypass timeout/size telemetry.
   let data;
   try {
-    const response = await fetch(match.url);
-    if (!response.ok) return;
-    data = await response.json();
+    const response = await getPrivateBlob(pathname, userId);
+    if (!response) return;
+    data = await new Response(response.stream).json();
   } catch (err) {
     console.warn(
       `[blob] invalidateDailyBullets fetch failed for date=${date}:`,
@@ -794,6 +795,13 @@ export async function checkPdfRawExists(userId = DEFAULT_USER_ID) {
     uploadedAt: match.uploadedAt,
     size: match.size
   };
+}
+
+/** Read the raw PDF through the bounded private Blob download path. */
+export async function readPdfRaw(userId = DEFAULT_USER_ID) {
+  const response = await getPrivateBlob(PDF_RAW_PATHNAME, userId);
+  if (!response) return null;
+  return Buffer.from(await new Response(response.stream).arrayBuffer());
 }
 
 // ─── Keyword cluster axes storage ─────────────────────────────────────────────
@@ -962,9 +970,9 @@ export async function checkReconstructionMarker(userId = DEFAULT_USER_ID) {
 
   // Fetch marker content for reason / timestamp.
   try {
-    const response = await fetch(match.url);
-    if (response.ok) {
-      const data = await response.json();
+    const response = await getPrivateBlob(scopedPath, userId);
+    if (response) {
+      const data = await new Response(response.stream).json();
       return {
         needsRebuild: true,
         markedAt: data.markedAt ?? match.uploadedAt,

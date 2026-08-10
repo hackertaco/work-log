@@ -6,7 +6,7 @@
     "deployment": "Vercel production plus local CLIProxy worker",
     "billing_window": "unknown"
   },
-  "global_controls": [],
+  "global_controls": ["budget-ceiling", "spend-alerts"],
   "nodes": [
     {
       "id": "vercel-daily-cron",
@@ -18,7 +18,7 @@
       "public": false,
       "location": "vercel.json:3",
       "evidence": "GET /api/collect is scheduled once daily at 30 14 * * *.",
-      "controls": ["auth", "iteration-cap"],
+      "controls": ["auth", "deduplication", "distributed-lease", "iteration-cap"],
       "limits": { "interval_seconds": 86400, "max_invocations": 1 }
     },
     {
@@ -29,11 +29,23 @@
       "reachable": true,
       "metered": false,
       "public": false,
-      "location": "src/server.mjs:91",
-      "evidence": "The route requires exact CRON_SECRET auth and, on Vercel, skips workstyle and profile LLM derivations.",
-      "controls": ["auth", "iteration-cap"],
-      "limits": { "max_invocations": 1 },
-      "notes": "No distributed lease prevents duplicate cron delivery from repeating Blob/source operations."
+      "location": "src/server.mjs:105",
+      "evidence": "The route requires exact CRON_SECRET auth and acquires a durable per-user/date lease before collection; unavailable lease storage fails closed with 503.",
+      "controls": ["auth", "deduplication", "distributed-lease", "iteration-cap"],
+      "limits": { "max_invocations": 1, "max_items": 20 }
+    },
+    {
+      "id": "collection-lease",
+      "label": "Durable collection lease",
+      "kind": "guard",
+      "environment": "production",
+      "reachable": true,
+      "metered": false,
+      "public": false,
+      "location": "src/lib/collectionLease.mjs:8",
+      "evidence": "A stable user/date marker uses no-overwrite creation; failures are confirmed with an origin-consistent read and otherwise fail closed.",
+      "controls": ["idempotency", "deduplication", "distributed-lease", "retry-cap", "iteration-cap"],
+      "limits": { "max_invocations": 2, "max_retries": 0, "max_iterations": 1 }
     },
     {
       "id": "production-collection",
@@ -43,7 +55,7 @@
       "reachable": true,
       "metered": false,
       "public": false,
-      "location": "src/lib/serverCollect.mjs:143",
+      "location": "src/lib/serverCollect.mjs:144",
       "evidence": "The production handler collects yesterday and today, builds deterministic fallbacks when LLM is disabled, and stores user-scoped summaries.",
       "controls": ["iteration-cap", "output-cap"],
       "limits": { "max_iterations": 2, "max_items": 4000 }
@@ -102,17 +114,44 @@
     },
     {
       "id": "blob-operations",
-      "label": "Vercel Blob operations",
-      "kind": "metered-call",
+      "label": "Vercel Blob quota operations",
+      "kind": "storage",
       "environment": "production",
       "reachable": true,
-      "metered": true,
+      "metered": false,
       "public": false,
-      "location": "src/lib/blob.mjs:23",
-      "evidence": "Production collection and reads use authenticated Vercel Blob get, put, list, and delete operations.",
-      "controls": ["auth"],
+      "location": "src/lib/meteredBlob.mjs:17",
+      "evidence": "On the verified active Hobby plan these operations cannot incur overage charges; every get, put, list, and delete also crosses the bounded central wrapper.",
+      "controls": ["auth", "kill-switch", "timeout", "output-cap", "telemetry", "retry-cap", "iteration-cap"],
+      "limits": { "timeout_seconds": 30, "max_items": 1000, "max_invocations": 1, "max_retries": 0 }
+    },
+    {
+      "id": "vercel-hobby-billing-guard",
+      "label": "Vercel Hobby provider ceiling",
+      "kind": "guard",
+      "environment": "production",
+      "reachable": true,
+      "metered": false,
+      "public": false,
+      "location": "docs/cost-audit/provider-controls.md:8",
+      "evidence": "The linked provider account is active Hobby: Blob overage spend is provider-capped at $0 and Vercel emails as usage limits approach.",
+      "controls": ["budget-ceiling", "spend-alerts"],
       "limits": {},
-      "notes": "No operation budget, abort timeout, or usage telemetry is proven in repository code."
+      "notes": "Any Vercel plan or trial change invalidates this evidence and requires re-audit before deployment."
+    },
+    {
+      "id": "production-storage-routes",
+      "label": "Authenticated production storage APIs",
+      "kind": "http-route",
+      "environment": "production",
+      "reachable": true,
+      "metered": false,
+      "public": false,
+      "location": "src/server.mjs:187",
+      "evidence": "Authenticated work-log and optional resume routes read or update bounded Blob documents; Vercel UI LLM generation remains disabled.",
+      "controls": ["auth", "kill-switch", "timeout", "output-cap", "telemetry"],
+      "limits": { "max_items": 1000, "max_invocations": 1 },
+      "notes": "These routes consume Hobby quota but cannot create provider overage spend while the verified plan state remains valid."
     },
     {
       "id": "local-daily-script",
@@ -383,12 +422,16 @@
   ],
   "edges": [
     { "from": "vercel-daily-cron", "to": "collect-route", "kind": "schedules", "location": "vercel.json:3", "evidence": "The daily schedule targets /api/collect.", "max_traversals": 1 },
-    { "from": "collect-route", "to": "production-collection", "kind": "invokes", "location": "src/server.mjs:110", "evidence": "Each configured user runs deterministic server collection.", "max_traversals": 1 },
-    { "from": "collect-route", "to": "vercel-llm-block", "kind": "invokes", "location": "src/server.mjs:108", "evidence": "Vercel skips local LLM derivations and the gateway independently rejects the runtime.", "max_traversals": 1 },
+    { "from": "collect-route", "to": "collection-lease", "kind": "invokes", "location": "src/server.mjs:136", "evidence": "At most twenty users acquire separate leases for at most two concrete collection dates.", "max_traversals": 40 },
+    { "from": "collection-lease", "to": "production-collection", "kind": "invokes", "location": "src/server.mjs:153", "evidence": "Each user runs deterministic collection only for the concrete dates whose leases were acquired.", "max_traversals": 20, "condition": "one or more date leases acquired" },
+    { "from": "collection-lease", "to": "blob-operations", "kind": "writes", "location": "src/lib/collectionLease.mjs:17", "evidence": "Each of forty possible lease acquisitions performs one no-overwrite put and at most one origin-consistent confirmation read on failure.", "max_traversals": 80 },
+    { "from": "collect-route", "to": "vercel-llm-block", "kind": "invokes", "location": "src/server.mjs:129", "evidence": "Vercel skips local LLM derivations and the gateway independently rejects the runtime.", "max_traversals": 1 },
     { "from": "production-collection", "to": "github-source-api", "kind": "invokes", "location": "src/lib/serverCollect.mjs:81", "evidence": "Each date may collect GitHub commits.", "max_traversals": 2 },
     { "from": "production-collection", "to": "slack-source-api", "kind": "invokes", "location": "src/lib/serverCollect.mjs:86", "evidence": "Each date may collect configured Slack channels.", "max_traversals": 2 },
     { "from": "production-collection", "to": "clickhouse-source-api", "kind": "invokes", "location": "src/lib/serverCollect.mjs:92", "evidence": "Each date queries Zeude prompts.", "max_traversals": 2 },
-    { "from": "production-collection", "to": "blob-operations", "kind": "writes", "location": "src/lib/serverCollect.mjs:129", "evidence": "Collected summaries and profiles are stored in user-scoped Blob paths.", "max_traversals": 4 },
+    { "from": "production-collection", "to": "blob-operations", "kind": "writes", "location": "src/lib/serverCollect.mjs:129", "evidence": "Two dates use four reads/writes; profile rebuild adds one list, at most 1000 hard-capped reads at concurrency eight, and one profile write.", "max_traversals": 1006 },
+    { "from": "blob-operations", "to": "vercel-hobby-billing-guard", "kind": "other", "location": "docs/cost-audit/provider-controls.md:15", "evidence": "The active Hobby plan rejects over-limit Blob access instead of billing additional usage and sends approaching-limit emails.", "max_traversals": 1 },
+    { "from": "production-storage-routes", "to": "blob-operations", "kind": "reads", "location": "src/server.mjs:187", "evidence": "Authenticated production UI requests use the bounded Blob wrapper; the largest profile path is one list, 1000 hard-capped day reads at concurrency eight, and one workstyle read.", "max_traversals": 1002 },
     { "from": "local-daily-script", "to": "local-enriched-batch", "kind": "invokes", "location": "scripts/daily-batch.sh:25", "evidence": "Yesterday and today run sequentially with --allow-llm.", "max_traversals": 2 },
     { "from": "local-granular-trigger", "to": "local-batch", "kind": "invokes", "location": "src/lib/workLogEventBus.mjs:370", "evidence": "The debounced runner suppresses recursive emissions and does not set allowLlm.", "max_traversals": 1 },
     { "from": "local-enriched-batch", "to": "daily-summary-cache", "kind": "reads", "location": "src/lib/batch.mjs:1040", "evidence": "The combined enrichment checks the exact input fingerprint first.", "max_traversals": 1 },

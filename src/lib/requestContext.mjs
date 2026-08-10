@@ -9,7 +9,11 @@ export function runWithRequestContext(context, fn) {
 }
 
 export function getRequestContext() {
-  return storage.getStore() || { userId: DEFAULT_USER_ID };
+  return storage.getStore() || {
+    userId: DEFAULT_USER_ID,
+    route: "internal",
+    trigger: "internal",
+  };
 }
 
 export function getCurrentUserId() {
@@ -19,5 +23,7 @@ export function getCurrentUserId() {
 function normalizeContext(context) {
   return {
     userId: sanitizeUserId(context?.userId),
+    route: String(context?.route || "internal").slice(0, 80),
+    trigger: String(context?.trigger || "internal").slice(0, 40),
   };
 }

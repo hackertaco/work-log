@@ -29,8 +29,6 @@
  */
 
 import { createRequire } from "node:module";
-import { checkPdfRawExists } from "./blob.mjs";
-
 const _require = createRequire(import.meta.url);
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -65,30 +63,24 @@ export async function extractTextFromBuffer(buffer) {
 /**
  * Fetch the raw PDF binary stored in Vercel Blob and return it as a Buffer.
  *
- * Uses `checkPdfRawExists()` from blob.mjs to locate the stored PDF, then
- * performs a plain HTTP fetch of the Blob URL to retrieve the binary content.
+ * Uses blob.mjs so the download shares the central timeout, byte ceiling,
+ * retry policy, kill switch, and telemetry boundary.
  *
  * @returns {Promise<Buffer>}  The raw PDF binary as a Node.js Buffer.
  * @throws {Error}  When no PDF has been stored yet, or the fetch fails.
  */
 export async function readPdfBufferFromBlob() {
-  const meta = await checkPdfRawExists();
-  if (!meta) {
+  // Keep this import lazy so pure PDF parsing users do not initialize storage.
+  const { readPdfRaw } = await import("./blob.mjs");
+  const buffer = await readPdfRaw();
+  if (!buffer) {
     throw new Error(
       "readPdfBufferFromBlob: no PDF found in Vercel Blob (resume/resume.pdf). " +
       "Upload a PDF via POST /api/resume/bootstrap first."
     );
   }
 
-  const response = await fetch(meta.url);
-  if (!response.ok) {
-    throw new Error(
-      `readPdfBufferFromBlob: failed to fetch PDF from Blob (HTTP ${response.status})`
-    );
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+  return buffer;
 }
 
 /**

@@ -175,9 +175,14 @@ async function readDailySummariesFromBlob(userId, windowDays = null) {
     if (windowDays) {
       dates = dates.slice(0, windowDays);
     }
-    const docs = await Promise.all(
-      dates.map((date) => readWorklogDaily(date, userId).catch(() => null))
-    );
+    const docs = [];
+    const concurrency = 8;
+    for (let index = 0; index < dates.length; index += concurrency) {
+      const chunk = dates.slice(index, index + concurrency);
+      docs.push(...await Promise.all(
+        chunk.map((date) => readWorklogDaily(date, userId).catch(() => null))
+      ));
+    }
     // listWorklogDates 는 최신순이므로 디스크 경로와 같은 과거→최신 순으로 뒤집는다
     return docs.filter(Boolean).reverse();
   } catch {

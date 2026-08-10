@@ -3,11 +3,13 @@ import test from 'node:test';
 
 import { pathForUser } from './blob.mjs';
 import { loadConfig } from './config.mjs';
-import { runWithRequestContext, getCurrentUserId } from './requestContext.mjs';
+import { runWithRequestContext, getCurrentUserId, getRequestContext } from './requestContext.mjs';
 
 test('request context exposes current user id', async () => {
-  await runWithRequestContext({ userId: 'alice' }, async () => {
+  await runWithRequestContext({ userId: 'alice', route: '/api/profile', trigger: 'authenticated-http' }, async () => {
     assert.equal(getCurrentUserId(), 'alice');
+    assert.equal(getRequestContext().route, '/api/profile');
+    assert.equal(getRequestContext().trigger, 'authenticated-http');
   });
 });
 

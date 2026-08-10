@@ -11,13 +11,18 @@ mock.module("@vercel/blob", {
       getCalls.push([pathname, options]);
       const body = store.get(pathname);
       if (body === undefined) return null;
-      return { stream: new Blob([body]).stream() };
+      return {
+        blob: { size: Buffer.byteLength(body) },
+        stream: new Blob([body]).stream(),
+      };
     },
     put: async (...args) => {
       putCalls.push(args);
       store.set(args[0], args[1]);
       return { url: "https://blob.test/cache-entry.json" };
-    }
+    },
+    list: async () => ({ blobs: [], hasMore: false }),
+    del: async () => {},
   }
 });
 

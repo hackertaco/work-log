@@ -45,12 +45,18 @@ let runDailyBatchFn = async (date, options) => {
 };
 let runWorkStyleAnalysisCalls = 0;
 let runProfileExportCalls = 0;
+let claimCollectionLeaseCalls = [];
+let claimCollectionLeaseFn = async (args) => {
+  claimCollectionLeaseCalls.push(args);
+  return { acquired: true };
+};
 
 // ─── Module-level mocks (must be declared before `await import(...)`) ─────
 
 mock.module("./lib/serverCollect.mjs", {
   namedExports: {
     runServerCollection: (...args) => runServerCollectionFn(...args),
+    seoulDate: (offset = 0) => offset === -1 ? "2026-08-09" : "2026-08-10",
     runWorkStyleAnalysis: async () => {
       runWorkStyleAnalysisCalls += 1;
       return { llmRefreshed: true, analysis: { principles: [] } };
@@ -73,6 +79,12 @@ mock.module("./lib/batch.mjs", {
   }
 });
 
+mock.module("./lib/collectionLease.mjs", {
+  namedExports: {
+    claimCollectionLease: (...args) => claimCollectionLeaseFn(...args),
+  },
+});
+
 const { createApp } = await import("./server.mjs");
 
 // ─── Test helpers ───────────────────────────────────────────────────────────
@@ -92,6 +104,11 @@ function resetStubs() {
   };
   runWorkStyleAnalysisCalls = 0;
   runProfileExportCalls = 0;
+  claimCollectionLeaseCalls = [];
+  claimCollectionLeaseFn = async (args) => {
+    claimCollectionLeaseCalls.push(args);
+    return { acquired: true };
+  };
 }
 
 /** Build an authenticated POST /api/run-batch request with a JSON body. */
@@ -123,6 +140,10 @@ test("GET /api/collect — Vercel runs collection only, never LLM derivations", 
 
     assert.equal(res.status, 200);
     assert.equal(runServerCollectionCalls.length, 1);
+    assert.equal(claimCollectionLeaseCalls.length, 2);
+    assert.equal(claimCollectionLeaseCalls[0].userId, "default");
+    assert.deepEqual(claimCollectionLeaseCalls.map((call) => call.date), ["2026-08-09", "2026-08-10"]);
+    assert.deepEqual(runServerCollectionCalls[0], { userId: "default", dates: ["2026-08-09", "2026-08-10"] });
     assert.equal(runWorkStyleAnalysisCalls, 0);
     assert.equal(runProfileExportCalls, 0);
     assert.equal(body.results[0].workStyle.reason, "local_llm_worker_required");
@@ -131,6 +152,118 @@ test("GET /api/collect — Vercel runs collection only, never LLM derivations", 
     delete process.env.VERCEL;
     delete process.env.CRON_SECRET;
     delete process.env.RESUME_TOKEN;
+  }
+});
+
+test("GET /api/collect — an existing durable lease prevents duplicate collection", async () => {
+  resetStubs();
+  process.env.RESUME_TOKEN = "test-run-batch-token";
+  process.env.CRON_SECRET = "cron-test-secret";
+  process.env.VERCEL = "1";
+  claimCollectionLeaseFn = async (args) => {
+    claimCollectionLeaseCalls.push(args);
+    return { acquired: false, reason: "already_collected" };
+  };
+
+  try {
+    const app = createApp();
+    const res = await app.fetch(new Request("http://localhost/api/collect", {
+      headers: { authorization: "Bearer cron-test-secret" }
+    }));
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.equal(claimCollectionLeaseCalls.length, 2);
+    assert.equal(runServerCollectionCalls.length, 0);
+    assert.equal(body.results[0].skipped, true);
+    assert.equal(body.results[0].reason, "already_collected");
+  } finally {
+    delete process.env.VERCEL;
+    delete process.env.CRON_SECRET;
+    delete process.env.RESUME_TOKEN;
+  }
+});
+
+test("GET /api/collect — retries collect only target dates without an existing lease", async () => {
+  resetStubs();
+  process.env.RESUME_TOKEN = "test-run-batch-token";
+  process.env.CRON_SECRET = "cron-test-secret";
+  process.env.VERCEL = "1";
+  claimCollectionLeaseFn = async (args) => {
+    claimCollectionLeaseCalls.push(args);
+    return args.date === "2026-08-09"
+      ? { acquired: false, reason: "already_collected" }
+      : { acquired: true };
+  };
+
+  try {
+    const app = createApp();
+    const res = await app.fetch(new Request("http://localhost/api/collect", {
+      headers: { authorization: "Bearer cron-test-secret" }
+    }));
+
+    assert.equal(res.status, 200);
+    assert.equal(runServerCollectionCalls.length, 1);
+    assert.deepEqual(runServerCollectionCalls[0], { userId: "default", dates: ["2026-08-10"] });
+  } finally {
+    delete process.env.VERCEL;
+    delete process.env.CRON_SECRET;
+    delete process.env.RESUME_TOKEN;
+  }
+});
+
+test("GET /api/collect — lease provider failure returns 503 and never collects", async () => {
+  resetStubs();
+  process.env.RESUME_TOKEN = "test-run-batch-token";
+  process.env.CRON_SECRET = "cron-test-secret";
+  process.env.VERCEL = "1";
+  claimCollectionLeaseFn = async (args) => {
+    claimCollectionLeaseCalls.push(args);
+    throw new Error("provider unavailable");
+  };
+
+  try {
+    const app = createApp();
+    const res = await app.fetch(new Request("http://localhost/api/collect", {
+      headers: { authorization: "Bearer cron-test-secret" }
+    }));
+    const body = await res.json();
+
+    assert.equal(res.status, 503);
+    assert.equal(claimCollectionLeaseCalls.length, 2);
+    assert.equal(runServerCollectionCalls.length, 0);
+    assert.equal(body.results[0].reason, "collection_lease_unavailable");
+  } finally {
+    delete process.env.VERCEL;
+    delete process.env.CRON_SECRET;
+    delete process.env.RESUME_TOKEN;
+  }
+});
+
+test("GET /api/collect — scheduled fan-out is hard-capped at twenty users", async () => {
+  resetStubs();
+  process.env.CRON_SECRET = "cron-test-secret";
+  process.env.VERCEL = "1";
+  process.env.WORK_LOG_USERS_JSON = JSON.stringify(
+    Array.from({ length: 25 }, (_, index) => ({
+      id: `user-${index}`,
+      token: `token-${index}`,
+    })),
+  );
+
+  try {
+    const app = createApp();
+    const res = await app.fetch(new Request("http://localhost/api/collect", {
+      headers: { authorization: "Bearer cron-test-secret" }
+    }));
+
+    assert.equal(res.status, 200);
+    assert.equal(claimCollectionLeaseCalls.length, 40);
+    assert.equal(runServerCollectionCalls.length, 20);
+  } finally {
+    delete process.env.VERCEL;
+    delete process.env.CRON_SECRET;
+    delete process.env.WORK_LOG_USERS_JSON;
   }
 });
 

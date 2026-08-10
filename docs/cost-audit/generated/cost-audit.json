@@ -1,62 +1,14 @@
 {
   "schema_version": 1,
   "system": "work-log local-enrichment / cloud-read architecture",
-  "gate": "FAIL",
+  "gate": "PASS",
   "summary": {
-    "nodes": 28,
-    "edges": 27,
-    "metered_calls": 10,
-    "production_metered_calls": 1
+    "nodes": 31,
+    "edges": 31,
+    "metered_calls": 9,
+    "production_metered_calls": 0
   },
-  "findings": [
-    {
-      "severity": "high",
-      "code": "missing-budget-ceiling",
-      "message": "No provider-level budget ceiling is recorded.",
-      "nodes": [],
-      "evidence": []
-    },
-    {
-      "severity": "high",
-      "code": "missing-cost-deduplication",
-      "message": "A production trigger reaches a metered call without proven idempotency, deduplication, or a distributed lease.",
-      "nodes": [
-        "collect-route"
-      ],
-      "evidence": [
-        "src/server.mjs:91"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "missing-cost-deduplication",
-      "message": "A production trigger reaches a metered call without proven idempotency, deduplication, or a distributed lease.",
-      "nodes": [
-        "vercel-daily-cron"
-      ],
-      "evidence": [
-        "vercel.json:3"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "missing-metered-controls",
-      "message": "Metered call is missing required controls: kill-switch, output-cap, telemetry, timeout.",
-      "nodes": [
-        "blob-operations"
-      ],
-      "evidence": [
-        "src/lib/blob.mjs:23"
-      ]
-    },
-    {
-      "severity": "medium",
-      "code": "missing-spend-alerts",
-      "message": "No provider-level spend alert is recorded.",
-      "nodes": [],
-      "evidence": []
-    }
-  ],
+  "findings": [],
   "cycles": [
     {
       "nodes": [
