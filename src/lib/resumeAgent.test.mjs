@@ -47,10 +47,51 @@ function baseMessages() {
 describe("runAgentLoop", () => {
   beforeEach(() => {
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.RESUME_AGENT_ENABLED = "1";
+    delete process.env.WORK_LOG_DISABLE_OPENAI;
   });
 
   afterEach(() => {
     delete process.env.OPENAI_API_KEY;
+    delete process.env.RESUME_AGENT_ENABLED;
+    delete process.env.WORK_LOG_DISABLE_OPENAI;
+  });
+
+  it("does not call the LLM when the global OpenAI kill switch is active", async () => {
+    process.env.WORK_LOG_DISABLE_OPENAI = "1";
+    let llmCalls = 0;
+    const events = [];
+
+    await runAgentLoop({
+      messages: baseMessages(),
+      onEvent: (event) => events.push(event),
+      _deps: {
+        callLlm: async () => {
+          llmCalls++;
+          return makeTextResponse("should not run");
+        },
+      },
+    });
+
+    assert.equal(llmCalls, 0);
+    assert.match(events[0]?.content ?? "", /비활성화/);
+  });
+
+  it("does not call the LLM unless the resume agent is explicitly enabled", async () => {
+    delete process.env.RESUME_AGENT_ENABLED;
+    let llmCalls = 0;
+
+    await runAgentLoop({
+      messages: baseMessages(),
+      _deps: {
+        callLlm: async () => {
+          llmCalls++;
+          return makeTextResponse("should not run");
+        },
+      },
+    });
+
+    assert.equal(llmCalls, 0);
   });
 
   it("text-only response terminates in 1 iteration", async () => {

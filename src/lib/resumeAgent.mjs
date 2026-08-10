@@ -51,6 +51,10 @@ export async function runAgentLoop({
   const _allowedTools = _deps.allowedTools || ALLOWED_TOOLS;
 
   const apiKey = process.env.OPENAI_API_KEY;
+  if (process.env.WORK_LOG_DISABLE_OPENAI === "1" || process.env.RESUME_AGENT_ENABLED !== "1") {
+    onEvent({ type: "message", content: "이력서 AI 에이전트가 비활성화되어 있습니다." });
+    return;
+  }
   if (!apiKey) {
     onEvent({ type: "message", content: "OpenAI API key가 설정되지 않았습니다." });
     return;

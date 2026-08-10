@@ -97,6 +97,7 @@ test("POST /api/run-batch — Vercel branch: proceeds via runServerCollection, s
   process.env.RESUME_TOKEN = "test-run-batch-token";
   delete process.env.WORK_LOG_ENABLE_RESUME;
   process.env.VERCEL = "1";
+  process.env.WORK_LOG_ALLOW_MANUAL_BATCH = "1";
 
   const date = "2099-01-01";
   try {
@@ -128,6 +129,27 @@ test("POST /api/run-batch — Vercel branch: proceeds via runServerCollection, s
     assert.equal(typeof body, "object");
   } finally {
     delete process.env.VERCEL;
+    delete process.env.WORK_LOG_ALLOW_MANUAL_BATCH;
+    delete process.env.RESUME_TOKEN;
+  }
+});
+
+test("POST /api/run-batch — Vercel branch: disabled by default before collection starts", async () => {
+  resetStubs();
+  process.env.RESUME_TOKEN = "test-run-batch-token";
+  process.env.VERCEL = "1";
+  delete process.env.WORK_LOG_ALLOW_MANUAL_BATCH;
+
+  try {
+    const app = createApp();
+    const res = await app.fetch(authedRunBatch({ date: "2099-01-04" }));
+
+    assert.equal(res.status, 403);
+    assert.equal(runServerCollectionCalls.length, 0);
+    assert.equal(runDailyBatchCalls.length, 0);
+  } finally {
+    delete process.env.VERCEL;
+    delete process.env.WORK_LOG_ALLOW_MANUAL_BATCH;
     delete process.env.RESUME_TOKEN;
   }
 });

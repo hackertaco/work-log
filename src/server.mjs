@@ -40,6 +40,14 @@ const publicDir = path.resolve(__dirname, "../dist");
 const RUN_BATCH_MIN_INTERVAL_MS = 30_000;
 const lastRunBatchAt = new Map();
 
+function manualBatchEnabled() {
+  return !process.env.VERCEL || process.env.WORK_LOG_ALLOW_MANUAL_BATCH === "1";
+}
+
+function resumeAgentEnabled() {
+  return process.env.RESUME_AGENT_ENABLED === "1" && process.env.WORK_LOG_DISABLE_OPENAI !== "1";
+}
+
 export function createApp() {
   const app = new Hono();
 
@@ -145,6 +153,13 @@ export function createApp() {
   });
 
   app.post("/api/run-batch", async (c) => {
+    // Serverless instances do not share the in-memory limiter below. Keep the
+    // expensive production endpoint closed unless it is deliberately enabled;
+    // the daily cron remains available through /api/collect + CRON_SECRET.
+    if (!manualBatchEnabled()) {
+      return c.json({ error: "Manual batch is disabled in production" }, 403);
+    }
+
     const user = resolveRequestUser(c);
     const body = await c.req.json().catch(() => ({}));
     const date = body?.date;
@@ -391,7 +406,9 @@ async function serveStatic(pathname, c) {
 }
 
 function injectRuntimeEnv(html) {
-  const agentEnabled = process.env.RESUME_AGENT_ENABLED !== "0";
+  // The agent can make up to 10 OpenAI calls per interaction. It must be an
+  // explicit opt-in and must obey the global OpenAI kill switch.
+  const agentEnabled = resumeAgentEnabled();
   const script = `<script>window.__RESUME_AGENT_ENABLED=${agentEnabled};</script>`;
   return html.replace("</head>", `${script}</head>`);
 }
