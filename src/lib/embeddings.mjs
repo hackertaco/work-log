@@ -6,22 +6,17 @@
  * measuring how much a user edited a generated bullet, grouping episodes by
  * topic proximity, and deduplicating near-identical bullets).
  *
- * Follows the same env-var / fetch pattern as openai.mjs:
- *   - OPENAI_API_KEY          — required
- *   - WORK_LOG_DISABLE_OPENAI — set "1" to disable (returns null)
+ * Embeddings are separately fail-closed so a Responses proxy bearer is never
+ * sent to the official OpenAI endpoint by accident:
+ *   - WORK_LOG_ENABLE_EMBEDDINGS=1 — required opt-in
+ *   - WORK_LOG_EMBEDDING_BEARER_TOKEN — dedicated credential
  *   - WORK_LOG_EMBEDDING_MODEL — override model (default: text-embedding-3-small)
- *   - WORK_LOG_EMBEDDING_URL  — override endpoint
+ *   - WORK_LOG_EMBEDDING_URL  — required endpoint
  */
-
-const EMBEDDING_URL =
-  process.env.WORK_LOG_EMBEDDING_URL ||
-  "https://api.openai.com/v1/embeddings";
-
-const EMBEDDING_MODEL =
-  process.env.WORK_LOG_EMBEDDING_MODEL || "text-embedding-3-small";
 
 /** Dimension count for the default model (text-embedding-3-small). */
 export const EMBEDDING_DIMENSIONS = 1536;
+const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 
 /**
  * Maximum texts per single API call.
@@ -54,8 +49,13 @@ export async function generateEmbedding(text) {
  *   as the input, or null when the API is disabled / key is missing.
  */
 export async function generateEmbeddings(texts) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  const apiKey = process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN;
+  if (
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS !== "1" ||
+    !apiKey ||
+    process.env.WORK_LOG_DISABLE_LLM === "1" ||
+    process.env.WORK_LOG_DISABLE_OPENAI === "1"
+  ) {
     return null;
   }
 
@@ -143,12 +143,13 @@ export function isMinorEdit(originalEmb, editedEmb, threshold = 0.85) {
  * @private
  */
 async function _fetchEmbeddings(apiKey, texts) {
+  const embeddingUrl = resolveEmbeddingUrl();
   const payload = {
-    model: EMBEDDING_MODEL,
+    model: process.env.WORK_LOG_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL,
     input: texts,
   };
 
-  const response = await fetch(EMBEDDING_URL, {
+  const response = await fetch(embeddingUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -179,10 +180,23 @@ async function _fetchEmbeddings(apiKey, texts) {
   return sorted.map((d) => d.embedding);
 }
 
+function resolveEmbeddingUrl() {
+  const configured = process.env.WORK_LOG_EMBEDDING_URL;
+  if (!configured) throw new Error("WORK_LOG_EMBEDDING_URL is required when embeddings are enabled");
+  const url = new URL(configured);
+  if (
+    url.hostname.toLowerCase() === "api.openai.com" &&
+    process.env.WORK_LOG_ALLOW_DIRECT_OPENAI !== "1"
+  ) {
+    throw new Error("Direct OpenAI embeddings are blocked by default");
+  }
+  return url.toString();
+}
+
 // ─── Exports for testing ─────────────────────────────────────────────────────
 export const _testing = {
   MAX_BATCH_SIZE,
-  EMBEDDING_URL,
-  EMBEDDING_MODEL,
+  EMBEDDING_MODEL: DEFAULT_EMBEDDING_MODEL,
+  resolveEmbeddingUrl,
   _fetchEmbeddings,
 };

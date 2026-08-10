@@ -4,6 +4,7 @@ import { readBulletCache, writeBulletCache } from "./bulletCache.mjs";
 import { readSuggestionsData, saveBatchSummary, saveWorklogDaily, saveWorklogProfile } from "./blob.mjs";
 import { loadConfig, zeudeEmailsOf } from "./config.mjs";
 import { groupPromptsByRepo, summarizeDayStories } from "./dayStory.mjs";
+import { getLlmModel } from "./llmGateway.mjs";
 import { buildUsageCoaching } from "./usageCoaching.mjs";
 import { areaKey } from "./workAreaGrouping.mjs";
 import { summarizeWithOpenAI } from "./openai.mjs";
@@ -1002,24 +1003,6 @@ async function maybeSummarizeWithOpenAI({
   slackContexts,
   heuristicThemes
 }) {
-  // ── 1. Check cache before calling the LLM ─────────────────────────────────
-  // Cache key is the date string.  For a given date the input corpus is
-  // effectively stable once the batch has run, so this avoids redundant
-  // reprocessing when the same day is re-batched (e.g. CI reruns, manual
-  // re-triggers, or the API-based re-generation flow).
-  try {
-    const cached = await readBulletCache(date);
-    if (cached) {
-      return {
-        ...cached,
-        model: process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini"
-      };
-    }
-  } catch {
-    // Cache read failure is non-fatal — fall through to live generation.
-  }
-
-  // ── 2. Build payload and call the LLM ─────────────────────────────────────
   const payload = {
     date,
     heuristic_themes: heuristicThemes,
@@ -1046,6 +1029,19 @@ async function maybeSummarizeWithOpenAI({
         : []
     }))
   };
+  const model = getLlmModel();
+  const cacheContext = { input: payload, model };
+
+  // ── 1. Check cache before calling the LLM ─────────────────────────────────
+  // The key includes user, model, schema, and the exact normalized input hash.
+  // Production Blob read failures throw instead of silently spending on a
+  // cache-bypassing live request.
+  const cached = await readBulletCache(date, cacheContext);
+  if (cached) {
+    return { ...cached, model };
+  }
+
+  // ── 2. Call the LLM ───────────────────────────────────────────────────────
 
   let result;
   try {
@@ -1057,10 +1053,10 @@ async function maybeSummarizeWithOpenAI({
 
   // ── 3. Persist result to cache for future re-runs of the same date ─────────
   // writeBulletCache swallows its own errors, so this is always non-fatal.
-  await writeBulletCache(date, result);
+  await writeBulletCache(date, result, cacheContext);
 
   return {
     ...result,
-    model: process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini"
+    model
   };
 }

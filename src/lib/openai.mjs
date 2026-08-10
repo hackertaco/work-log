@@ -1,20 +1,20 @@
-const OPENAI_URL = process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 export async function summarizeWithOpenAI(input) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  const apiKey = getLlmBearerToken();
+  if (!apiKey || isLlmDisabled()) {
     return null;
   }
 
   const payload = buildSummaryPayload(input);
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "work-log-summary"
   });
 
   if (!response.ok) {
@@ -45,7 +45,7 @@ export async function summarizeWithOpenAI(input) {
 
 export function buildSummaryPayload(input) {
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: {
       effort: "low"
     },

@@ -152,6 +152,7 @@ import {
   DELTA_THRESHOLD
 } from "../lib/resumeDeltaRatio.mjs";
 import { readExtractCache, writeExtractCache } from "../lib/bulletCache.mjs";
+import { getLlmModel } from "../lib/llmGateway.mjs";
 import {
   getOrReconstructDailyBullets,
   BULLET_CACHE_MISS,
@@ -1114,7 +1115,11 @@ resumeRouter.post("/generate-candidates", async (c) => {
   //   MISS — readExtractCache(date) returns null (absent, fetch error, or
   //           schema mismatch).
   let extract;
-  const cachedExtract = await readExtractCache(date);
+  const extractCacheContext = {
+    input: { workLog, existingResume },
+    model: getLlmModel()
+  };
+  const cachedExtract = await readExtractCache(date, extractCacheContext);
 
   if (cachedExtract !== null) {
     // ── Cache HIT: use the cached WorkLogExtract, skip LLM ─────────────────
@@ -1146,7 +1151,7 @@ resumeRouter.post("/generate-candidates", async (c) => {
 
     // Persist the extract to cache (fire-and-forget — failure must not block
     // the response; a write error is logged inside writeExtractCache).
-    writeExtractCache(date, extract).catch(() => {});
+    writeExtractCache(date, extract, extractCacheContext).catch(() => {});
   }
 
   // ── 4. Merge: apply LLM extract into existing resume → proposed document ────
@@ -4574,13 +4579,17 @@ resumeRouter.post("/profile-delta-trigger", async (c) => {
   //   Mirrors POST /api/resume/generate-candidates but the TRIGGER is the
   //   profileDelta rate, not the work-log diff delta.
   let extract;
+  const extractCacheContext = {
+    input: { workLog, existingResume: currentResume },
+    model: getLlmModel()
+  };
   try {
-    const cached = await readExtractCache(date);
+    const cached = await readExtractCache(date, extractCacheContext);
     if (cached !== null) {
       extract = cached;
     } else {
       extract = await extractResumeUpdatesFromWorkLog(workLog, currentResume);
-      writeExtractCache(date, extract).catch(() => {});
+      writeExtractCache(date, extract, extractCacheContext).catch(() => {});
     }
   } catch (err) {
     return c.json(

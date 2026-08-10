@@ -14,16 +14,18 @@
  *
  * Environment variables (same as resumeBootstrap.mjs):
  *   OPENAI_API_KEY           — required
- *   WORK_LOG_OPENAI_URL      — optional (default: https://api.openai.com/v1/responses)
+ *   WORK_LOG_LLM_URL         — required CLIProxy /v1 or /v1/responses URL
  *   WORK_LOG_OPENAI_MODEL    — optional (default: gpt-5.4-mini)
  *   WORK_LOG_DISABLE_OPENAI  — set "1" to skip LLM call (throws instead)
  */
 
 import { buildVoiceDirective, buildLanguageDirective } from "./resumeVoice.mjs";
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 // Max characters of resume context forwarded to the LLM per section.
 const SUMMARY_LIMIT    = 600;
@@ -52,13 +54,13 @@ const KEYWORDS_LIMIT   = 600;
  *   be parsed.
  */
 export async function generateDisplayAxes(resumeDoc) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error(
       "OPENAI_API_KEY is not set — cannot generate display axes"
     );
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error(
       "OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)"
     );
@@ -71,19 +73,15 @@ export async function generateDisplayAxes(resumeDoc) {
   const language = resumeDoc?.meta?.language || "en";
 
   console.info(
-    `[resumeAxisClustering] Calling LLM: model=${OPENAI_MODEL}` +
+    `[resumeAxisClustering] Calling LLM: model=${getLlmModel()}` +
     ` language=${language}`
   );
 
   const payload = buildClusteringPayload(resumeDoc, language);
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-axis-clustering"
   });
 
   if (!response.ok) {
@@ -153,7 +151,7 @@ const AXIS_OUTPUT_SCHEMA = {
  */
 function buildClusteringPayload(resumeDoc, language) {
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: {
       effort: "low"
     },

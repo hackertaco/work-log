@@ -104,24 +104,30 @@ describe("generateEmbedding", () => {
   const originalEnv = {};
 
   before(() => {
-    originalEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    originalEnv.WORK_LOG_ENABLE_EMBEDDINGS = process.env.WORK_LOG_ENABLE_EMBEDDINGS;
+    originalEnv.WORK_LOG_EMBEDDING_BEARER_TOKEN = process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN;
+    originalEnv.WORK_LOG_EMBEDDING_URL = process.env.WORK_LOG_EMBEDDING_URL;
     originalEnv.WORK_LOG_DISABLE_OPENAI = process.env.WORK_LOG_DISABLE_OPENAI;
   });
 
   after(() => {
-    process.env.OPENAI_API_KEY = originalEnv.OPENAI_API_KEY || "";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = originalEnv.WORK_LOG_ENABLE_EMBEDDINGS || "";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = originalEnv.WORK_LOG_EMBEDDING_BEARER_TOKEN || "";
+    process.env.WORK_LOG_EMBEDDING_URL = originalEnv.WORK_LOG_EMBEDDING_URL || "";
     process.env.WORK_LOG_DISABLE_OPENAI =
       originalEnv.WORK_LOG_DISABLE_OPENAI || "";
   });
 
   it("returns null when API key is missing", async () => {
-    process.env.OPENAI_API_KEY = "";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = "1";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "";
     const result = await generateEmbedding("hello");
     assert.equal(result, null);
   });
 
   it("returns null when OpenAI is disabled", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = "1";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "embedding-test-token";
     process.env.WORK_LOG_DISABLE_OPENAI = "1";
     const result = await generateEmbedding("hello");
     assert.equal(result, null);
@@ -129,14 +135,17 @@ describe("generateEmbedding", () => {
   });
 
   it("returns null for empty/null input", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = "1";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "embedding-test-token";
     assert.equal(await generateEmbedding(""), null);
     assert.equal(await generateEmbedding(null), null);
     assert.equal(await generateEmbedding(undefined), null);
   });
 
   it("returns a vector when fetch succeeds", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = "1";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "embedding-test-token";
+    process.env.WORK_LOG_EMBEDDING_URL = "http://localhost/v1/embeddings";
     process.env.WORK_LOG_DISABLE_OPENAI = "";
 
     const originalFetch = globalThis.fetch;
@@ -159,24 +168,31 @@ describe("generateEmbeddings", () => {
   const originalEnv = {};
 
   before(() => {
-    originalEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    originalEnv.WORK_LOG_ENABLE_EMBEDDINGS = process.env.WORK_LOG_ENABLE_EMBEDDINGS;
+    originalEnv.WORK_LOG_EMBEDDING_BEARER_TOKEN = process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN;
+    originalEnv.WORK_LOG_EMBEDDING_URL = process.env.WORK_LOG_EMBEDDING_URL;
     originalEnv.WORK_LOG_DISABLE_OPENAI = process.env.WORK_LOG_DISABLE_OPENAI;
   });
 
   after(() => {
-    process.env.OPENAI_API_KEY = originalEnv.OPENAI_API_KEY || "";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = originalEnv.WORK_LOG_ENABLE_EMBEDDINGS || "";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = originalEnv.WORK_LOG_EMBEDDING_BEARER_TOKEN || "";
+    process.env.WORK_LOG_EMBEDDING_URL = originalEnv.WORK_LOG_EMBEDDING_URL || "";
     process.env.WORK_LOG_DISABLE_OPENAI =
       originalEnv.WORK_LOG_DISABLE_OPENAI || "";
   });
 
   it("returns null for empty array", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = "1";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "embedding-test-token";
     process.env.WORK_LOG_DISABLE_OPENAI = "";
     assert.equal(await generateEmbeddings([]), null);
   });
 
   it("handles mixed empty and non-empty texts", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = "1";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "embedding-test-token";
+    process.env.WORK_LOG_EMBEDDING_URL = "http://localhost/v1/embeddings";
     process.env.WORK_LOG_DISABLE_OPENAI = "";
 
     // Only 2 non-empty inputs → API called with 2 texts
@@ -207,7 +223,9 @@ describe("generateEmbeddings", () => {
   });
 
   it("throws on API error", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = "1";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "embedding-test-token";
+    process.env.WORK_LOG_EMBEDDING_URL = "http://localhost/v1/embeddings";
     process.env.WORK_LOG_DISABLE_OPENAI = "";
 
     const originalFetch = globalThis.fetch;
@@ -231,7 +249,9 @@ describe("generateEmbeddings", () => {
   });
 
   it("sends correct model in payload", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = "1";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "embedding-test-token";
+    process.env.WORK_LOG_EMBEDDING_URL = "http://localhost/v1/embeddings";
     process.env.WORK_LOG_DISABLE_OPENAI = "";
 
     const originalFetch = globalThis.fetch;

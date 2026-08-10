@@ -24,10 +24,12 @@ import {
   normalizeVoice,
   normalizeBullets,
 } from "./resumeVoice.mjs";
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 // ---------------------------------------------------------------------------
 // Input length limits (characters, not tokens)
@@ -61,13 +63,13 @@ const LINKEDIN_TEXT_LIMIT = 3_000;
  *                 cannot be parsed.
  */
 export async function generateResumeFromText(input) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error(
       "OPENAI_API_KEY is not set — cannot generate resume from text"
     );
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error(
       "OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)"
     );
@@ -79,7 +81,7 @@ export async function generateResumeFromText(input) {
     (input.linkedinText && input.linkedinText.trim())
   );
   console.info(
-    `[resumeBootstrap] Calling LLM: model=${OPENAI_MODEL}` +
+    `[resumeBootstrap] Calling LLM: model=${getLlmModel()}` +
     ` pdfChars=${pdfLen}` +
     ` linkedin=${hasLinkedin}` +
     ` source=${input.source ?? "pdf"}`
@@ -87,13 +89,9 @@ export async function generateResumeFromText(input) {
 
   const payload = buildBootstrapPayload(input);
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-bootstrap"
   });
 
   if (!response.ok) {
@@ -134,7 +132,7 @@ export async function generateResumeFromText(input) {
 
 function buildBootstrapPayload(input) {
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: {
       effort: "medium"
     },

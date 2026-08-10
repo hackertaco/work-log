@@ -6,8 +6,9 @@
  *
  * Environment variables expected at runtime (set in Vercel dashboard):
  *   BLOB_READ_WRITE_TOKEN  — Vercel Blob read/write token
- *   RESUME_TOKEN           — Fixed token for /resume and /api/resume/* auth
- *   OPENAI_API_KEY         — OpenAI API key for summarization
+ *   WORK_LOG_USERS_JSON              — Invite-only user/token mapping
+ *   WORK_LOG_LLM_URL                 — CLIProxy /v1 or /v1/responses URL
+ *   WORK_LOG_LLM_BEARER_TOKEN        — CLIProxy bearer token
  */
 
 // Node.js 런타임에서는 @hono/node-server 어댑터를 써야 한다.

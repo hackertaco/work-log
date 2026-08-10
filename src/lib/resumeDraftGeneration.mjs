@@ -32,10 +32,12 @@ import path from "node:path";
 
 import { loadConfig } from "./config.mjs";
 import { fileExists } from "./utils.mjs";
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 // Max work log dates to aggregate in a single draft generation call.
 // ~90 days ≈ one quarter of work; beyond this the prompt grows too large.
@@ -136,11 +138,11 @@ const SIGNAL_TEXT_LIMIT = 20_000;
  * @returns {Promise<ResumeDraft>}
  */
 export async function generateResumeDraft({ fromDate, toDate, existingResume } = {}) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set — cannot generate resume draft");
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error("OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)");
   }
 
@@ -159,7 +161,7 @@ export async function generateResumeDraft({ fromDate, toDate, existingResume } =
   const payload = buildDraftGenerationPayload(aggregated, existingResume, lang);
 
   console.info(
-    `[resumeDraftGeneration] Calling LLM: model=${OPENAI_MODEL}` +
+    `[resumeDraftGeneration] Calling LLM: model=${getLlmModel()}` +
     ` dates=${workLogs.length}` +
     ` commits=${aggregated.commitCount}` +
     ` sessions=${aggregated.sessionCount}` +
@@ -167,13 +169,9 @@ export async function generateResumeDraft({ fromDate, toDate, existingResume } =
     ` signalChars=${aggregated.signalText.length}`
   );
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-draft-generation"
   });
 
   if (!response.ok) {
@@ -434,7 +432,7 @@ function buildDraftGenerationPayload(aggregated, existingResume, lang) {
   const userMessage = buildUserMessage(aggregated, existingResume, lang);
 
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     text: {
       format: {

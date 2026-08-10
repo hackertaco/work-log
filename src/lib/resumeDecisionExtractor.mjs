@@ -31,11 +31,14 @@
  * @module resumeDecisionExtractor
  */
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 /**
  * Minimum snippet character length to consider for decision extraction.
@@ -285,18 +288,18 @@ export function _buildExtractionPrompt(segments, meta = {}) {
  * @returns {Promise<object[]>}  Raw decision objects from LLM
  */
 async function _callLlmForDecisions(segments, meta = {}) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     return [];
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     return [];
   }
 
   const userMessage = _buildExtractionPrompt(segments, meta);
 
   const payload = {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "medium" },
     text: {
       format: {
@@ -319,13 +322,9 @@ async function _callLlmForDecisions(segments, meta = {}) {
     ]
   };
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-decision-extract"
   });
 
   if (!response.ok) {

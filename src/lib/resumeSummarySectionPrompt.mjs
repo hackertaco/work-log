@@ -35,19 +35,20 @@
  * ─── 환경 변수 ────────────────────────────────────────────────────────────────
  *
  *   OPENAI_API_KEY           — 필수
- *   WORK_LOG_OPENAI_URL      — 기본값: https://api.openai.com/v1/responses
+ *   WORK_LOG_LLM_URL         — CLIProxy /v1 또는 /v1/responses URL
  *   WORK_LOG_OPENAI_MODEL    — 기본값: gpt-5.4-mini
  *   WORK_LOG_DISABLE_OPENAI  — "1" 이면 LLM 호출 비활성화 (heuristic 반환)
  */
 
 import { buildEvidenceContext } from "./resumeAppealPoints.mjs";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 // ─── 상수 ─────────────────────────────────────────────────────────────────────
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL =
-  process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
 
 /** summary 정제 시 최대 토큰 수 */
 const SUMMARY_MAX_OUTPUT_TOKENS = 800;
@@ -169,8 +170,8 @@ export async function generateSectionRefinement(
   }
 
   // ── OpenAI 비활성화 시 heuristic 반환 ─────────────────────────────────────
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  const apiKey = getLlmBearerToken();
+  if (!apiKey || isLlmDisabled()) {
     return _buildHeuristicRefinement(section, before, rankedEvidence);
   }
 
@@ -196,13 +197,9 @@ export async function generateSectionRefinement(
 
   let data;
   try {
-    const response = await fetch(OPENAI_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
+    const response = await requestLlmResponse(payload, {
+      apiKey,
+      operation: `resume-${section}-refinement`
     });
 
     if (!response.ok) {
@@ -263,7 +260,7 @@ export function buildSummaryRefinementPayload({ query, evidenceContext, existing
   });
 
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     text: {
       format: {
@@ -308,7 +305,7 @@ export function buildStrengthsRefinementPayload({ query, evidenceContext, existi
   });
 
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     text: {
       format: {

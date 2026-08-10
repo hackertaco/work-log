@@ -6,10 +6,12 @@
  */
 
 import { TOOL_DEFINITIONS, executeTool, isInterruptTool } from "./resumeAgentTools.mjs";
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const AGENT_MODEL = process.env.WORK_LOG_AGENT_MODEL || "gpt-5.4";
+import {
+  getLlmAgentModel,
+  getLlmBearerToken,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 const SYSTEM_PROMPT_TEMPLATE = `너는 이력서 개선을 도와주는 친근한 동료야.
 워크로그 데이터(커밋, 슬랙, AI 세션)를 기반으로 이력서를 분석하고 개선안을 제안해.
@@ -50,8 +52,8 @@ export async function runAgentLoop({
   const _callLlm = _deps.callLlm || callLlm;
   const _allowedTools = _deps.allowedTools || ALLOWED_TOOLS;
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1" || process.env.RESUME_AGENT_ENABLED !== "1") {
+  const apiKey = getLlmBearerToken();
+  if (isLlmDisabled() || process.env.RESUME_AGENT_ENABLED !== "1") {
     onEvent({ type: "message", content: "이력서 AI 에이전트가 비활성화되어 있습니다." });
     return;
   }
@@ -198,19 +200,15 @@ export async function runAgentLoop({
 
 async function callLlm(input, apiKey) {
   const payload = {
-    model: AGENT_MODEL,
+    model: getLlmAgentModel(),
     input,
     tools: TOOL_DEFINITIONS,
     max_output_tokens: 4000,
   };
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(payload),
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-agent"
   });
 
   if (!response.ok) {

@@ -68,6 +68,7 @@ import {
   saveChatDraftContext
 } from "./blob.mjs";
 import { readExtractCache, writeExtractCache } from "./bulletCache.mjs";
+import { getLlmModel, isLlmDisabled } from "./llmGateway.mjs";
 import { extractResumeUpdatesFromWorkLog } from "./resumeWorkLogExtract.mjs";
 import { mergeWorkLogIntoResume } from "./resumeWorkLogMerge.mjs";
 import { diffResume } from "./resumeDiff.mjs";
@@ -139,7 +140,7 @@ export async function runResumeCandidateHook(date, workLog, options = {}) {
   }
 
   // ── Guard: OpenAI integration disabled ─────────────────────────────────────
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     console.info(`${tag} Skipping — OpenAI integration disabled (WORK_LOG_DISABLE_OPENAI=1)`);
     return _skip("openai_disabled");
   }
@@ -182,9 +183,13 @@ export async function runResumeCandidateHook(date, workLog, options = {}) {
   // (e.g. CI re-runs, manual re-triggers, or a crash-recovery re-run).
   let extract;
   let cacheHit = false;
+  const extractCacheContext = {
+    input: { workLog, existingResume },
+    model: getLlmModel()
+  };
 
   try {
-    const cached = await readExtractCache(date);
+    const cached = await readExtractCache(date, extractCacheContext);
     if (cached !== null) {
       console.info(`${tag} Extract cache HIT — reusing cached WorkLogExtract, LLM call skipped`);
       extract = cached;
@@ -195,7 +200,7 @@ export async function runResumeCandidateHook(date, workLog, options = {}) {
 
       // ── Step 4: Persist extract to cache (fire-and-forget) ──────────────────
       // Write failures are non-fatal — the pipeline continues without caching.
-      writeExtractCache(date, extract).catch((err) => {
+      writeExtractCache(date, extract, extractCacheContext).catch((err) => {
         console.warn(
           `${tag} Extract cache write failed (non-fatal):`,
           err.message ?? String(err)

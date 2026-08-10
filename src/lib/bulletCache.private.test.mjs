@@ -2,17 +2,20 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 
 const putCalls = [];
-let listedPathname = null;
+const getCalls = [];
+const store = new Map();
 
 mock.module("@vercel/blob", {
   namedExports: {
-    list: async () => ({
-      blobs: listedPathname
-        ? [{ pathname: listedPathname, url: "https://blob.test/cache-entry.json" }]
-        : []
-    }),
+    get: async (pathname, options) => {
+      getCalls.push([pathname, options]);
+      const body = store.get(pathname);
+      if (body === undefined) return null;
+      return { stream: new Blob([body]).stream() };
+    },
     put: async (...args) => {
       putCalls.push(args);
+      store.set(args[0], args[1]);
       return { url: "https://blob.test/cache-entry.json" };
     }
   }
@@ -21,6 +24,8 @@ mock.module("@vercel/blob", {
 const {
   invalidateBulletCache,
   invalidateExtractCache,
+  readBulletCache,
+  readExtractCache,
   writeBulletCache,
   writeExtractCache
 } = await import(`./bulletCache.mjs?private-store-test=${Date.now()}`);
@@ -30,12 +35,9 @@ const originalToken = process.env.BLOB_READ_WRITE_TOKEN;
 
 beforeEach(() => {
   putCalls.length = 0;
-  listedPathname = null;
+  getCalls.length = 0;
+  store.clear();
   process.env.BLOB_READ_WRITE_TOKEN = "test-private-blob-token";
-  globalThis.fetch = async () => ({
-    ok: true,
-    json: async () => ({ schemaVersion: 1, result: {}, extract: {} })
-  });
 });
 
 afterEach(() => {
@@ -55,14 +57,77 @@ test("cache writes target the configured private Blob store", async () => {
 });
 
 test("cache invalidation rewrites entries as private", async () => {
-  listedPathname = "cache/bullets/2026-08-10.json";
+  await writeBulletCache("2026-08-10", { summary: "cached" });
   await invalidateBulletCache("2026-08-10", "test");
 
-  listedPathname = "cache/extract/2026-08-10.json";
+  await writeExtractCache("2026-08-10", { experienceUpdates: [] });
   await invalidateExtractCache("2026-08-10", "test");
 
-  assert.strictEqual(putCalls.length, 2);
-  for (const [, , options] of putCalls) {
+  assert.strictEqual(putCalls.length, 4);
+  for (const [, , options] of putCalls.slice(-2)) {
     assert.strictEqual(options.access, "private");
+  }
+});
+
+test("private cache reads use authenticated Blob get and round-trip values", async () => {
+  const context = {
+    userId: "seungah",
+    model: "gpt-test",
+    input: { date: "2026-08-10", commits: ["abc"] }
+  };
+  await writeBulletCache("2026-08-10", { summary: "cached" }, context);
+  await writeExtractCache("2026-08-10", { experienceUpdates: [] }, context);
+
+  assert.deepStrictEqual(
+    await readBulletCache("2026-08-10", context),
+    { summary: "cached" }
+  );
+  assert.deepStrictEqual(
+    await readExtractCache("2026-08-10", context),
+    { experienceUpdates: [] }
+  );
+  assert.strictEqual(getCalls.length, 2);
+  for (const [, options] of getCalls) {
+    assert.strictEqual(options.access, "private");
+    assert.strictEqual(options.token, "test-private-blob-token");
+    assert.strictEqual(options.useCache, false);
+  }
+});
+
+test("cache identity separates users, models, and input hashes", async () => {
+  const base = { userId: "seungah", model: "gpt-test", input: { commits: ["a"] } };
+  await writeBulletCache("2026-08-10", { summary: "cached" }, base);
+
+  assert.strictEqual(
+    await readBulletCache("2026-08-10", { ...base, userId: "other" }),
+    null
+  );
+  assert.strictEqual(
+    await readBulletCache("2026-08-10", { ...base, model: "gpt-other" }),
+    null
+  );
+  assert.strictEqual(
+    await readBulletCache("2026-08-10", { ...base, input: { commits: ["b"] } }),
+    null
+  );
+});
+
+test("production cache reads fail closed when Blob credentials are missing", async () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  process.env.NODE_ENV = "production";
+  try {
+    await assert.rejects(
+      readBulletCache("2026-08-10"),
+      /BLOB_READ_WRITE_TOKEN is required/
+    );
+    await assert.rejects(
+      readExtractCache("2026-08-10"),
+      /BLOB_READ_WRITE_TOKEN is required/
+    );
+  } finally {
+    process.env.BLOB_READ_WRITE_TOKEN = "test-private-blob-token";
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
   }
 });

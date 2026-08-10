@@ -44,6 +44,13 @@
  *   // → 더 정교한 키워드 확장 + 신뢰도 점수 포함
  */
 
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
+
 // ─── Intent 분류 ────────────────────────────────────────────────────────────────
 
 /**
@@ -647,9 +654,6 @@ export function analyzeQuery(rawInput) {
 
 // ── LLM 보강 분석 (선택적) ──────────────────────────────────────────────────────
 
-const OPENAI_URL = process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
-
 /**
  * LLM을 사용하여 보다 정교한 쿼리 분석을 수행한다.
  *
@@ -674,14 +678,14 @@ export async function analyzeQueryWithLLM(rawInput, options = {}) {
     return ruleResult;
   }
 
-  const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  const apiKey = getLlmBearerToken(options.apiKey);
+  if (!apiKey || isLlmDisabled()) {
     return ruleResult;
   }
 
   try {
     const payload = {
-      model: OPENAI_MODEL,
+      model: getLlmModel(),
       reasoning: { effort: "low" },
       text: {
         format: {
@@ -754,13 +758,9 @@ Rule-based parse produced: intent=${ruleResult.intent}, keywords=[${ruleResult.k
       ],
     };
 
-    const response = await fetch(OPENAI_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
+    const response = await requestLlmResponse(payload, {
+      apiKey,
+      operation: "resume-query-analysis"
     });
 
     if (!response.ok) {

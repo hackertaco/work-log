@@ -4,26 +4,30 @@
  * 실패·미설정은 비치명적 — 빈 결과를 반환한다.
  */
 import { extractOutputText } from "./openai.mjs";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
-const OPENAI_URL = process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
 const MAX_PROMPTS = 60;
 
 export async function extractWorkStyleForArea(areaGroup, behavior = null, fetchImpl = fetch) {
   const area = areaGroup?.area ?? "unknown";
   const empty = { area, did: [], judgments: [] };
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") return empty;
+  const apiKey = getLlmBearerToken();
+  if (!apiKey || isLlmDisabled()) return empty;
 
   const prompts = (areaGroup?.prompts ?? []).slice(0, MAX_PROMPTS).map((p) => String(p).slice(0, 300));
   if (!prompts.length) return empty;
 
   try {
-    const response = await fetchImpl(OPENAI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(buildExtractPayload(area, prompts, behavior))
+    const response = await requestLlmResponse(buildExtractPayload(area, prompts, behavior), {
+      apiKey,
+      fetchImpl,
+      operation: "work-style-extract"
     });
     if (!response.ok) return empty;
 
@@ -58,8 +62,8 @@ function sanitizeList(v) {
  * @returns {Promise<Array<{title:string, description:string}>>}
  */
 export async function synthesizeWorkStylePrinciples(areas, behaviorByArea = null, fetchImpl = fetch) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") return [];
+  const apiKey = getLlmBearerToken();
+  if (!apiKey || isLlmDisabled()) return [];
 
   const items = (Array.isArray(areas) ? areas : [])
     .flatMap((a) => (a?.judgments ?? []).map((j) => ({ area: a.area, text: String(j?.text ?? "").trim() })))
@@ -68,10 +72,10 @@ export async function synthesizeWorkStylePrinciples(areas, behaviorByArea = null
   if (!items.length) return [];
 
   try {
-    const response = await fetchImpl(OPENAI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(buildSynthesisPayload(items, behaviorByArea))
+    const response = await requestLlmResponse(buildSynthesisPayload(items, behaviorByArea), {
+      apiKey,
+      fetchImpl,
+      operation: "work-style-synthesis"
     });
     if (!response.ok) return [];
 
@@ -154,7 +158,7 @@ export function buildExtractPayload(area, prompts, behavior = null) {
   const userContent = prompts.map((p, i) => `${i + 1}. ${p}`).join("\n");
 
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     // reasoning 토큰이 이 예산에서 먼저 차감되므로 넉넉히 잡는다. 너무 낮으면
     // (예: 600) 추론이 예산을 먹고 JSON 출력이 truncate → status:incomplete →
@@ -219,7 +223,7 @@ export function buildSynthesisPayload(items, behaviorByArea = null) {
     : judgmentText;
 
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     max_output_tokens: 3000,
     text: {

@@ -62,10 +62,12 @@ import {
   personSignalsFromBundles,
   projectExperienceCandidatesFromBundles,
 } from "./resumeLayeredSignals.mjs";
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 /** How many days old a resume must be (without a newer work log) to be stale. */
 const STALE_THRESHOLD_DAYS = Math.max(
@@ -267,13 +269,13 @@ export function buildLayeredProjectionHints(workLogEntries) {
 export async function reconstructResumeFromSources(input) {
   const { pdfText, workLogEntries, currentResume } = input;
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error(
       "OPENAI_API_KEY is not set — cannot reconstruct resume from sources"
     );
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error(
       "OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)"
     );
@@ -281,13 +283,9 @@ export async function reconstructResumeFromSources(input) {
 
   const payload = buildReconstructionPayload({ pdfText, workLogEntries, currentResume });
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-reconstruction"
   });
 
   if (!response.ok) {
@@ -521,7 +519,7 @@ async function _trackReconstructionBulletQuality(previous, fresh) {
 
 function buildReconstructionPayload({ pdfText, workLogEntries, currentResume }) {
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "medium" },
     text: {
       format: {
@@ -1393,7 +1391,10 @@ export async function fullReconstructExtractCache({
       const extract = await extractFn(workLogSummary, currentResume);
 
       // ── Re-hydrate cache: write fresh result ─────────────────────────────────
-      await writeCacheFn(date, extract);
+      await writeCacheFn(date, extract, {
+        input: { workLog: workLogSummary, existingResume: currentResume },
+        model: getLlmModel()
+      });
 
       processed++;
       dates.push(date);
@@ -2113,13 +2114,13 @@ const STRENGTHS_OUTPUT_SCHEMA = {
  * @returns {Promise<object[]>} Raw strength objects from LLM
  */
 async function _callLlmForStrengths(episodes, projects, behavioralClusters = []) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error(
       "OPENAI_API_KEY is not set — cannot identify strengths"
     );
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error(
       "OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)"
     );
@@ -2128,7 +2129,7 @@ async function _callLlmForStrengths(episodes, projects, behavioralClusters = [])
   const userMessage = _buildStrengthsUserMessage(episodes, projects, behavioralClusters);
 
   const payload = {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "high" },
     text: {
       format: {
@@ -2151,13 +2152,9 @@ async function _callLlmForStrengths(episodes, projects, behavioralClusters = [])
     ]
   };
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-strength-identification"
   });
 
   if (!response.ok) {
@@ -2864,13 +2861,13 @@ const NARRATIVE_AXES_OUTPUT_SCHEMA = {
  * @returns {Promise<object[]>}  Raw axis objects from LLM
  */
 async function _callLlmForNarrativeAxes(projects, strengths, episodes, sessions) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error(
       "OPENAI_API_KEY is not set — cannot generate narrative axes"
     );
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error(
       "OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)"
     );
@@ -2881,7 +2878,7 @@ async function _callLlmForNarrativeAxes(projects, strengths, episodes, sessions)
   );
 
   const payload = {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "high" },
     text: {
       format: {
@@ -2904,13 +2901,9 @@ async function _callLlmForNarrativeAxes(projects, strengths, episodes, sessions)
     ]
   };
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-narrative-axes"
   });
 
   if (!response.ok) {
@@ -4320,18 +4313,18 @@ function _identifyActiveSectionPairs(resume) {
  * @returns {Promise<object[]>}  Raw bridge objects from LLM
  */
 async function _callLlmForBridges(resume, strengths, axes, sectionSummaries, pairs, extra = {}) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set — cannot generate section bridges");
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error("OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)");
   }
 
   const userMessage = _buildBridgesUserMessage(resume, strengths, axes, sectionSummaries, pairs, extra);
 
   const payload = {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "medium" },
     text: {
       format: {
@@ -4354,13 +4347,9 @@ async function _callLlmForBridges(resume, strengths, axes, sectionSummaries, pai
     ]
   };
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-section-bridges"
   });
 
   if (!response.ok) {

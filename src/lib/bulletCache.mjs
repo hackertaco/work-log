@@ -32,12 +32,17 @@
  *   BLOB_READ_WRITE_TOKEN — Vercel Blob token (optional; cache is no-op without it)
  */
 
-import { list, put } from "@vercel/blob";
+import { createHash } from "node:crypto";
+
+import { get, put } from "@vercel/blob";
+import { sanitizeUserId } from "./authUsers.mjs";
+import { getLlmModel } from "./llmGateway.mjs";
+import { getCurrentUserId } from "./requestContext.mjs";
 
 // ─── Bullet cache (batch summarization results) ───────────────────────────────
 
 const CACHE_PREFIX = "cache/bullets/";
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 3;
 
 // ─── Extract cache (WorkLogExtract results for generate-candidates) ───────────
 
@@ -50,7 +55,7 @@ const EXTRACT_CACHE_PREFIX = "cache/extract/";
  * backward-incompatible way — existing cached entries will then be treated as
  * misses and re-generated automatically.
  */
-const EXTRACT_CACHE_SCHEMA_VERSION = 1;
+const EXTRACT_CACHE_SCHEMA_VERSION = 2;
 
 /**
  * Derive the canonical Blob pathname for a given date's bullet cache entry.
@@ -58,8 +63,67 @@ const EXTRACT_CACHE_SCHEMA_VERSION = 1;
  * @param {string} date  ISO date string (YYYY-MM-DD)
  * @returns {string}
  */
-function cachePathname(date) {
-  return `${CACHE_PREFIX}${date}.json`;
+function cachePathname(date, context = {}) {
+  const identity = cacheIdentity(date, context);
+  return `users/${identity.userId}/${CACHE_PREFIX}${date}/${identity.model}.json`;
+}
+
+function extractCachePathname(date, context = {}) {
+  const identity = cacheIdentity(date, context);
+  return `users/${identity.userId}/${EXTRACT_CACHE_PREFIX}${date}/${identity.model}.json`;
+}
+
+export function createCacheFingerprint(value) {
+  const serialized = stableStringify(value);
+  return createHash("sha256").update(serialized).digest("hex").slice(0, 24);
+}
+
+function cacheIdentity(date, context = {}) {
+  const normalized = context && typeof context === "object" ? context : {};
+  const userId = sanitizeUserId(normalized.userId ?? getCurrentUserId());
+  const model = slug(normalized.model ?? getLlmModel());
+  const inputHash = normalized.inputHash || createCacheFingerprint(
+    normalized.input === undefined ? { date } : normalized.input
+  );
+  return { userId, model, inputHash };
+}
+
+async function readPrivateEntry(pathname, token, label) {
+  try {
+    const response = await get(pathname, {
+      access: "private",
+      token,
+      useCache: false
+    });
+    if (!response) return null;
+    return await new Response(response.stream).json();
+  } catch (err) {
+    console.warn(`[${label}] private read failed for pathname=${pathname}:`, err.message ?? String(err));
+    if (cacheMustFailClosed()) throw err;
+    return null;
+  }
+}
+
+function cacheMustFailClosed() {
+  return process.env.NODE_ENV === "production" && process.env.WORK_LOG_CACHE_FAIL_OPEN !== "1";
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+}
+
+function slug(value) {
+  return String(value || "unknown").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "unknown";
+}
+
+function hasExplicitFingerprint(context) {
+  return Boolean(
+    context &&
+    typeof context === "object" &&
+    (context.input !== undefined || context.inputHash)
+  );
 }
 
 /**
@@ -72,39 +136,23 @@ function cachePathname(date) {
  * @param {string} date  ISO date string (YYYY-MM-DD)
  * @returns {Promise<object|null>}  The cached summarization result, or null
  */
-export async function readBulletCache(date) {
+export async function readBulletCache(date, context = {}) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  if (!token) return null;
-
-  const pathname = cachePathname(date);
-
-  let match;
-  try {
-    const { blobs } = await list({
-      prefix: pathname,
-      limit: 1,
-      token
-    });
-    match = blobs.find((b) => b.pathname === pathname);
-  } catch (err) {
-    console.warn(`[bulletCache] list failed for date=${date}:`, err.message ?? String(err));
+  if (!token) {
+    if (cacheMustFailClosed()) throw new Error("BLOB_READ_WRITE_TOKEN is required for cost-safe cache reads");
     return null;
   }
 
-  if (!match) return null;
-
-  let data;
-  try {
-    const response = await fetch(match.url);
-    if (!response.ok) return null;
-    data = await response.json();
-  } catch (err) {
-    console.warn(`[bulletCache] fetch failed for date=${date}:`, err.message ?? String(err));
-    return null;
-  }
+  const pathname = cachePathname(date, context);
+  const data = await readPrivateEntry(pathname, token, "bulletCache");
+  if (!data) return null;
 
   if (data?.schemaVersion !== CACHE_SCHEMA_VERSION) {
     console.info(`[bulletCache] schema mismatch for date=${date}, treating as miss`);
+    return null;
+  }
+  if (hasExplicitFingerprint(context) && data?.inputHash !== cacheIdentity(date, context).inputHash) {
+    console.info(`[bulletCache] input hash mismatch for date=${date}, treating as miss`);
     return null;
   }
 
@@ -134,14 +182,20 @@ export async function readBulletCache(date) {
  *                                  work-log entry key).
  * @returns {Promise<void>}
  */
-export async function writeBulletCache(date, result, sourceEntryId = date) {
+export async function writeBulletCache(date, result, sourceEntryIdOrContext = date, maybeContext = {}) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   if (!token) return;
 
-  const pathname = cachePathname(date);
+  const context = typeof sourceEntryIdOrContext === "object"
+    ? sourceEntryIdOrContext
+    : { ...maybeContext, sourceEntryId: sourceEntryIdOrContext };
+  const identity = cacheIdentity(date, context);
+  const sourceEntryId = context.sourceEntryId ?? date;
+  const pathname = cachePathname(date, context);
   const entry = {
     schemaVersion: CACHE_SCHEMA_VERSION,
     date,
+    ...identity,
     cachedAt: new Date().toISOString(),
     sourceEntryId: String(sourceEntryId),
     invalidatedAt: null,
@@ -171,10 +225,6 @@ export async function writeBulletCache(date, result, sourceEntryId = date) {
  * @param {string} date  ISO date string (YYYY-MM-DD)
  * @returns {string}
  */
-function extractCachePathname(date) {
-  return `${EXTRACT_CACHE_PREFIX}${date}.json`;
-}
-
 /**
  * Read a cached WorkLogExtract result for the given date.
  *
@@ -193,43 +243,17 @@ function extractCachePathname(date) {
  * @param {string} date  ISO date string (YYYY-MM-DD)
  * @returns {Promise<object|null>}  Cached WorkLogExtract, or null on miss
  */
-export async function readExtractCache(date) {
+export async function readExtractCache(date, context = {}) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  if (!token) return null;
-
-  const pathname = extractCachePathname(date);
-
-  let match;
-  try {
-    const { blobs } = await list({
-      prefix: pathname,
-      limit: 1,
-      token
-    });
-    match = blobs.find((b) => b.pathname === pathname);
-  } catch (err) {
-    console.warn(
-      `[bulletCache/extract] list failed for date=${date}:`,
-      err.message ?? String(err)
-    );
+  if (!token) {
+    if (cacheMustFailClosed()) throw new Error("BLOB_READ_WRITE_TOKEN is required for cost-safe cache reads");
     return null;
   }
 
-  if (!match) {
+  const pathname = extractCachePathname(date, context);
+  const data = await readPrivateEntry(pathname, token, "bulletCache/extract");
+  if (!data) {
     console.info(`[bulletCache/extract] MISS for date=${date} — no cached entry`);
-    return null;
-  }
-
-  let data;
-  try {
-    const response = await fetch(match.url);
-    if (!response.ok) return null;
-    data = await response.json();
-  } catch (err) {
-    console.warn(
-      `[bulletCache/extract] fetch failed for date=${date}:`,
-      err.message ?? String(err)
-    );
     return null;
   }
 
@@ -237,6 +261,10 @@ export async function readExtractCache(date) {
     console.info(
       `[bulletCache/extract] schema mismatch for date=${date}, treating as miss`
     );
+    return null;
+  }
+  if (hasExplicitFingerprint(context) && data?.inputHash !== cacheIdentity(date, context).inputHash) {
+    console.info(`[bulletCache/extract] input hash mismatch for date=${date}, treating as miss`);
     return null;
   }
 
@@ -272,14 +300,20 @@ export async function readExtractCache(date) {
  *                                  Defaults to `date` when omitted.
  * @returns {Promise<void>}
  */
-export async function writeExtractCache(date, extract, sourceEntryId = date) {
+export async function writeExtractCache(date, extract, sourceEntryIdOrContext = date, maybeContext = {}) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   if (!token) return;
 
-  const pathname = extractCachePathname(date);
+  const context = typeof sourceEntryIdOrContext === "object"
+    ? sourceEntryIdOrContext
+    : { ...maybeContext, sourceEntryId: sourceEntryIdOrContext };
+  const identity = cacheIdentity(date, context);
+  const sourceEntryId = context.sourceEntryId ?? date;
+  const pathname = extractCachePathname(date, context);
   const entry = {
     schemaVersion: EXTRACT_CACHE_SCHEMA_VERSION,
     date,
+    ...identity,
     cachedAt: new Date().toISOString(),
     sourceEntryId: String(sourceEntryId),
     invalidatedAt: null,
@@ -321,39 +355,14 @@ export async function writeExtractCache(date, extract, sourceEntryId = date) {
  * @param {string} [reason="explicit"] Human-readable reason for invalidation
  * @returns {Promise<void>}
  */
-export async function invalidateBulletCache(date, reason = "explicit") {
+export async function invalidateBulletCache(date, reason = "explicit", context = {}) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   if (!token) return;
 
-  const pathname = cachePathname(date);
-
-  let match;
-  try {
-    const { blobs } = await list({ prefix: pathname, limit: 1, token });
-    match = blobs.find((b) => b.pathname === pathname);
-  } catch (err) {
-    console.warn(
-      `[bulletCache] invalidate list failed for date=${date}:`,
-      err.message ?? String(err)
-    );
-    return;
-  }
-
-  if (!match) {
+  const pathname = cachePathname(date, context);
+  const data = await readPrivateEntry(pathname, token, "bulletCache/invalidate");
+  if (!data) {
     console.info(`[bulletCache] invalidate no-op for date=${date} — entry not found`);
-    return;
-  }
-
-  let data;
-  try {
-    const response = await fetch(match.url);
-    if (!response.ok) return;
-    data = await response.json();
-  } catch (err) {
-    console.warn(
-      `[bulletCache] invalidate fetch failed for date=${date}:`,
-      err.message ?? String(err)
-    );
     return;
   }
 
@@ -395,39 +404,14 @@ export async function invalidateBulletCache(date, reason = "explicit") {
  * @param {string} [reason="explicit"] Human-readable reason for invalidation
  * @returns {Promise<void>}
  */
-export async function invalidateExtractCache(date, reason = "explicit") {
+export async function invalidateExtractCache(date, reason = "explicit", context = {}) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   if (!token) return;
 
-  const pathname = extractCachePathname(date);
-
-  let match;
-  try {
-    const { blobs } = await list({ prefix: pathname, limit: 1, token });
-    match = blobs.find((b) => b.pathname === pathname);
-  } catch (err) {
-    console.warn(
-      `[bulletCache/extract] invalidate list failed for date=${date}:`,
-      err.message ?? String(err)
-    );
-    return;
-  }
-
-  if (!match) {
+  const pathname = extractCachePathname(date, context);
+  const data = await readPrivateEntry(pathname, token, "bulletCache/extract/invalidate");
+  if (!data) {
     console.info(`[bulletCache/extract] invalidate no-op for date=${date} — entry not found`);
-    return;
-  }
-
-  let data;
-  try {
-    const response = await fetch(match.url);
-    if (!response.ok) return;
-    data = await response.json();
-  } catch (err) {
-    console.warn(
-      `[bulletCache/extract] invalidate fetch failed for date=${date}:`,
-      err.message ?? String(err)
-    );
     return;
   }
 

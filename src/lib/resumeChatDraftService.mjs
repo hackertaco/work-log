@@ -55,7 +55,7 @@
  * ─── 환경변수 ─────────────────────────────────────────────────────────────────
  *
  *   OPENAI_API_KEY           — 필수
- *   WORK_LOG_OPENAI_URL      — 기본: https://api.openai.com/v1/responses
+ *   WORK_LOG_LLM_URL         — CLIProxy /v1 또는 /v1/responses URL
  *   WORK_LOG_OPENAI_MODEL    — 기본: gpt-5.4-mini
  *   WORK_LOG_DISABLE_OPENAI  — "1" 설정 시 비활성화
  */
@@ -74,12 +74,14 @@ import {
 
 import { collectSlackContexts } from "./slack.mjs";
 import { loadConfig } from "./config.mjs";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
 
 /** 소스별 최대 근거 수 */
 const MAX_EVIDENCE_PER_SOURCE = 15;
@@ -233,11 +235,11 @@ export async function refineSectionWithChat({
   existingResume,
   history = [],
 } = {}) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set");
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error("OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)");
   }
 
@@ -264,13 +266,9 @@ export async function refineSectionWithChat({
     history,
   });
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(payload),
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-chat-draft"
   });
 
   if (!response.ok) {
@@ -736,7 +734,7 @@ function buildRefinementPayload({
   });
 
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     text: {
       format: {

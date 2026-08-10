@@ -46,10 +46,12 @@
 import { computePipelineWeight } from "./resumePrBranchParser.mjs";
 import { clusterResumeCandidateStrings } from "./resumeSuggestionClustering.mjs";
 import { buildVoiceDirective, buildLanguageDirective } from "./resumeVoice.mjs";
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 // ─── Public API ────────────────────────────────────────────────────────────────
 
@@ -212,13 +214,13 @@ export function buildWorkLogDiff(workLog, existingResume) {
  * @throws {Error} If the API key is missing or the LLM call fails
  */
 export async function extractResumeUpdatesFromWorkLog(workLog, existingResume) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error(
       "OPENAI_API_KEY is not set — cannot extract resume updates from work log"
     );
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error(
       "OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)"
     );
@@ -245,13 +247,9 @@ export async function extractResumeUpdatesFromWorkLog(workLog, existingResume) {
     existingResume?.meta?.language || existingResume?.language || "en";
   const payload = buildDiffExtractionPayload(workLogDiff, lang);
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-work-log-extract"
   });
 
   if (!response.ok) {
@@ -287,7 +285,7 @@ export async function extractResumeUpdatesFromWorkLog(workLog, existingResume) {
  */
 function buildDiffExtractionPayload(workLogDiff, lang) {
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     text: {
       format: {

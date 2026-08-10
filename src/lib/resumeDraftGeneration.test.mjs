@@ -358,9 +358,11 @@ describe("generateResumeDraft", () => {
   test("returns companyStories alongside legacy draft fields", async () => {
     const savedKey = process.env.OPENAI_API_KEY;
     const savedDisable = process.env.WORK_LOG_DISABLE_OPENAI;
+    const savedLlmUrl = process.env.WORK_LOG_LLM_URL;
     const savedFetch = globalThis.fetch;
 
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.WORK_LOG_LLM_URL = "http://localhost/v1/responses";
     delete process.env.WORK_LOG_DISABLE_OPENAI;
 
     globalThis.fetch = async () => ({
@@ -449,6 +451,11 @@ describe("generateResumeDraft", () => {
         process.env.WORK_LOG_DISABLE_OPENAI = savedDisable;
       } else {
         delete process.env.WORK_LOG_DISABLE_OPENAI;
+      }
+      if (savedLlmUrl) {
+        process.env.WORK_LOG_LLM_URL = savedLlmUrl;
+      } else {
+        delete process.env.WORK_LOG_LLM_URL;
       }
     }
   });

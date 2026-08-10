@@ -61,6 +61,12 @@ import {
   batchGenerateBullets,
   embedDecisionInBullet,
 } from "./resumeBulletTextGenerator.mjs";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
@@ -402,10 +408,6 @@ export function _dedup(keywords) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Core Projects Extraction Pipeline (Living Resume)
 // ═══════════════════════════════════════════════════════════════════════════════
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
 
 /** Target number of core projects per repo. LLM is instructed to aim for this. */
 export const TARGET_PROJECTS_PER_REPO = 2;
@@ -818,18 +820,18 @@ const EPISODE_OUTPUT_SCHEMA = {
  * @returns {Promise<object[]>} Raw episode objects from LLM
  */
 async function _callLlmForEpisodes(ctx, extractedDecisions = null) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set — cannot extract evidence episodes");
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error("OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)");
   }
 
   const userMessage = _buildEpisodeUserMessage(ctx, extractedDecisions);
 
   const payload = {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "medium" },
     text: {
       format: {
@@ -852,13 +854,9 @@ async function _callLlmForEpisodes(ctx, extractedDecisions = null) {
     ]
   };
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-evidence-episodes"
   });
 
   if (!response.ok) {
@@ -1009,18 +1007,18 @@ const PROJECT_OUTPUT_SCHEMA = {
  * @returns {Promise<object[]>} Raw project objects from LLM
  */
 async function _callLlmForProjects(repo, episodes, ctx) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set — cannot synthesize core projects");
   }
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (isLlmDisabled()) {
     throw new Error("OpenAI integration is disabled (WORK_LOG_DISABLE_OPENAI=1)");
   }
 
   const userMessage = _buildProjectUserMessage(repo, episodes);
 
   const payload = {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "medium" },
     text: {
       format: {
@@ -1043,13 +1041,9 @@ async function _callLlmForProjects(repo, episodes, ctx) {
     ]
   };
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-core-projects"
   });
 
   if (!response.ok) {

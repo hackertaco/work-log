@@ -10,9 +10,13 @@
  * 실패·미설정은 비치명적 — 빈 배열을 돌려주고 호출자가 사실 기반 폴백을 쓴다.
  */
 import { extractOutputText } from "./openai.mjs";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
-const OPENAI_URL = process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
 const MAX_PROJECTS = 3;
 const MAX_COMMITS = 12;
 const MAX_PROMPTS = 20;
@@ -61,7 +65,7 @@ export function buildDayStoryPayload(date, projects) {
     .join("\n\n");
 
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     // workStyleExtract 와 같은 이유로 넉넉히 — 낮추면 reasoning 이 예산을 먹고 출력이 잘린다.
     max_output_tokens: 3000,
@@ -107,8 +111,8 @@ export function buildDayStoryPayload(date, projects) {
  * @returns {Promise<Array<{repo:string, outcome:string, keyChange:string, impact:string, why:string}>>}
  */
 export async function summarizeDayStories({ date, projects, fetchImpl = fetch } = {}) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") return [];
+  const apiKey = getLlmBearerToken();
+  if (!apiKey || isLlmDisabled()) return [];
 
   const usable = (Array.isArray(projects) ? projects : [])
     .filter((p) => p?.repo && ((p.commits?.length ?? 0) || (p.prompts?.length ?? 0)))
@@ -116,10 +120,10 @@ export async function summarizeDayStories({ date, projects, fetchImpl = fetch } 
   if (!usable.length) return [];
 
   try {
-    const response = await fetchImpl(OPENAI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(buildDayStoryPayload(date, usable))
+    const response = await requestLlmResponse(buildDayStoryPayload(date, usable), {
+      apiKey,
+      fetchImpl,
+      operation: "day-story"
     });
     if (!response.ok) return [];
 

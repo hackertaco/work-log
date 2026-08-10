@@ -21,9 +21,12 @@
  *   WORK_LOG_DISABLE_OPENAI  — set "1" to disable LLM (returns [] instead of calling API)
  */
 
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -52,8 +55,8 @@ const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
  * @returns {Promise<KeywordAxis[]>}
  */
 export async function clusterKeywords(resumeKeywords, workLogKeywords) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  const apiKey = getLlmBearerToken();
+  if (!apiKey || isLlmDisabled()) {
     return [];
   }
 
@@ -67,13 +70,9 @@ export async function clusterKeywords(resumeKeywords, workLogKeywords) {
   }
 
   const payload = _buildClusterPayload(allKeywords);
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-keyword-clustering"
   });
 
   if (!response.ok) {
@@ -244,7 +243,7 @@ export function deduplicateKeywords(keywords) {
  */
 function _buildClusterPayload(keywords) {
   return {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     text: {
       format: {

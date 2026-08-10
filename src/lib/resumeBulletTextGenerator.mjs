@@ -61,12 +61,14 @@ import {
   buildDecisionReasoningDirective,
   buildVoiceDirective,
 } from "./resumeVoice.mjs";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
 
 /** Maximum bullets to generate per call */
 const MAX_BULLETS_PER_CALL = 8;
@@ -1146,12 +1148,12 @@ const BULLET_OUTPUT_SCHEMA = {
  * @returns {Promise<object[]>} Raw bullet objects from LLM
  */
 async function _callLlmForBullets(userMessage, maxBullets) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
   if (!apiKey) return [];
-  if (process.env.WORK_LOG_DISABLE_OPENAI === "1") return [];
+  if (isLlmDisabled()) return [];
 
   const payload = {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "medium" },
     text: {
       format: {
@@ -1174,13 +1176,9 @@ async function _callLlmForBullets(userMessage, maxBullets) {
     ],
   };
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(payload),
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-bullet-text"
   });
 
   if (!response.ok) {

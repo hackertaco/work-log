@@ -1,19 +1,22 @@
 import { extractOutputText } from "./openai.mjs";
-
-const OPENAI_URL = process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 export async function synthesizeHandover(analysis, fetchImpl = fetch) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") return null;
+  const apiKey = getLlmBearerToken();
+  if (!apiKey || isLlmDisabled()) return null;
   const principles = Array.isArray(analysis?.principles) ? analysis.principles : [];
   if (!principles.length) return null;
 
   try {
-    const response = await fetchImpl(OPENAI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(buildHandoverPayload(analysis))
+    const response = await requestLlmResponse(buildHandoverPayload(analysis), {
+      apiKey,
+      fetchImpl,
+      operation: "handover-synthesis"
     });
     if (!response.ok) return null;
     const data = await response.json();
@@ -56,7 +59,7 @@ export function buildHandoverPayload(analysis) {
     `제공된 근거로 뒷받침되는 것만. 근거 없는 성격 규정·일반론·미화 금지.`;
   const item = (name, req) => ({ type: "array", items: { type: "object", additionalProperties: false, required: req, properties: Object.fromEntries(req.map((k) => [k, { type: "string" }])) } });
   return {
-    model: OPENAI_MODEL, reasoning: { effort: "low" }, max_output_tokens: 3000,
+    model: getLlmModel(), reasoning: { effort: "low" }, max_output_tokens: 3000,
     text: {
       verbosity: "low",
       format: {

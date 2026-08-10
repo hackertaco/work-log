@@ -14,12 +14,14 @@
  */
 
 import { createRequire } from "node:module";
+import {
+  getLlmBearerToken,
+  getLlmModel,
+  isLlmDisabled,
+  requestLlmResponse
+} from "./llmGateway.mjs";
 
 const _require = createRequire(import.meta.url);
-
-const OPENAI_URL =
-  process.env.WORK_LOG_OPENAI_URL || "https://api.openai.com/v1/responses";
-const OPENAI_MODEL = process.env.WORK_LOG_OPENAI_MODEL || "gpt-5.4-mini";
 
 /** Resume document schema version stored in every blob. */
 export const RESUME_SCHEMA_VERSION = "1";
@@ -79,9 +81,9 @@ export async function generateResumeFromPdf({
   linkedinData = null,
   linkedinText = null
 }) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getLlmBearerToken();
 
-  if (!apiKey || process.env.WORK_LOG_DISABLE_OPENAI === "1") {
+  if (!apiKey || isLlmDisabled()) {
     return buildFallbackResume({ pdfText, pdfName, linkedinUrl, linkedinData, linkedinText });
   }
 
@@ -116,7 +118,7 @@ async function callLlm({ pdfText, linkedinData, linkedinText, apiKey }) {
   }
 
   const payload = {
-    model: OPENAI_MODEL,
+    model: getLlmModel(),
     reasoning: { effort: "low" },
     text: {
       format: {
@@ -139,13 +141,9 @@ async function callLlm({ pdfText, linkedinData, linkedinText, apiKey }) {
     ]
   };
 
-  const response = await fetch(OPENAI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
+  const response = await requestLlmResponse(payload, {
+    apiKey,
+    operation: "resume-from-pdf"
   });
 
   if (!response.ok) {

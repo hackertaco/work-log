@@ -27,23 +27,46 @@ If `work-log.config.json` does not exist, the app uses:
 - structured data output: `./data`
 - git repo scan root: parent directory of this project
 
-## OpenAI Summaries
+## LLM Summaries
 
-If `OPENAI_API_KEY` is set, batch generation will try OpenAI summarization first and fall back to local heuristics on failure.
+LLM calls go through `src/lib/llmGateway.mjs`. Direct `api.openai.com` billing is blocked unless `WORK_LOG_ALLOW_DIRECT_OPENAI=1` is explicitly set.
 
-`work-log/.env.local` is loaded automatically.
+On a local machine, the active Responses-compatible `cliproxy` provider in `~/.codex/config.toml` is loaded automatically. Vercel cannot read that file, so configure the proxy URL and bearer as encrypted project environment variables.
 
-Optional env vars:
+LLM env vars:
 
-- `OPENAI_API_KEY`
-- `WORK_LOG_OPENAI_MODEL` default: `gpt-5.4-mini`
-- `WORK_LOG_OPENAI_URL` default: `https://api.openai.com/v1/responses`
-- `WORK_LOG_DISABLE_OPENAI=1` to force heuristic mode
+- `WORK_LOG_LLM_URL` — proxy `/v1` base URL or full `/v1/responses` URL
+- `WORK_LOG_LLM_BEARER_TOKEN` — proxy bearer token
+- `WORK_LOG_LLM_MODEL` — default: `gpt-5.4-mini`
+- `WORK_LOG_DISABLE_LLM=1` — force heuristic mode
+- `WORK_LOG_LLM_TIMEOUT_MS` — default: `45000`
+- `WORK_LOG_LLM_MAX_OUTPUT_TOKENS` — default: `8192`
+- `WORK_LOG_LLM_MAX_CALLS_PER_PROCESS` — default: `100`
+- `WORK_LOG_USE_CODEX_PROXY=0` — disable local Codex provider discovery
+
+Legacy `WORK_LOG_OPENAI_*`, `OPENAI_API_KEY`, and `WORK_LOG_DISABLE_OPENAI` are read only for compatibility. A direct OpenAI endpoint still requires `WORK_LOG_ALLOW_DIRECT_OPENAI=1`.
+
+Embeddings are separately disabled by default. They require `WORK_LOG_ENABLE_EMBEDDINGS=1`, `WORK_LOG_EMBEDDING_URL`, and `WORK_LOG_EMBEDDING_BEARER_TOKEN`; the Responses proxy bearer is never reused automatically.
+
+Other optional env vars:
+
 - `WORK_LOG_INCLUDE_SESSION_LOGS=1` to opt into Codex/Claude session-log analysis
 - `WORK_LOG_INCLUDE_SLACK=1` to opt into Slack context analysis
 - `SLACK_TOKEN` or `SLACK_USER_TOKEN`
 - `SLACK_USER_ID`
 - `SLACK_CHANNEL_IDS` comma-separated channel IDs
+
+## Cost Architecture Gate
+
+Render the repository cost graph before deployment:
+
+```bash
+python3 ~/.codex/skills/audit-api-costs/scripts/render_cost_architecture.py \
+  docs/cost-audit/work-log-cost-architecture.json \
+  --out-dir docs/cost-audit/generated
+```
+
+`cost-audit.json` is the CI source of truth. A `FAIL` result exits non-zero; review `cost-audit.html` or compile `cost-audit.tex` for the visual report.
 
 ## Controlled Multi-User Access
 

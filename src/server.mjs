@@ -7,6 +7,7 @@ import { Hono } from "hono";
 
 import { runDailyBatch } from "./lib/batch.mjs";
 import { loadConfig } from "./lib/config.mjs";
+import { isLlmDisabled } from "./lib/llmGateway.mjs";
 import {
   registerResumeBatchHook,
   registerGranularTriggers,
@@ -45,7 +46,7 @@ function manualBatchEnabled() {
 }
 
 function resumeAgentEnabled() {
-  return process.env.RESUME_AGENT_ENABLED === "1" && process.env.WORK_LOG_DISABLE_OPENAI !== "1";
+  return process.env.RESUME_AGENT_ENABLED === "1" && !isLlmDisabled();
 }
 
 export function createApp() {
