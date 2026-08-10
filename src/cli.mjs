@@ -1,16 +1,13 @@
 import { startServer } from "./server.mjs";
 import { runDailyBatch } from "./lib/batch.mjs";
-import { registerResumeBatchHook } from "./lib/workLogEventBus.mjs";
 
 const [, , command = "serve", ...rest] = process.argv;
 
 if (command === "batch") {
-  // Register the resume candidate hook so that emitWorkLogSaved() triggers it
-  // when the daily summary is written (Sub-AC 2-1).
-  await registerResumeBatchHook();
+  const allowLlm = rest.includes("--allow-llm");
 
   const date = readFlag(rest, "--date");
-  const result = await runDailyBatch(date);
+  const result = await runDailyBatch(date, { allowLlm });
   console.log(JSON.stringify({
     date: result.date,
     counts: result.counts,
@@ -27,6 +24,37 @@ if (command === "export-profiles") {
   const userIds = rest.filter((a) => !a.startsWith("--"));
   const result = await runProfileExport(userIds.length ? { userIds } : {});
   console.log(JSON.stringify(result, null, 2));
+  process.exit(0);
+}
+
+if (command === "refresh-profiles") {
+  // Local-only weekly enrichment. runWorkStyleAnalysis owns the seven-day
+  // freshness gate; profile publishing runs only when the LLM result changed.
+  const [{ getAuthUsers }, { runWorkStyleAnalysis }, { runProfileExport }] = await Promise.all([
+    import("./lib/authUsers.mjs"),
+    import("./lib/serverCollect.mjs"),
+    import("./lib/profileExport.mjs")
+  ]);
+  const requestedIds = rest.filter((arg) => !arg.startsWith("--"));
+  const configuredIds = getAuthUsers().map((user) => user.id);
+  const userIds = requestedIds.length ? requestedIds : (configuredIds.length ? configuredIds : ["default"]);
+  const analyses = {};
+  const refreshed = [];
+  const results = [];
+
+  for (const userId of userIds) {
+    const result = await runWorkStyleAnalysis({ userId });
+    results.push({ userId, ...result, analysis: undefined });
+    if (result.llmRefreshed && result.analysis) {
+      analyses[userId] = result.analysis;
+      refreshed.push(userId);
+    }
+  }
+
+  const profiles = refreshed.length
+    ? await runProfileExport({ userIds: refreshed, analyses })
+    : { built: [], skipped: true, reason: "no_changed_analysis" };
+  console.log(JSON.stringify({ users: userIds, results, profiles }, null, 2));
   process.exit(0);
 }
 

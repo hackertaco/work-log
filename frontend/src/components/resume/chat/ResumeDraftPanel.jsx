@@ -6,7 +6,7 @@ import { useDraftContext } from '../../../hooks/useDraftContext.js';
  *
  * useDraftContext 훅을 사용해 초안 로딩 및 자동 생성을 관리한다:
  *   1. GET /api/resume/chat/generate-draft → 캐시된 초안 조회
- *   2. 캐시 없으면(404) POST /api/resume/chat/generate-draft → 신규 생성
+ *   2. 캐시가 없으면 사용자가 버튼으로 명시적으로 생성을 시작
  * 결과:
  *   - strengthCandidates: 강점 후보 카드 목록
  *   - experienceSummaries: 경력별 요약 카드 목록
@@ -36,7 +36,7 @@ export function ResumeDraftPanel({ onDraftReady }) {
     progress,
     error: errorMsg,
     generate,
-  } = useDraftContext({ autoGenerate: true });
+  } = useDraftContext({ autoGenerate: false });
   const [collapsed, setCollapsed] = useState(false);
 
   // 초안 로딩 완료 시 부모에게 알림

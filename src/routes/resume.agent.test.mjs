@@ -21,7 +21,8 @@ const mockCreateSession = mock.fn(async (userId) => ({
   agentState: { pendingDiffs: [], pendingSuggestions: [], completedSuggestions: [], resumeVersion: 0 },
 }));
 
-const mockLoadSession = mock.fn(async () => null);
+let loadedSession = null;
+const mockLoadSession = mock.fn(async () => loadedSession);
 
 const mockUpdateSession = mock.fn(async (id, version, mutator) => {
   const session = {
@@ -48,6 +49,8 @@ const mockRunAgentLoop = mock.fn(async ({ onEvent }) => {
   onEvent({ type: "message", content: "Hello from agent" });
 });
 
+const mockReadResumeData = mock.fn(async () => ({ contact: { name: "Test User" } }));
+
 mock.module("../lib/resumeAgent.mjs", {
   namedExports: {
     runAgentLoop: mockRunAgentLoop,
@@ -56,7 +59,7 @@ mock.module("../lib/resumeAgent.mjs", {
 
 mock.module("../lib/blob.mjs", {
   namedExports: {
-    readResumeData: async () => ({ contact: { name: "Test User" } }),
+    readResumeData: mockReadResumeData,
     checkResumeExists: async () => ({ exists: false }),
     saveResumeData: async () => ({ url: "https://blob/resume/data.json" }),
     readSuggestionsData: async () => ({ schemaVersion: 1, updatedAt: new Date().toISOString(), suggestions: [] }),
@@ -173,7 +176,7 @@ test("reject_diff without sessionId → 400", async () => {
   assert.match(json.error, /Missing sessionId/);
 });
 
-test("init creates session and returns SSE stream", async () => {
+test("init creates a session without spending an LLM call", async () => {
   mockCreateSession.mock.resetCalls();
   mockRunAgentLoop.mock.resetCalls();
 
@@ -187,16 +190,17 @@ test("init creates session and returns SSE stream", async () => {
   assert.ok(sessionEvent, "should have session event");
   assert.equal(sessionEvent.sessionId, "agent-test-123");
 
-  // Should have a message from agent
+  // Read-only initialization still explains that the session is ready.
   const msgEvent = events.find((e) => e.type === "message");
   assert.ok(msgEvent, "should have message event");
+  assert.match(msgEvent.content, /준비/);
 
   // Should have done event
   const doneEvent = events.find((e) => e.type === "done");
   assert.ok(doneEvent, "should have done event");
 
   assert.equal(mockCreateSession.mock.callCount(), 1);
-  assert.equal(mockRunAgentLoop.mock.callCount(), 1);
+  assert.equal(mockRunAgentLoop.mock.callCount(), 0);
 });
 
 test("approve_diff with session not found → 404", async () => {
@@ -218,6 +222,57 @@ test("reject_diff with session not found → 404", async () => {
     messageId: "m1",
   });
   assert.equal(res.status, 404);
+});
+
+test("another user's session is treated as not found", async () => {
+  loadedSession = {
+    sessionId: "foreign-session",
+    userId: "someone-else",
+    version: 1,
+    messages: [],
+    agentState: {
+      pendingDiffs: [{ messageId: "m1", createdAt: new Date().toISOString() }],
+      pendingSuggestions: [],
+      completedSuggestions: [],
+      resumeVersion: 0,
+    },
+  };
+
+  try {
+    const res = await post("/api/resume/agent", {
+      action: "approve_diff",
+      sessionId: "foreign-session",
+      messageId: "m1",
+    });
+    assert.equal(res.status, 404);
+  } finally {
+    loadedSession = null;
+  }
+});
+
+test("message reads resume context for the authenticated session owner", async () => {
+  loadedSession = {
+    sessionId: "owned-session",
+    userId: "default",
+    version: 1,
+    messages: [],
+    agentState: { pendingDiffs: [], pendingSuggestions: [], completedSuggestions: [], resumeVersion: 0 },
+  };
+  mockReadResumeData.mock.resetCalls();
+
+  try {
+    const res = await post("/api/resume/agent", {
+      action: "message",
+      sessionId: "owned-session",
+      text: "내 이력서를 봐줘",
+    });
+    assert.equal(res.status, 200);
+    await readSSEEvents(res);
+    assert.equal(mockReadResumeData.mock.callCount(), 1);
+    assert.equal(mockReadResumeData.mock.calls[0].arguments[0], "default");
+  } finally {
+    loadedSession = null;
+  }
 });
 
 test("revise_diff without messageId → 400", async () => {

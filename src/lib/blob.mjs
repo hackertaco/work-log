@@ -1529,9 +1529,9 @@ export async function readSectionBridges() {
 
 const SESSION_PREFIX = "resume/sessions/";
 
-export async function saveSession(sessionId, data) {
+export async function saveSession(sessionId, data, userId = undefined) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const pathname = `${SESSION_PREFIX}${sessionId}.json`;
+  const pathname = pathForUser(`${SESSION_PREFIX}${sessionId}.json`, userId);
   const json = JSON.stringify(data, null, 2);
   const result = await put(pathname, json, {
     access: "private",
@@ -1543,14 +1543,14 @@ export async function saveSession(sessionId, data) {
   return { url: result.url };
 }
 
-export async function readSession(sessionId) {
-  const pathname = `${SESSION_PREFIX}${sessionId}.json`;
+export async function readSession(sessionId, userId = undefined) {
+  const pathname = pathForUser(`${SESSION_PREFIX}${sessionId}.json`, userId);
   return readPrivateJsonBlob(pathname);
 }
 
-export async function deleteSession(sessionId) {
+export async function deleteSession(sessionId, userId = undefined) {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const pathname = `${SESSION_PREFIX}${sessionId}.json`;
+  const pathname = pathForUser(`${SESSION_PREFIX}${sessionId}.json`, userId);
   const listed = await list({ prefix: pathname, limit: 1, ...(token ? { token } : {}) });
   if (listed.blobs.length > 0) {
     await del(listed.blobs[0].url, ...(token ? [{ token }] : []));

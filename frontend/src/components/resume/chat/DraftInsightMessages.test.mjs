@@ -49,6 +49,13 @@ describe('DraftInsightMessages — exports & props', () => {
     assert.ok(source.includes('onRetry'), 'should reference onRetry prop');
   });
 
+  test('accepts a generation capability flag', () => {
+    assert.ok(
+      source.includes('generationEnabled'),
+      'should distinguish local generation from deployed read-only mode'
+    );
+  });
+
   test('accepts onStrengthClick callback', () => {
     assert.ok(source.includes('onStrengthClick'), 'should reference onStrengthClick prop');
   });
@@ -81,11 +88,16 @@ describe('DraftInsightMessages — state rendering', () => {
     );
   });
 
-  test('returns null when draft is falsy', () => {
+  test('renders an explicit generate action when draft is missing', () => {
     assert.ok(
-      source.includes('if (!draft) return null'),
-      'should return null when no draft data'
+      source.includes('초안 생성하기') && source.includes('onClick={onRetry}'),
+      'should require an explicit click instead of auto-generating on mount'
     );
+  });
+
+  test('shows a local-only explanation instead of a dead CTA on Vercel', () => {
+    assert.ok(source.includes('로컬에서만 생성'));
+    assert.ok(source.includes('generationEnabled ?'));
   });
 
   test('returns null when no strength or experience content', () => {

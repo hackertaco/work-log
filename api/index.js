@@ -7,8 +7,9 @@
  * Environment variables expected at runtime (set in Vercel dashboard):
  *   BLOB_READ_WRITE_TOKEN  — Vercel Blob read/write token
  *   WORK_LOG_USERS_JSON              — Invite-only user/token mapping
- *   WORK_LOG_LLM_URL                 — CLIProxy /v1 or /v1/responses URL
- *   WORK_LOG_LLM_BEARER_TOKEN        — CLIProxy bearer token
+ *
+ * LLM credentials do not belong in Vercel. Production is collection/read-only;
+ * local scheduled workers use the CLIProxy from ~/.codex/config.toml.
  */
 
 // Node.js 런타임에서는 @hono/node-server 어댑터를 써야 한다.

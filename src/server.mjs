@@ -7,9 +7,12 @@ import { Hono } from "hono";
 
 import { runDailyBatch } from "./lib/batch.mjs";
 import { loadConfig } from "./lib/config.mjs";
-import { isLlmDisabled } from "./lib/llmGateway.mjs";
 import {
-  registerResumeBatchHook,
+  getLlmBearerToken,
+  getResponsesUrl,
+  isLlmDisabled
+} from "./lib/llmGateway.mjs";
+import {
   registerGranularTriggers,
   emitWorkLogSaved,
   emitCommitCollected,
@@ -46,7 +49,16 @@ function manualBatchEnabled() {
 }
 
 function resumeAgentEnabled() {
-  return process.env.RESUME_AGENT_ENABLED === "1" && !isLlmDisabled();
+  return localLlmGenerationEnabled();
+}
+
+function localLlmGenerationEnabled() {
+  if (isLlmDisabled()) return false;
+  try {
+    return Boolean(getLlmBearerToken() && getResponsesUrl());
+  } catch {
+    return false;
+  }
 }
 
 export function createApp() {
@@ -105,16 +117,21 @@ export function createApp() {
 
     const perUser = [];
     const analyses = {};
+    const localDerivations = !process.env.VERCEL;
     for (const userId of userIds) {
       const collection = await runServerCollection({ userId, dates })
         .catch((err) => ({ error: err.message ?? String(err) }));
-      const workStyle = await runWorkStyleAnalysis({ userId, force })
-        .catch((err) => ({ skipped: true, reason: err.message ?? String(err) }));
+      const workStyle = localDerivations
+        ? await runWorkStyleAnalysis({ userId, force })
+            .catch((err) => ({ skipped: true, reason: err.message ?? String(err) }))
+        : { skipped: true, reason: "local_llm_worker_required" };
       // 방금 만든 분석을 그대로 넘겨 프로필이 Blob 재읽기에 의존하지 않게 한다.
       if (workStyle?.analysis) analyses[userId] = workStyle.analysis;
       perUser.push({ userId, ...collection, workStyle: { ...workStyle, analysis: undefined } });
     }
-    const profiles = await runProfileExport({ userIds, analyses }).catch((err) => ({ error: err.message ?? String(err) }));
+    const profiles = localDerivations
+      ? await runProfileExport({ userIds, analyses }).catch((err) => ({ error: err.message ?? String(err) }))
+      : { built: [], skipped: true, reason: "local_llm_worker_required" };
     return c.json({ users: userIds, results: perUser, profiles });
   });
 
@@ -280,17 +297,9 @@ export async function startServer(port = 4310, host = "localhost") {
   // Ensure env is loaded before creating the app.
   await loadConfig();
 
-  // Register the resume batch hook so that emitWorkLogSaved() (called from
-  // batch.mjs and POST /api/work-log/event) triggers runResumeCandidateHook.
-  // Idempotent — safe to call multiple times (Sub-AC 2-1).
-  if (resumeEnabled()) {
-    await registerResumeBatchHook();
-  }
-
   // Register granular event triggers so that external data-source updates
-  // (commit/slack/session collected via POST /api/work-log/event) schedule a
-  // debounced background batch run → which builds the full workLog summary
-  // and triggers resumeBatchHook via emitWorkLogSaved.
+  // schedule a debounced collection-only batch. runDailyBatch defaults to
+  // allowLlm=false, so event traffic cannot cross the metered boundary.
   registerGranularTriggers(runDailyBatch);
 
   const app = createApp();
@@ -407,9 +416,9 @@ async function serveStatic(pathname, c) {
 }
 
 function injectRuntimeEnv(html) {
-  // The agent can make up to 10 OpenAI calls per interaction. It must be an
-  // explicit opt-in and must obey the global OpenAI kill switch.
+  // Interactive generation is local-only and obeys the global LLM kill switch.
   const agentEnabled = resumeAgentEnabled();
-  const script = `<script>window.__RESUME_AGENT_ENABLED=${agentEnabled};</script>`;
+  const llmGenerationEnabled = localLlmGenerationEnabled();
+  const script = `<script>window.__RESUME_AGENT_ENABLED=${agentEnabled};window.__LLM_GENERATION_ENABLED=${llmGenerationEnabled};</script>`;
   return html.replace("</head>", `${script}</head>`);
 }

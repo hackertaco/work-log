@@ -118,6 +118,7 @@ export async function collectServerDay(date, { userId = "default" } = {}) {
     gitWorkingTree: [],
     shellHistory: [],
     prBranchSignals,
+    allowLlm: !process.env.VERCEL,
     // 커밋은 무엇을 바꿨는지만 담는다. 왜 그랬는지는 프롬프트에 있어서 같이 넘긴다.
     dayPrompts: prompts
   });

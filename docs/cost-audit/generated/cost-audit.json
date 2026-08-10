@@ -1,124 +1,14 @@
 {
   "schema_version": 1,
-  "system": "work-log current-worktree cost architecture",
+  "system": "work-log local-enrichment / cloud-read architecture",
   "gate": "FAIL",
   "summary": {
-    "nodes": 39,
-    "edges": 47,
-    "metered_calls": 14,
-    "production_metered_calls": 11
+    "nodes": 28,
+    "edges": 27,
+    "metered_calls": 10,
+    "production_metered_calls": 1
   },
   "findings": [
-    {
-      "severity": "critical",
-      "code": "public-cost-trigger",
-      "message": "Public cost trigger is missing: durable-rate-limit.",
-      "nodes": [
-        "agent-route"
-      ],
-      "evidence": [
-        "src/routes/resume.agent.mjs:27"
-      ]
-    },
-    {
-      "severity": "critical",
-      "code": "public-cost-trigger",
-      "message": "Public cost trigger is missing: durable-rate-limit.",
-      "nodes": [
-        "bootstrap-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:550"
-      ]
-    },
-    {
-      "severity": "critical",
-      "code": "public-cost-trigger",
-      "message": "Public cost trigger is missing: durable-rate-limit.",
-      "nodes": [
-        "bridge-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:5089"
-      ]
-    },
-    {
-      "severity": "critical",
-      "code": "public-cost-trigger",
-      "message": "Public cost trigger is missing: durable-rate-limit.",
-      "nodes": [
-        "candidate-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:1040"
-      ]
-    },
-    {
-      "severity": "critical",
-      "code": "public-cost-trigger",
-      "message": "Public cost trigger is missing: durable-rate-limit.",
-      "nodes": [
-        "draft-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:5789"
-      ]
-    },
-    {
-      "severity": "critical",
-      "code": "public-cost-trigger",
-      "message": "Public cost trigger is missing: durable-rate-limit.",
-      "nodes": [
-        "profile-delta-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:4448"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "cache-amplification",
-      "message": "Cache failure mode is 'amplify' and may amplify metered calls.",
-      "nodes": [
-        "bridge-cache"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:5103"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "cache-amplification",
-      "message": "Cache failure mode is 'amplify' and may amplify metered calls.",
-      "nodes": [
-        "daily-summary-cache"
-      ],
-      "evidence": [
-        "src/lib/bulletCache.mjs:139"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "cache-amplification",
-      "message": "Cache failure mode is 'amplify' and may amplify metered calls.",
-      "nodes": [
-        "extract-cache"
-      ],
-      "evidence": [
-        "src/lib/bulletCache.mjs:243"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "cache-amplification",
-      "message": "Cache failure mode is 'amplify' and may amplify metered calls.",
-      "nodes": [
-        "workstyle-staleness-cache"
-      ],
-      "evidence": [
-        "src/lib/serverCollect.mjs:352"
-      ]
-    },
     {
       "severity": "high",
       "code": "missing-budget-ceiling",
@@ -131,76 +21,10 @@
       "code": "missing-cost-deduplication",
       "message": "A production trigger reaches a metered call without proven idempotency, deduplication, or a distributed lease.",
       "nodes": [
-        "agent-route"
-      ],
-      "evidence": [
-        "src/routes/resume.agent.mjs:27"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "missing-cost-deduplication",
-      "message": "A production trigger reaches a metered call without proven idempotency, deduplication, or a distributed lease.",
-      "nodes": [
-        "bootstrap-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:550"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "missing-cost-deduplication",
-      "message": "A production trigger reaches a metered call without proven idempotency, deduplication, or a distributed lease.",
-      "nodes": [
-        "bridge-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:5089"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "missing-cost-deduplication",
-      "message": "A production trigger reaches a metered call without proven idempotency, deduplication, or a distributed lease.",
-      "nodes": [
-        "candidate-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:1040"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "missing-cost-deduplication",
-      "message": "A production trigger reaches a metered call without proven idempotency, deduplication, or a distributed lease.",
-      "nodes": [
         "collect-route"
       ],
       "evidence": [
-        "src/server.mjs:90"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "missing-cost-deduplication",
-      "message": "A production trigger reaches a metered call without proven idempotency, deduplication, or a distributed lease.",
-      "nodes": [
-        "draft-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:5789"
-      ]
-    },
-    {
-      "severity": "high",
-      "code": "missing-cost-deduplication",
-      "message": "A production trigger reaches a metered call without proven idempotency, deduplication, or a distributed lease.",
-      "nodes": [
-        "profile-delta-route"
-      ],
-      "evidence": [
-        "src/routes/resume.mjs:4448"
+        "src/server.mjs:91"
       ]
     },
     {
@@ -236,23 +60,12 @@
   "cycles": [
     {
       "nodes": [
-        "agent-loop",
-        "gateway-agent-llm"
+        "gateway-agent-llm",
+        "local-agent"
       ],
-      "cost_reachable": true,
+      "cost_reachable": false,
       "bounded": true
     }
   ],
-  "unknowns": [
-    {
-      "node": "reconstruct-route",
-      "reason": "production reachability is unknown",
-      "location": "src/routes/resume.mjs:4053"
-    },
-    {
-      "node": "gateway-reconstruct-llm",
-      "reason": "production reachability is unknown",
-      "location": "src/lib/resumeReconstruction.mjs:286"
-    }
-  ]
+  "unknowns": []
 }

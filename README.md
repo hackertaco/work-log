@@ -29,9 +29,17 @@ If `work-log.config.json` does not exist, the app uses:
 
 ## LLM Summaries
 
-LLM calls go through `src/lib/llmGateway.mjs`. Direct `api.openai.com` billing is blocked unless `WORK_LOG_ALLOW_DIRECT_OPENAI=1` is explicitly set.
+LLM calls go through `src/lib/llmGateway.mjs`. Direct `api.openai.com` billing is always blocked. The gateway is also disabled whenever `VERCEL` is present, so the deployed app only collects and serves data.
 
-On a local machine, the active Responses-compatible `cliproxy` provider in `~/.codex/config.toml` is loaded automatically. Vercel cannot read that file, so configure the proxy URL and bearer as encrypted project environment variables.
+On a local machine, the active Responses-compatible `cliproxy` provider in `~/.codex/config.toml` is loaded automatically. Do not copy its URL or bearer into Vercel. Scheduled enrichment runs locally through `scripts/daily-batch.sh`.
+
+Cost-safe commands:
+
+- `npm run batch` — collection-only; zero LLM calls.
+- `npm run batch:enrich` — one cached summary/story call for the requested day through the local CLIProxy.
+- `npm run refresh-profiles` — refreshes weekly workstyle/profile output only when stale.
+
+Resume draft generation is separate from the daily batch and is available only from an explicit local UI action. The deployed UI is read-only for drafts.
 
 LLM env vars:
 
@@ -44,7 +52,9 @@ LLM env vars:
 - `WORK_LOG_LLM_MAX_CALLS_PER_PROCESS` — default: `100`
 - `WORK_LOG_USE_CODEX_PROXY=0` — disable local Codex provider discovery
 
-Legacy `WORK_LOG_OPENAI_*`, `OPENAI_API_KEY`, and `WORK_LOG_DISABLE_OPENAI` are read only for compatibility. A direct OpenAI endpoint still requires `WORK_LOG_ALLOW_DIRECT_OPENAI=1`.
+These variables are local-worker configuration. They are ignored for LLM execution on Vercel because the production gateway is hard-disabled.
+
+Legacy `WORK_LOG_OPENAI_*`, `OPENAI_API_KEY`, and `WORK_LOG_DISABLE_OPENAI` are read only for compatibility, but the official OpenAI endpoint is never accepted. Use the local CLIProxy provider from `~/.codex/config.toml`.
 
 Embeddings are separately disabled by default. They require `WORK_LOG_ENABLE_EMBEDDINGS=1`, `WORK_LOG_EMBEDDING_URL`, and `WORK_LOG_EMBEDDING_BEARER_TOKEN`; the Responses proxy bearer is never reused automatically.
 

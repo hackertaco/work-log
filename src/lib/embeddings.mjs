@@ -51,6 +51,7 @@ export async function generateEmbedding(text) {
 export async function generateEmbeddings(texts) {
   const apiKey = process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN;
   if (
+    process.env.VERCEL ||
     process.env.WORK_LOG_ENABLE_EMBEDDINGS !== "1" ||
     !apiKey ||
     process.env.WORK_LOG_DISABLE_LLM === "1" ||
@@ -184,10 +185,7 @@ function resolveEmbeddingUrl() {
   const configured = process.env.WORK_LOG_EMBEDDING_URL;
   if (!configured) throw new Error("WORK_LOG_EMBEDDING_URL is required when embeddings are enabled");
   const url = new URL(configured);
-  if (
-    url.hostname.toLowerCase() === "api.openai.com" &&
-    process.env.WORK_LOG_ALLOW_DIRECT_OPENAI !== "1"
-  ) {
+  if (url.hostname.toLowerCase() === "api.openai.com") {
     throw new Error("Direct OpenAI embeddings are blocked by default");
   }
   return url.toString();

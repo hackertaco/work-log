@@ -40,6 +40,13 @@ describe('useDraftContext — source contract', () => {
     assert.ok(hookSource.includes('useCallback'), 'should use useCallback');
     assert.ok(hookSource.includes('useRef'), 'should use useRef');
   });
+
+  test('defaults to cache-only loading so mounting cannot spend', () => {
+    assert.ok(
+      hookSource.includes('autoGenerate = false'),
+      'autoGenerate should default to false'
+    );
+  });
 });
 
 describe('useDraftContext — status transitions', () => {

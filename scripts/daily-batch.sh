@@ -14,7 +14,7 @@ if ! command -v node > /dev/null 2>&1; then
   export PATH="$HOME/.nvm/versions/node/v24.14.0/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 fi
 
-# Slack/Blob/OpenAI 자격증명 로드
+# Slack/Blob 설정 로드. LLM은 ~/.codex/config.toml의 CLIProxy를 사용한다.
 if [[ -f .env.local ]]; then
   set -a; source .env.local; set +a
 fi
@@ -22,9 +22,12 @@ fi
 YESTERDAY=$(date -v-1d +%F)
 
 echo "[daily-batch] $(date '+%F %T') backfilling ${YESTERDAY}"
-node src/cli.mjs batch --date "$YESTERDAY"
+node src/cli.mjs batch --allow-llm --date "$YESTERDAY"
 
 echo "[daily-batch] $(date '+%F %T') running today"
-node src/cli.mjs batch
+node src/cli.mjs batch --allow-llm
+
+echo "[daily-batch] $(date '+%F %T') refreshing changed weekly profiles"
+node src/cli.mjs refresh-profiles
 
 echo "[daily-batch] $(date '+%F %T') done"

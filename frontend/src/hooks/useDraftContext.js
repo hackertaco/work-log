@@ -26,7 +26,7 @@ import { navigate } from '../App.jsx';
  *   clearError    — () => void          에러 상태 초기화
  *
  * 옵션:
- *   autoGenerate  — boolean (기본 true)
+ *   autoGenerate  — boolean (기본 false; 페이지 진입만으로 생성하지 않음)
  *   fromDate      — string | undefined
  *   toDate        — string | undefined
  *   pollInterval  — number (기본 2000ms)  폴링 간격
@@ -45,7 +45,7 @@ import { navigate } from '../App.jsx';
 const DEFAULT_POLL_INTERVAL = 2000;
 
 export function useDraftContext({
-  autoGenerate = true,
+  autoGenerate = false,
   fromDate,
   toDate,
   pollInterval = DEFAULT_POLL_INTERVAL,

@@ -16,6 +16,7 @@ export class LlmGatewayError extends Error {
 
 export function isLlmDisabled() {
   return (
+    Boolean(process.env.VERCEL) ||
     process.env.WORK_LOG_DISABLE_LLM === "1" ||
     process.env.WORK_LOG_DISABLE_OPENAI === "1"
   );
@@ -57,7 +58,7 @@ export function getResponsesUrl({ allowInjectedFetchFallback = false } = {}) {
   }
 
   const directOpenAi = url.hostname.toLowerCase() === "api.openai.com";
-  if (directOpenAi && process.env.WORK_LOG_ALLOW_DIRECT_OPENAI !== "1") {
+  if (directOpenAi) {
     throw new LlmGatewayError(
       "direct_openai_blocked",
       "Direct OpenAI billing is blocked; use WORK_LOG_LLM_URL for the CLI proxy"

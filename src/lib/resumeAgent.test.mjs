@@ -77,7 +77,7 @@ describe("runAgentLoop", () => {
     assert.match(events[0]?.content ?? "", /비활성화/);
   });
 
-  it("does not call the LLM unless the resume agent is explicitly enabled", async () => {
+  it("uses the available local gateway without a separate feature flag", async () => {
     delete process.env.RESUME_AGENT_ENABLED;
     let llmCalls = 0;
 
@@ -86,12 +86,12 @@ describe("runAgentLoop", () => {
       _deps: {
         callLlm: async () => {
           llmCalls++;
-          return makeTextResponse("should not run");
+          return makeTextResponse("local proxy response");
         },
       },
     });
 
-    assert.equal(llmCalls, 0);
+    assert.equal(llmCalls, 1);
   });
 
   it("text-only response terminates in 1 iteration", async () => {
@@ -383,7 +383,7 @@ describe("runAgentLoop", () => {
 
     const msgEvent = events.find((e) => e.type === "message");
     assert.ok(msgEvent);
-    assert.ok(msgEvent.content.includes("API key"));
+    assert.ok(msgEvent.content.includes("CLIProxy"));
   });
 
   it("emits progress events for each iteration", async () => {

@@ -42,7 +42,7 @@ import { getCurrentUserId } from "./requestContext.mjs";
 // ─── Bullet cache (batch summarization results) ───────────────────────────────
 
 const CACHE_PREFIX = "cache/bullets/";
-const CACHE_SCHEMA_VERSION = 3;
+const CACHE_SCHEMA_VERSION = 4;
 
 // ─── Extract cache (WorkLogExtract results for generate-candidates) ───────────
 

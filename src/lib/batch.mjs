@@ -3,7 +3,7 @@ import path from "node:path";
 import { readBulletCache, writeBulletCache } from "./bulletCache.mjs";
 import { readSuggestionsData, saveBatchSummary, saveWorklogDaily, saveWorklogProfile } from "./blob.mjs";
 import { loadConfig, zeudeEmailsOf } from "./config.mjs";
-import { groupPromptsByRepo, summarizeDayStories } from "./dayStory.mjs";
+import { groupPromptsByRepo } from "./dayStory.mjs";
 import { getLlmModel } from "./llmGateway.mjs";
 import { buildUsageCoaching } from "./usageCoaching.mjs";
 import { areaKey } from "./workAreaGrouping.mjs";
@@ -60,10 +60,10 @@ export async function runDailyBatch(inputDate, options = {}) {
   // can use these for logging, monitoring, or incremental processing without
   // waiting for the full summary to be built.
   //
-  // These are fire-and-forget: the batch pipeline does not await them.
-  // A batch started by one of these events must not emit them again, otherwise
-  // registerGranularTriggers schedules the same batch forever every 5 seconds.
-  if (options.emitGranularEvents !== false) {
+  // These are opt-in because the local server also listens to them to schedule
+  // a batch. Emitting by default would make an ordinary batch schedule a
+  // duplicate five seconds later (and used to create an unbounded loop).
+  if (options.emitGranularEvents === true) {
     emitCommitCollected(date, gitData.commits, config.userId);
     if (config.includeSlack) emitSlackCollected(date, slackContexts, config.userId);
     if (config.includeSessionLogs) {
@@ -102,7 +102,8 @@ export async function runDailyBatch(inputDate, options = {}) {
     gitCommits: gitData.commits,
     gitWorkingTree: gitData.workingTree,
     shellHistory,
-    prBranchSignals
+    prBranchSignals,
+    allowLlm: options.allowLlm === true
   });
 
   // 내 사용 습관 코칭. 본인 것만 보고 다른 사람과 비교하지 않는다(usageCoaching.mjs 주석 참고).
@@ -141,9 +142,8 @@ export async function runDailyBatch(inputDate, options = {}) {
   // ── Final stage: delta check + merge candidate generation (Sub-AC 10-3) ─────
   //
   // After the daily summary has been written, emit "work_log_saved" through the
-  // event bus (Sub-AC 2-1).  The event bus sequentially awaits all registered
-  // hooks; by default `registerResumeBatchHook()` is called from server.mjs /
-  // cli.mjs to wire `runResumeCandidateHook` into the bus.
+  // event bus (Sub-AC 2-1). Hooks are never registered automatically: draft or
+  // candidate generation must be initiated through its explicit local surface.
   //
   // This performs (via registered hooks):
   //   1. Extract resume-worthy updates from today's work log (LLM, cache-first)
@@ -195,7 +195,7 @@ export async function runDailyBatch(inputDate, options = {}) {
 }
 
 // serverCollect.mjs 가 원격 소스(GitHub API·Zeude)로 같은 요약을 만들 때 재사용한다.
-export async function buildSummary({ date, codexSessions, claudeSessions, slackContexts, gitCommits, gitWorkingTree, shellHistory, prBranchSignals, dayPrompts = [] }) {
+export async function buildSummary({ date, codexSessions, claudeSessions, slackContexts, gitCommits, gitWorkingTree, shellHistory, prBranchSignals, dayPrompts = [], allowLlm = false }) {
   const repoGroups = groupBy(gitCommits, "repo");
   const codexSummaries = uniqueStrings(codexSessions.map((session) => session.summary).filter(Boolean), 8);
   const claudeSummaries = uniqueStrings(claudeSessions.map((session) => session.summary).filter(Boolean), 8);
@@ -210,15 +210,34 @@ export async function buildSummary({ date, codexSessions, claudeSessions, slackC
     claudeSessions,
     gitCommits
   });
-  const aiSummaries = await maybeSummarizeWithOpenAI({
-    date,
-    gitCommits,
-    shellHistory,
-    codexSessions,
-    claudeSessions,
-    slackContexts,
-    heuristicThemes: themeSummaries
-  });
+
+  // Build the project view before enrichment so the single daily LLM request
+  // can return both the top-level summary and project story cards.
+  const weights = prBranchSignals?.projectWeights ?? {};
+  const sortWeights = prBranchSignals?.pipelineWeights ?? weights;
+  const rawProjects = Object.entries(repoGroups).map(([repo, commits]) => ({
+    repo,
+    category: classifyRepoCategory(commits[0]?.repoPath),
+    commitCount: commits.length,
+    commits: commits.slice(0, 10),
+    prWeight: sortWeights[repo] ?? 0
+  }));
+  const weightSortedProjects = sortProjectsByPrWeight(rawProjects, sortWeights);
+  const categorizedProjects = categorizeProjects(weightSortedProjects);
+  const storyProjects = buildStoryProjectInputs({ categorizedProjects, dayPrompts });
+
+  const aiSummaries = allowLlm
+    ? await maybeSummarizeWithOpenAI({
+        date,
+        gitCommits,
+        shellHistory,
+        codexSessions,
+        claudeSessions,
+        slackContexts,
+        heuristicThemes: themeSummaries,
+        storyProjects
+      })
+    : null;
   const commitFirstMainWork = deriveMainWorkFromCommits(gitCommits);
   const commitFirstSupportingWork = deriveSupportingWorkFromCommits(gitCommits);
   const fallbackOutcomes = deriveBusinessOutcomesFromCommits(gitCommits);
@@ -250,31 +269,11 @@ export async function buildSummary({ date, codexSessions, claudeSessions, slackC
     ...commitHighlights,
     ...narrativeSnippets
   ], 12);
-  // ── Build categorized projects, priority-sorted by PR/branch weight ─────────
-  //
-  // Within each category (company / opensource / other), projects are sorted
-  // descending by their combined pipeline weight (Sub-AC 11b: maxWeight ×
-  // mention-count boost) so the LLM extraction prompt surfaces the most
-  // PR-active projects first.  Projects with no PR/branch signal retain their
-  // original commit-count ordering (stable sort).
-  //
-  // pipelineWeights already incorporate mention-count proportionality via
-  // computePipelineWeight().  We fall back to projectWeights when pipelineWeights
-  // are absent (backward-compat with callers that only set projectWeights).
-  const weights = prBranchSignals?.projectWeights ?? {};
-  const sortWeights = prBranchSignals?.pipelineWeights ?? weights;
-  const rawProjects = Object.entries(repoGroups).map(([repo, commits]) => ({
-    repo,
-    category: classifyRepoCategory(commits[0]?.repoPath),
-    commitCount: commits.length,
-    commits: commits.slice(0, 10),
-    prWeight: sortWeights[repo] ?? 0
-  }));
-  const weightSortedProjects = sortProjectsByPrWeight(rawProjects, sortWeights);
-  const categorizedProjects = categorizeProjects(weightSortedProjects);
-  // 그날 실제 기록으로 스토리를 쓴다. 실패하면 커밋 제목 기반 폴백으로 내려간다 —
-  // 어느 쪽이든 지어낸 문장은 쓰지 않는다.
-  const storyThreads = await buildStoryThreads({ date, categorizedProjects, dayPrompts });
+  const storyThreads = buildStoryThreads({
+    categorizedProjects,
+    dayPrompts,
+    generatedStories: aiSummaries?.stories
+  });
 
   const resumeCandidates = uniqueStrings([
     ...Object.entries(repoGroups).map(([repo, commits]) => {
@@ -801,33 +800,37 @@ function deriveBusinessOutcomesFromCommits(gitCommits) {
   return bullets;
 }
 
-/**
- * 그날의 스토리 카드를 만든다. LLM 이 그날 커밋·프롬프트를 읽어 쓰고, 실패하면
- * 커밋 제목을 그대로 쓰는 폴백으로 내려간다. LLM 이 일부 레포만 돌려줘도
- * 나머지는 폴백으로 채워, 카드가 통째로 비지 않게 한다.
- */
-async function buildStoryThreads({ date, categorizedProjects, dayPrompts }) {
+export function buildStoryProjectInputs({ categorizedProjects, dayPrompts }) {
   const promptsByRepo = groupPromptsByRepo(dayPrompts, areaKey);
   const fallback = deriveStoryThreadsFromProjects(categorizedProjects, [], promptsByRepo);
-  if (!fallback.length) return fallback;
+  if (!fallback.length) return [];
 
   const commitsByRepo = new Map(
     [...categorizedProjects.company, ...categorizedProjects.opensource]
       .map((p) => [p.repo, (p.commits ?? []).map((c) => c.subject)])
   );
 
-  const stories = await summarizeDayStories({
-    date,
-    projects: fallback.map((thread) => ({
-      repo: thread.repo,
-      commits: commitsByRepo.get(thread.repo) ?? [],
-      prompts: promptsByRepo.get(thread.repo) ?? []
-    }))
-  }).catch(() => []);
+  return fallback.slice(0, 3).map((thread) => ({
+    repo: thread.repo,
+    commits: commitsByRepo.get(thread.repo) ?? [],
+    prompts: (promptsByRepo.get(thread.repo) ?? []).slice(0, 20)
+  }));
+}
 
-  if (!stories.length) return fallback;
+/**
+ * 그날의 스토리 카드를 만든다. 단일 일일 요약 응답에서 모델 스토리를 받아
+ * 사실 기반 폴백에 덮어쓴다. 모델이 모르는 레포를 추가하는 것은 허용하지 않는다.
+ */
+function buildStoryThreads({ categorizedProjects, dayPrompts, generatedStories }) {
+  const promptsByRepo = groupPromptsByRepo(dayPrompts, areaKey);
+  const fallback = deriveStoryThreadsFromProjects(categorizedProjects, [], promptsByRepo);
+  return mergeGeneratedStories(fallback, generatedStories);
+}
 
-  const byRepo = new Map(stories.map((s) => [s.repo, s]));
+export function mergeGeneratedStories(fallback, generatedStories) {
+  if (!Array.isArray(generatedStories) || !generatedStories.length) return fallback;
+
+  const byRepo = new Map(generatedStories.map((story) => [story.repo, story]));
   return fallback.map((thread) => {
     const story = byRepo.get(thread.repo);
     if (!story) return thread;
@@ -1001,7 +1004,8 @@ async function maybeSummarizeWithOpenAI({
   codexSessions,
   claudeSessions,
   slackContexts,
-  heuristicThemes
+  heuristicThemes,
+  storyProjects
 }) {
   const payload = {
     date,
@@ -1019,6 +1023,7 @@ async function maybeSummarizeWithOpenAI({
       summary: session.summary,
       evidence: (session.snippets || []).slice(0, 2)
     })),
+    story_projects: storyProjects,
     slack_contexts: (slackContexts || []).slice(0, 12).map((entry) => ({
       text: String(entry.text || "").slice(0, 280),
       context: Array.isArray(entry.context)

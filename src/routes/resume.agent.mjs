@@ -13,6 +13,7 @@ import { Hono } from "hono";
 import { createSession, loadSession, updateSession } from "../lib/resumeSessionStore.mjs";
 import { runAgentLoop } from "../lib/resumeAgent.mjs";
 import { readResumeData } from "../lib/blob.mjs";
+import { getCurrentUserId } from "../lib/requestContext.mjs";
 
 export const agentRouter = new Hono();
 
@@ -58,7 +59,7 @@ agentRouter.post("/agent", async (c) => {
 
   // ── approve_diff (non-streaming) ─────────────────────────────────────────
   if (action === "approve_diff") {
-    const session = await loadSession(sessionId);
+    const session = await loadOwnedSession(sessionId);
     if (!session) return c.json({ error: "Session not found" }, 404);
 
     const pending = session.agentState.pendingDiffs || [];
@@ -96,7 +97,7 @@ agentRouter.post("/agent", async (c) => {
 
   // ── reject_diff (non-streaming) ──────────────────────────────────────────
   if (action === "reject_diff") {
-    const session = await loadSession(sessionId);
+    const session = await loadOwnedSession(sessionId);
     if (!session) return c.json({ error: "Session not found" }, 404);
 
     await updateSession(sessionId, session.version, (s) => {
@@ -123,45 +124,17 @@ agentRouter.post("/agent", async (c) => {
           let session;
 
           if (action === "init") {
-            // Create new session
-            const userId = body.userId || "anonymous";
+            // Session initialization is read-only. Page mount may establish
+            // state, but only an explicit user message may spend LLM budget.
+            const userId = getCurrentUserId();
             session = await createSession(userId);
             send({ type: "session", sessionId: session.sessionId });
-
-            // Load resume summary for context
-            let resumeSummary = "";
-            try {
-              const resume = await readResumeData();
-              if (resume?.contact?.name) {
-                resumeSummary = `이름: ${resume.contact.name}`;
-              }
-            } catch {
-              // Resume may not exist yet — that's fine
-            }
-
-            const initMessage = {
-              role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: text || "이력서 개선을 시작합니다. 현재 이력서를 분석해주세요.",
-                },
-              ],
-            };
-            session.messages.push(initMessage);
-
-            await runAgentLoop({
-              messages: session.messages,
-              resumeSummary,
-              onEvent: send,
-            });
-
-            // Save session after agent loop
-            await updateSession(session.sessionId, session.version, (s) => {
-              s.messages = session.messages;
+            send({
+              type: "message",
+              content: "이력서 개선 세션이 준비됐어요. 질문을 보내면 그때 분석을 시작합니다."
             });
           } else if (action === "message") {
-            session = await loadSession(sessionId);
+            session = await loadOwnedSession(sessionId);
             if (!session) {
               send({ type: "error", error: "Session not found" });
               controller.close();
@@ -176,7 +149,7 @@ agentRouter.post("/agent", async (c) => {
 
             let resumeSummary = "";
             try {
-              const resume = await readResumeData();
+              const resume = await readResumeData(session.userId);
               if (resume?.contact?.name) {
                 resumeSummary = `이름: ${resume.contact.name}`;
               }
@@ -194,7 +167,7 @@ agentRouter.post("/agent", async (c) => {
               s.messages = session.messages;
             });
           } else if (action === "revise_diff") {
-            session = await loadSession(sessionId);
+            session = await loadOwnedSession(sessionId);
             if (!session) {
               send({ type: "error", error: "Session not found" });
               controller.close();
@@ -216,7 +189,7 @@ agentRouter.post("/agent", async (c) => {
 
             let resumeSummary = "";
             try {
-              const resume = await readResumeData();
+              const resume = await readResumeData(session.userId);
               if (resume?.contact?.name) {
                 resumeSummary = `이름: ${resume.contact.name}`;
               }
@@ -252,3 +225,8 @@ agentRouter.post("/agent", async (c) => {
     },
   );
 });
+
+async function loadOwnedSession(sessionId) {
+  const session = await loadSession(sessionId);
+  return session?.userId === getCurrentUserId() ? session : null;
+}

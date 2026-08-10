@@ -108,6 +108,7 @@ describe("generateEmbedding", () => {
     originalEnv.WORK_LOG_EMBEDDING_BEARER_TOKEN = process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN;
     originalEnv.WORK_LOG_EMBEDDING_URL = process.env.WORK_LOG_EMBEDDING_URL;
     originalEnv.WORK_LOG_DISABLE_OPENAI = process.env.WORK_LOG_DISABLE_OPENAI;
+    originalEnv.VERCEL = process.env.VERCEL;
   });
 
   after(() => {
@@ -116,6 +117,8 @@ describe("generateEmbedding", () => {
     process.env.WORK_LOG_EMBEDDING_URL = originalEnv.WORK_LOG_EMBEDDING_URL || "";
     process.env.WORK_LOG_DISABLE_OPENAI =
       originalEnv.WORK_LOG_DISABLE_OPENAI || "";
+    if (originalEnv.VERCEL === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = originalEnv.VERCEL;
   });
 
   it("returns null when API key is missing", async () => {
@@ -187,6 +190,28 @@ describe("generateEmbeddings", () => {
     process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "embedding-test-token";
     process.env.WORK_LOG_DISABLE_OPENAI = "";
     assert.equal(await generateEmbeddings([]), null);
+  });
+
+  it("never calls the embedding endpoint on Vercel", async () => {
+    process.env.VERCEL = "1";
+    process.env.WORK_LOG_ENABLE_EMBEDDINGS = "1";
+    process.env.WORK_LOG_EMBEDDING_BEARER_TOKEN = "embedding-test-token";
+    process.env.WORK_LOG_EMBEDDING_URL = "https://proxy.example.test/v1/embeddings";
+    process.env.WORK_LOG_DISABLE_OPENAI = "";
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      throw new Error("must not fetch");
+    };
+
+    try {
+      assert.equal(await generateEmbeddings(["hello"]), null);
+      assert.equal(calls, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      delete process.env.VERCEL;
+    }
   });
 
   it("handles mixed empty and non-empty texts", async () => {
@@ -279,4 +304,19 @@ describe("EMBEDDING_DIMENSIONS", () => {
   it("is 1536 for text-embedding-3-small", () => {
     assert.equal(EMBEDDING_DIMENSIONS, 1536);
   });
+});
+
+it("direct OpenAI embeddings stay blocked even with the legacy override", () => {
+  const saved = process.env.WORK_LOG_ALLOW_DIRECT_OPENAI;
+  const savedUrl = process.env.WORK_LOG_EMBEDDING_URL;
+  process.env.WORK_LOG_EMBEDDING_URL = "https://api.openai.com/v1/embeddings";
+  process.env.WORK_LOG_ALLOW_DIRECT_OPENAI = "1";
+  try {
+    assert.throws(() => _testing.resolveEmbeddingUrl(), /blocked/i);
+  } finally {
+    if (saved === undefined) delete process.env.WORK_LOG_ALLOW_DIRECT_OPENAI;
+    else process.env.WORK_LOG_ALLOW_DIRECT_OPENAI = saved;
+    if (savedUrl === undefined) delete process.env.WORK_LOG_EMBEDDING_URL;
+    else process.env.WORK_LOG_EMBEDDING_URL = savedUrl;
+  }
 });

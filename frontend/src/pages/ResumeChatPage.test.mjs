@@ -44,3 +44,30 @@ describe('ResumeChatPage — candidate handoff flow', () => {
     );
   });
 });
+
+describe('ResumeChatPage — cost safety', () => {
+  test('loads an existing draft without auto-generating on mount', () => {
+    assert.ok(
+      source.includes('useDraftContext({ autoGenerate: false })'),
+      'page mount must be cache-only'
+    );
+  });
+
+  test('uses the server-injected LLM capability for draft generation', () => {
+    assert.ok(source.includes('window.__LLM_GENERATION_ENABLED'));
+    assert.ok(source.includes('window.__LLM_GENERATION_ENABLED === true'));
+    assert.ok(source.includes('import.meta.env.DEV'));
+    assert.ok(source.includes('generationEnabled={LLM_GENERATION_ENABLED}'));
+    assert.ok(source.includes('onRetry={LLM_GENERATION_ENABLED ? insightRetry : undefined}'));
+  });
+
+  test('disables the removed legacy chat path unless the local agent is enabled', () => {
+    assert.ok(source.includes('disabled={!AGENT_ENABLED}'));
+    assert.ok(source.includes('채팅은 로컬 CLIProxy에서만 사용할 수 있어요'));
+  });
+
+  test('does not claim a draft is ready when only the cache lookup completed', () => {
+    assert.ok(source.includes('insightDraft={insightDraft}'));
+    assert.ok(source.includes("insightStatus === 'ready' && insightDraft"));
+  });
+});

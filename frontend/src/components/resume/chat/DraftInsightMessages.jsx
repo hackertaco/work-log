@@ -32,6 +32,7 @@ export function DraftInsightMessages({
   draft,
   status = 'loading',
   error = null,
+  generationEnabled = true,
   onRetry,
   onCompanyClick,
   onProjectClick,
@@ -60,7 +61,28 @@ export function DraftInsightMessages({
   }
 
   // 데이터 없음
-  if (!draft) return null;
+  if (!draft) {
+    return (
+      <div class="dim-root">
+        <div class="dim-row dim-row--assistant">
+          <div class="dim-avatar" aria-hidden="true">✦</div>
+          <div class="dim-bubble">
+            {generationEnabled ? (
+              <>
+                <p class="dim-text">저장된 초안이 없습니다. 필요할 때만 명시적으로 생성할 수 있어요.</p>
+                <button class="dim-retry-btn" onClick={onRetry} type="button">
+                  초안 생성하기
+                </button>
+              </>
+            ) : (
+              <p class="dim-text">배포된 화면은 조회 전용입니다. 초안은 로컬에서만 생성할 수 있어요.</p>
+            )}
+          </div>
+        </div>
+        <style>{DIM_CSS}</style>
+      </div>
+    );
+  }
 
   const {
     companyStories = [],

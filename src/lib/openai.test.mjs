@@ -12,6 +12,7 @@ describe("buildSummaryPayload", () => {
       shell_commands: [],
       codex_sessions: [],
       claude_sessions: [],
+      story_projects: [],
       slack_contexts: [
         {
           text: "AI Native Camp 운영 전에 팀 기대치를 맞추려고 사전 설문을 먼저 돌리고 싶다.",
@@ -37,6 +38,7 @@ describe("buildSummaryPayload", () => {
       shell_commands: [],
       codex_sessions: [],
       claude_sessions: [],
+      story_projects: [],
       slack_contexts: []
     });
 
@@ -61,6 +63,7 @@ test("open_threads 는 기록에 열려 있던 것만 — 내일 할 일 예측�
     shell_commands: [],
     codex_sessions: [],
     claude_sessions: [],
+    story_projects: [],
     slack_contexts: []
   });
 
@@ -73,4 +76,33 @@ test("open_threads 는 기록에 열려 있던 것만 — 내일 할 일 예측�
   const schema = payload.text.format.schema;
   assert.ok(schema.required.includes("open_threads"));
   assert.equal(schema.properties.open_threads.minItems, 0, "열린 게 없는 날도 있어야 한다");
+});
+
+test("일일 요약 응답 하나에 프로젝트 스토리도 포함한다", () => {
+  const payload = buildSummaryPayload({
+    date: "2026-08-10",
+    heuristic_themes: [],
+    git_commits: [],
+    shell_commands: [],
+    codex_sessions: [],
+    claude_sessions: [],
+    slack_contexts: [],
+    story_projects: [
+      {
+        repo: "work-log",
+        commits: ["fix: stop duplicate LLM calls"],
+        prompts: ["요약과 스토리를 한 번에 만들자"]
+      }
+    ]
+  });
+
+  const schema = payload.text.format.schema;
+  const systemText = payload.input[0].content[0].text;
+  const userText = payload.input[1].content[0].text;
+
+  assert.ok(schema.required.includes("stories"));
+  assert.equal(schema.properties.stories.maxItems, 3);
+  assert.match(systemText, /stories/);
+  assert.match(userText, /stop duplicate LLM calls/);
+  assert.match(userText, /요약과 스토리를 한 번에/);
 });

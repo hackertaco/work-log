@@ -12,8 +12,14 @@ import { useDraftContext } from '../hooks/useDraftContext.js';
 import { useResumeChat } from '../hooks/useResumeChat.js';
 import { useResumeAgent } from '../hooks/useResumeAgent.js';
 
-/** 에이전트 모드 활성화 플래그 — window.__RESUME_AGENT_ENABLED가 truthy일 때 에이전트 사용 */
-const AGENT_ENABLED = typeof window !== 'undefined' && window.__RESUME_AGENT_ENABLED;
+/** Static production defaults to read-only; local Vite or server-injected capability enables AI. */
+const LOCAL_DEV = import.meta.env.DEV;
+const AGENT_ENABLED =
+  typeof window !== 'undefined' &&
+  (window.__RESUME_AGENT_ENABLED === true || LOCAL_DEV);
+const LLM_GENERATION_ENABLED =
+  typeof window !== 'undefined' &&
+  (window.__LLM_GENERATION_ENABLED === true || LOCAL_DEV);
 
 /**
  * ResumeChatPage — 채팅 기반 이력서 구체화 페이지 (/resume/chat)
@@ -70,7 +76,7 @@ export function ResumeChatPage() {
     error: insightError,
     progress: insightProgress,
     generate: insightRetry,
-  } = useDraftContext({ autoGenerate: true });
+  } = useDraftContext({ autoGenerate: false });
 
   /** insightDraft가 준비되면 draft 상태에도 반영 (기존 ResumeDraftPanel 호환) */
   useEffect(() => {
@@ -660,13 +666,14 @@ export function ResumeChatPage() {
    * 해당 텍스트를 입력창에 채워넣는 대신 바로 제출한다.
    */
   function handleExampleClick(e) {
+    if (!AGENT_ENABLED) return;
     const btn = e.target.closest('[data-example]');
     if (!btn) return;
     const exampleText = btn.dataset.example;
     if (!exampleText) return;
 
     const parsed = parseResumeQuery(exampleText);
-    handleSubmit(parsed);
+    handleSubmitRef.current?.(parsed);
   }
 
   /**
@@ -678,11 +685,11 @@ export function ResumeChatPage() {
     if (AGENT_ENABLED) {
       return agent.sendMessage(parsedQuery.raw);
     }
-    return handleSubmit(parsedQuery);
-  }, [agent.sendMessage, handleSubmit]);
+    return undefined;
+  }, [agent.sendMessage]);
 
-  /** 실제로 사용할 submit 핸들러 — 에이전트 모드 여부에 따라 분기 */
-  const effectiveSubmit = AGENT_ENABLED ? handleSubmitForAgent : handleSubmit;
+  /** Legacy chat route is removed; only the local agent may submit. */
+  const effectiveSubmit = AGENT_ENABLED ? handleSubmitForAgent : undefined;
 
   /** 에이전트 모드에서도 클릭 핸들러(강점/경력)가 올바른 submit을 호출하도록 ref를 재동기화 */
   useEffect(() => {
@@ -752,7 +759,7 @@ export function ResumeChatPage() {
 
   const handleCandidateHandoffStart = useCallback(() => {
     const prompt = candidateHandoff?.handoff?.prompt;
-    if (!prompt) return;
+    if (!prompt || !effectiveSubmit) return;
 
     const parsed = parseResumeQuery(prompt);
     dismissCandidateHandoff();
@@ -769,7 +776,7 @@ export function ResumeChatPage() {
               handoff={candidateHandoff}
               loading={candidateHandoffLoading}
               error={candidateHandoffError}
-              disabled={effectiveLoading}
+              disabled={effectiveLoading || !AGENT_ENABLED}
               onStart={handleCandidateHandoffStart}
               onDismiss={dismissCandidateHandoff}
             />
@@ -777,7 +784,9 @@ export function ResumeChatPage() {
 
           <ChatPurposePanel
             insightStatus={insightStatus}
+            insightDraft={insightDraft}
             generating={insightGenerating}
+            generationEnabled={LLM_GENERATION_ENABLED}
           />
 
           {/* Sub-AC 3: 강점 후보·경력별 경험 요약을 채팅 메시지 형태로 즉시 표시 */}
@@ -785,7 +794,8 @@ export function ResumeChatPage() {
             draft={insightDraft}
             status={insightStatus}
             error={insightError}
-            onRetry={insightRetry}
+            generationEnabled={LLM_GENERATION_ENABLED}
+            onRetry={LLM_GENERATION_ENABLED ? insightRetry : undefined}
             onCompanyClick={handleCompanyClick}
             onProjectClick={handleProjectClick}
             onCapabilityClick={handleCapabilityClick}
@@ -872,6 +882,10 @@ export function ResumeChatPage() {
         <ResumeChatInput
           onSubmit={effectiveSubmit}
           loading={effectiveLoading}
+          disabled={!AGENT_ENABLED}
+          placeholder={AGENT_ENABLED
+            ? undefined
+            : '채팅은 로컬 CLIProxy에서만 사용할 수 있어요.'}
         />
       </div>
 
@@ -880,10 +894,12 @@ export function ResumeChatPage() {
   );
 }
 
-function ChatPurposePanel({ insightStatus, generating }) {
-  const statusLine = generating || insightStatus === 'generating'
+function ChatPurposePanel({ insightStatus, insightDraft, generating, generationEnabled }) {
+  const statusLine = !generationEnabled
+    ? '배포 화면은 조회 전용입니다. 채팅과 초안 생성은 로컬 CLIProxy에서만 사용할 수 있어요.'
+    : generating || insightStatus === 'generating'
     ? '지금은 초안을 모으는 중이라, 잠시 뒤 근거와 함께 대화를 시작할 수 있습니다.'
-    : insightStatus === 'ready'
+    : insightStatus === 'ready' && insightDraft
       ? '초안이 준비되어 있어 최근 경험을 바로 이력서 문장으로 다듬을 수 있습니다.'
       : '초안이 아직 없어도 “최근 경험을 어떻게 반영할까?”처럼 직접 질문하며 시작할 수 있습니다.';
 

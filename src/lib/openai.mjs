@@ -39,7 +39,8 @@ export async function summarizeWithOpenAI(input) {
     workingStyleSignals: sanitizeBullets(parsed.working_style_signals),
     openThreads: sanitizeBullets(parsed.open_threads),
     shareableSentence: String(parsed.shareable_sentence || "").trim(),
-    resumeBullets: sanitizeBullets(parsed.resume_bullets)
+    resumeBullets: sanitizeBullets(parsed.resume_bullets),
+    stories: sanitizeStories(parsed.stories)
   };
 }
 
@@ -126,6 +127,23 @@ export function buildSummaryPayload(input) {
             shareable_sentence: {
               type: "string"
             },
+            stories: {
+              type: "array",
+              minItems: 0,
+              maxItems: 3,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["repo", "outcome", "keyChange", "impact", "why"],
+                properties: {
+                  repo: { type: "string" },
+                  outcome: { type: "string" },
+                  keyChange: { type: "string" },
+                  impact: { type: "string" },
+                  why: { type: "string" }
+                }
+              }
+            },
             resume_bullets: {
               type: "array",
               items: {
@@ -135,11 +153,11 @@ export function buildSummaryPayload(input) {
               maxItems: 3
             }
           },
-          required: ["business_outcomes", "key_changes", "impact", "why_it_matters", "commit_analysis", "ai_review", "working_style_signals", "open_threads", "shareable_sentence", "resume_bullets"]
+          required: ["business_outcomes", "key_changes", "impact", "why_it_matters", "commit_analysis", "ai_review", "working_style_signals", "open_threads", "shareable_sentence", "stories", "resume_bullets"]
         }
       }
     },
-    max_output_tokens: 1100,
+    max_output_tokens: 3000,
     input: [
       {
         role: "system",
@@ -147,7 +165,7 @@ export function buildSummaryPayload(input) {
           {
             type: "input_text",
             text:
-              "You summarize a developer's day into concise Korean bullets. Git commits are the strongest signal for what work was actually done; use them first for business_outcomes, key_changes, impact, why_it_matters, commit_analysis, shareable_sentence, and resume_bullets. Session logs (the developer's own AI prompts) and Slack are first-class evidence of what was worked on, decided, and investigated that day — on many days they are the ONLY record, because heavy AI-assisted work produces few commits. A day with 2 commits and 90 prompts is a full day of work, not an empty one; describe it from the prompts. The one thing they cannot establish on their own is that something SHIPPED or MERGED — do not claim delivery without a commit. Also read them as behavior signals: how the developer frames problems, prioritizes tradeoffs, aligns expectations, collaborates, and handles risk. Slack messages are especially useful for inferring working style, intent, and judgment. Only resume_bullets must stay strictly commit-backed; the rest of the day narrative should use whatever evidence exists. IMPORTANT: the arrays business_outcomes, key_changes, impact, and why_it_matters must align by index. Item 1 in each array should describe the same thread of work, item 2 the next thread, and so on. Write business_outcomes as end-user, operator, or business-facing results first, not implementation details. Write key_changes as the concrete technical changes that produced those outcomes. why_it_matters should explain who benefits or what risk/cost/time is reduced. commit_analysis must not repeat raw commit titles; instead, summarize what technologies, systems, or product areas were worked on and what kind of changes were made there. ai_review is a work-notes section — short observations about how the person worked today, written in a peer tone (not evaluative or managerial). Use Slack/session wording here when it reveals the developer's standards, intent, judgment, or collaboration style. working_style_signals is a separate compact list of 2-5 Korean bullets capturing durable behavioral patterns inferred from dialogue and working traces, such as expectation alignment, workflow design, quality-bar setting, noise reduction, or risk framing. These are about HOW the person works, not WHAT shipped today. Avoid generic praise like '강하다' or '좋다'; instead name the specific behavior (e.g., '기대치와 실제 결과의 간극을 먼저 줄이려는 편'). Each bullet should read like a brief sticky-note memo, not a performance review. open_threads is what the record shows was left open — work explicitly deferred, a question asked and not yet answered, a decision named as pending, a next step stated out loud. Quote or closely paraphrase the actual wording so the person recognises it. This is NOT a prediction of tomorrow and NOT a suggestion list: if nothing was left open, return an empty array rather than inventing plausible next steps. Each bullet names the specific thing and why it is still open. shareable_sentence is a single Korean sentence (60–120 chars) the developer can paste into Slack standup or 1:1. Structure: '[what changed] + [so what — who benefits or what improved]'. It must sound natural when spoken aloud — conversational, not formal. Avoid starting with '오늘'. Example: '예약금 발송 시 체크인 안내도 같이 나가게 해서 CS 누락이 줄었다'. Do not echo questions, chat boilerplate, session IDs, wrapper names, backup-file cleanup details, or prompt filenames unless they materially changed the product. Use user-facing, organized Korean language suitable for a personal work log. Keep every bullet short and concrete, ideally under 110 Korean characters."
+              "You summarize a developer's day into concise Korean bullets. Git commits are the strongest signal for what work was actually done; use them first for business_outcomes, key_changes, impact, why_it_matters, commit_analysis, shareable_sentence, and resume_bullets. Session logs (the developer's own AI prompts) and Slack are first-class evidence of what was worked on, decided, and investigated that day — on many days they are the ONLY record, because heavy AI-assisted work produces few commits. A day with 2 commits and 90 prompts is a full day of work, not an empty one; describe it from the prompts. The one thing they cannot establish on their own is that something SHIPPED or MERGED — do not claim delivery without a commit. Also read them as behavior signals: how the developer frames problems, prioritizes tradeoffs, aligns expectations, collaborates, and handles risk. Slack messages are especially useful for inferring working style, intent, and judgment. Only resume_bullets must stay strictly commit-backed; the rest of the day narrative should use whatever evidence exists. IMPORTANT: the arrays business_outcomes, key_changes, impact, and why_it_matters must align by index. Item 1 in each array should describe the same thread of work, item 2 the next thread, and so on. Write business_outcomes as end-user, operator, or business-facing results first, not implementation details. Write key_changes as the concrete technical changes that produced those outcomes. why_it_matters should explain who benefits or what risk/cost/time is reduced. commit_analysis must not repeat raw commit titles; instead, summarize what technologies, systems, or product areas were worked on and what kind of changes were made there. ai_review is a work-notes section — short observations about how the person worked today, written in a peer tone (not evaluative or managerial). Use Slack/session wording here when it reveals the developer's standards, intent, judgment, or collaboration style. working_style_signals is a separate compact list of 2-5 Korean bullets capturing durable behavioral patterns inferred from dialogue and working traces, such as expectation alignment, workflow design, quality-bar setting, noise reduction, or risk framing. These are about HOW the person works, not WHAT shipped today. Avoid generic praise like '강하다' or '좋다'; instead name the specific behavior (e.g., '기대치와 실제 결과의 간극을 먼저 줄이려는 편'). Each bullet should read like a brief sticky-note memo, not a performance review. open_threads is what the record shows was left open — work explicitly deferred, a question asked and not yet answered, a decision named as pending, a next step stated out loud. Quote or closely paraphrase the actual wording so the person recognises it. This is NOT a prediction of tomorrow and NOT a suggestion list: if nothing was left open, return an empty array rather than inventing plausible next steps. Each bullet names the specific thing and why it is still open. shareable_sentence is a single Korean sentence (60–120 chars) the developer can paste into Slack standup or 1:1. Structure: '[what changed] + [so what — who benefits or what improved]'. It must sound natural when spoken aloud — conversational, not formal. Avoid starting with '오늘'. Example: '예약금 발송 시 체크인 안내도 같이 나가게 해서 CS 누락이 줄었다'. stories must describe only the supplied story_projects, one item per project at most. For each story, connect commits (what changed) and prompts (why it changed); leave unsupported fields empty and never invent a repo. Do not echo questions, chat boilerplate, session IDs, wrapper names, backup-file cleanup details, or prompt filenames unless they materially changed the product. Use user-facing, organized Korean language suitable for a personal work log. Keep every bullet short and concrete, ideally under 110 Korean characters."
           }
         ]
       },
@@ -187,4 +205,17 @@ function sanitizeBullets(value) {
     .filter(Boolean)
     .filter((item) => !/[{}\[\]]/.test(item))
     .slice(0, 6);
+}
+
+function sanitizeStories(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((story) => ({
+      repo: String(story?.repo ?? "").trim(),
+      outcome: String(story?.outcome ?? "").trim(),
+      keyChange: String(story?.keyChange ?? "").trim(),
+      impact: String(story?.impact ?? "").trim(),
+      why: String(story?.why ?? "").trim()
+    }))
+    .filter((story) => story.repo && story.outcome)
+    .slice(0, 3);
 }

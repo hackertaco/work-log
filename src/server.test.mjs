@@ -40,6 +40,26 @@ test("/resume/analysis serves the SPA shell for authenticated users", async () =
   delete process.env.WORK_LOG_ENABLE_RESUME;
 });
 
+test("Vercel SPA shell advertises LLM generation as disabled", async () => {
+  process.env.RESUME_TOKEN = "test-token";
+  process.env.WORK_LOG_ENABLE_RESUME = "1";
+  process.env.VERCEL = "1";
+  const app = createApp();
+
+  try {
+    const res = await app.fetch(
+      new Request("http://localhost/resume/chat", {
+        headers: { cookie: "resume_token=test-token" }
+      })
+    );
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /window\.__LLM_GENERATION_ENABLED=false/);
+  } finally {
+    delete process.env.VERCEL;
+    delete process.env.WORK_LOG_ENABLE_RESUME;
+  }
+});
+
 test("resume disabled: GET /api/resume/anything returns 404", async () => {
   process.env.RESUME_TOKEN = "test-token";
   delete process.env.WORK_LOG_ENABLE_RESUME;

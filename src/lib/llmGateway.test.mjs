@@ -18,7 +18,8 @@ const ENV_KEYS = [
   "WORK_LOG_LLM_MAX_OUTPUT_TOKENS",
   "WORK_LOG_LLM_TIMEOUT_MS",
   "WORK_LOG_LLM_URL",
-  "WORK_LOG_OPENAI_URL"
+  "WORK_LOG_OPENAI_URL",
+  "VERCEL"
 ];
 const originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
@@ -35,8 +36,9 @@ afterEach(() => {
   }
 });
 
-test("blocks direct OpenAI billing unless explicitly allowed", () => {
+test("always blocks direct OpenAI billing even if a legacy override is set", () => {
   process.env.WORK_LOG_LLM_URL = "https://api.openai.com/v1/responses";
+  process.env.WORK_LOG_ALLOW_DIRECT_OPENAI = "1";
   assert.throws(
     () => getResponsesUrl(),
     (error) => error instanceof LlmGatewayError && error.code === "direct_openai_blocked"
@@ -69,6 +71,22 @@ test("normalizes a CLI proxy /v1 base URL and uses its bearer token", async () =
 test("disable switch prevents network calls", async () => {
   process.env.WORK_LOG_DISABLE_LLM = "1";
   let called = false;
+  await assert.rejects(
+    requestLlmResponse(
+      { model: "gpt-test", max_output_tokens: 10 },
+      { fetchImpl: async () => { called = true; } }
+    ),
+    (error) => error.code === "llm_disabled"
+  );
+  assert.strictEqual(called, false);
+});
+
+test("Vercel runtime can never call an LLM endpoint", async () => {
+  process.env.VERCEL = "1";
+  process.env.WORK_LOG_LLM_URL = "https://proxy.example.test/v1";
+  process.env.WORK_LOG_LLM_BEARER_TOKEN = "proxy-secret-token";
+  let called = false;
+
   await assert.rejects(
     requestLlmResponse(
       { model: "gpt-test", max_output_tokens: 10 },

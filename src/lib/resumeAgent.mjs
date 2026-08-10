@@ -35,7 +35,7 @@ const ALLOWED_TOOLS = new Set(TOOL_DEFINITIONS.map((t) => t.name));
  * @param {Array} opts.messages        Conversation messages (OpenAI format)
  * @param {string} [opts.resumeSummary] Resume context to inject into system prompt
  * @param {function} [opts.onEvent]    Event callback ({ type, ... })
- * @param {number} [opts.maxIterations] Max tool-call iterations (default 10)
+ * @param {number} [opts.maxIterations] Max tool-call iterations (default 3)
  * @param {object} [opts._deps]       Internal: dependency overrides for testing
  * @returns {Promise<void>}
  */
@@ -43,7 +43,7 @@ export async function runAgentLoop({
   messages,
   resumeSummary = "",
   onEvent = () => {},
-  maxIterations = 10,
+  maxIterations = 3,
   _deps = {},
 }) {
   // Resolve dependencies (allow test overrides)
@@ -53,12 +53,12 @@ export async function runAgentLoop({
   const _allowedTools = _deps.allowedTools || ALLOWED_TOOLS;
 
   const apiKey = getLlmBearerToken();
-  if (isLlmDisabled() || process.env.RESUME_AGENT_ENABLED !== "1") {
+  if (isLlmDisabled()) {
     onEvent({ type: "message", content: "이력서 AI 에이전트가 비활성화되어 있습니다." });
     return;
   }
   if (!apiKey) {
-    onEvent({ type: "message", content: "OpenAI API key가 설정되지 않았습니다." });
+    onEvent({ type: "message", content: "로컬 CLIProxy 인증 정보가 설정되지 않았습니다." });
     return;
   }
 

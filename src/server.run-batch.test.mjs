@@ -43,13 +43,27 @@ let runDailyBatchFn = async (date, options) => {
   runDailyBatchCalls.push({ date, options });
   return { date, ok: true };
 };
+let runWorkStyleAnalysisCalls = 0;
+let runProfileExportCalls = 0;
 
 // ─── Module-level mocks (must be declared before `await import(...)`) ─────
 
 mock.module("./lib/serverCollect.mjs", {
   namedExports: {
     runServerCollection: (...args) => runServerCollectionFn(...args),
-    runWorkStyleAnalysis: async () => ({})
+    runWorkStyleAnalysis: async () => {
+      runWorkStyleAnalysisCalls += 1;
+      return { llmRefreshed: true, analysis: { principles: [] } };
+    }
+  }
+});
+
+mock.module("./lib/profileExport.mjs", {
+  namedExports: {
+    runProfileExport: async () => {
+      runProfileExportCalls += 1;
+      return { built: ["unexpected"] };
+    }
   }
 });
 
@@ -76,6 +90,8 @@ function resetStubs() {
     runDailyBatchCalls.push({ date, options });
     return { date, ok: true };
   };
+  runWorkStyleAnalysisCalls = 0;
+  runProfileExportCalls = 0;
 }
 
 /** Build an authenticated POST /api/run-batch request with a JSON body. */
@@ -91,6 +107,32 @@ function authedRunBatch(body) {
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+
+test("GET /api/collect — Vercel runs collection only, never LLM derivations", async () => {
+  resetStubs();
+  process.env.RESUME_TOKEN = "test-run-batch-token";
+  process.env.CRON_SECRET = "cron-test-secret";
+  process.env.VERCEL = "1";
+
+  try {
+    const app = createApp();
+    const res = await app.fetch(new Request("http://localhost/api/collect", {
+      headers: { authorization: "Bearer cron-test-secret" }
+    }));
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.equal(runServerCollectionCalls.length, 1);
+    assert.equal(runWorkStyleAnalysisCalls, 0);
+    assert.equal(runProfileExportCalls, 0);
+    assert.equal(body.results[0].workStyle.reason, "local_llm_worker_required");
+    assert.equal(body.profiles.reason, "local_llm_worker_required");
+  } finally {
+    delete process.env.VERCEL;
+    delete process.env.CRON_SECRET;
+    delete process.env.RESUME_TOKEN;
+  }
+});
 
 test("POST /api/run-batch — Vercel branch: proceeds via runServerCollection, status 200", async () => {
   resetStubs();
